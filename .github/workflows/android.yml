@@ -1,0 +1,100 @@
+name: Build Android APK
+
+# Run from the Actions tab ("Run workflow"), or push a tag like v2.0.0 to also publish a GitHub Release.
+on:
+  workflow_dispatch:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: write
+
+jobs:
+  apk:
+    runs-on: ubuntu-latest
+    env:
+      APP_ID: ${{ vars.ANDROID_APP_ID || 'io.github.devhub' }}
+      HAS_KEYSTORE: ${{ secrets.ANDROID_KEYSTORE_BASE64 != '' }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 21
+
+      - uses: android-actions/setup-android@v3
+
+      - name: Install Capacitor
+        run: npm install --no-audit --no-fund
+
+      - name: Copy web app into www/
+        run: npm run www
+
+      - name: Set app id
+        run: jq --arg id "$APP_ID" '.appId = $id' capacitor.config.json > c.tmp && mv c.tmp capacitor.config.json
+
+      - name: Create Android project
+        run: |
+          npx cap add android
+          npx cap sync android
+
+      - name: Generate app icons and splash
+        continue-on-error: true
+        run: |
+          mkdir -p assets
+          cp icons/icon-1024.png assets/icon-only.png
+          cp icons/icon-1024.png assets/icon-foreground.png
+          npx capacitor-assets generate --android \
+            --iconBackgroundColor '#3346D3' --iconBackgroundColorDark '#3346D3' \
+            --splashBackgroundColor '#EEF1F6' --splashBackgroundColorDark '#151A24'
+
+      - name: Set version
+        run: |
+          if [[ "$GITHUB_REF" == refs/tags/v* ]]; then VERSION="${GITHUB_REF_NAME#v}"; else VERSION="2.0.${{ github.run_number }}"; fi
+          echo "VERSION=$VERSION" >> "$GITHUB_ENV"
+          sed -i -E "s/versionCode [0-9]+/versionCode ${{ github.run_number }}/; s/versionName \"[^\"]+\"/versionName \"$VERSION\"/" android/app/build.gradle
+          grep -E "versionCode|versionName|applicationId" android/app/build.gradle
+
+      - name: Build debug APK
+        working-directory: android
+        run: |
+          chmod +x gradlew
+          ./gradlew assembleDebug --no-daemon --stacktrace
+          cp app/build/outputs/apk/debug/app-debug.apk "../DevHub-${VERSION}-debug.apk"
+
+      - name: Build signed release APK
+        if: env.HAS_KEYSTORE == 'true'
+        env:
+          KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+        run: |
+          echo "$KEYSTORE_BASE64" | base64 -d > release.keystore
+          (cd android && ./gradlew assembleRelease --no-daemon)
+          BT="$ANDROID_HOME/build-tools/$(ls "$ANDROID_HOME/build-tools" | sort -V | tail -1)"
+          "$BT/zipalign" -p -f 4 android/app/build/outputs/apk/release/app-release-unsigned.apk aligned.apk
+          "$BT/apksigner" sign --ks release.keystore --ks-pass env:KEYSTORE_PASSWORD \
+            --ks-key-alias "$KEY_ALIAS" --key-pass env:KEY_PASSWORD \
+            --out "DevHub-${VERSION}-release.apk" aligned.apk
+          "$BT/apksigner" verify "DevHub-${VERSION}-release.apk"
+          rm -f release.keystore aligned.apk
+
+      - name: Upload APK artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: DevHub-${{ env.VERSION }}-apk
+          path: DevHub-*.apk
+          if-no-files-found: error
+
+      - name: Publish GitHub Release
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: DevHub-*.apk
+          generate_release_notes: true
