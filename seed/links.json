@@ -1,0 +1,149 @@
+[
+  {
+    "id": "4725b68c-46b0-45f4-bafc-d646db768233",
+    "name": "GitHub Marketplace",
+    "url": "https://github.com/marketplace",
+    "category": "Code & CI",
+    "notes": "Actions and apps for your repos"
+  },
+  {
+    "id": "3f8978bb-22a4-4579-9eb9-d7fa9562926b",
+    "name": "GitHub Actions",
+    "url": "https://github.com/features/actions",
+    "category": "Code & CI",
+    "notes": ""
+  },
+  {
+    "id": "c80d09dc-2557-451c-a647-c649de1c7f70",
+    "name": "npm",
+    "url": "https://www.npmjs.com",
+    "category": "Package registries",
+    "notes": "JavaScript packages"
+  },
+  {
+    "id": "e2db8a62-bcc9-4b8d-ab7b-e916c51a8afa",
+    "name": "PyPI",
+    "url": "https://pypi.org",
+    "category": "Package registries",
+    "notes": "Python packages"
+  },
+  {
+    "id": "e72d2898-82ae-42bf-8c0d-3be88d4dbd7e",
+    "name": "crates.io",
+    "url": "https://crates.io",
+    "category": "Package registries",
+    "notes": "Rust crates"
+  },
+  {
+    "id": "547106bf-f2aa-42b3-a97f-81fb14265828",
+    "name": "Maven Central",
+    "url": "https://central.sonatype.com",
+    "category": "Package registries",
+    "notes": "Java/Kotlin"
+  },
+  {
+    "id": "58072353-90c2-4093-9896-1f5510e60a5c",
+    "name": "NuGet",
+    "url": "https://www.nuget.org",
+    "category": "Package registries",
+    "notes": ".NET"
+  },
+  {
+    "id": "0ed42e49-b7ba-4fa4-b88d-0e8ce45c27a8",
+    "name": "Packagist",
+    "url": "https://packagist.org",
+    "category": "Package registries",
+    "notes": "PHP"
+  },
+  {
+    "id": "2e92bc6f-87c0-46b2-a2b4-037e7acbd4cd",
+    "name": "RubyGems",
+    "url": "https://rubygems.org",
+    "category": "Package registries",
+    "notes": "Ruby"
+  },
+  {
+    "id": "7b582920-773c-4dde-b2cd-9466072176d9",
+    "name": "Go packages",
+    "url": "https://pkg.go.dev",
+    "category": "Package registries",
+    "notes": "Go"
+  },
+  {
+    "id": "b58d75d5-9bc6-42c3-9f19-000067d74306",
+    "name": "Docker Hub",
+    "url": "https://hub.docker.com",
+    "category": "Containers",
+    "notes": "Container images"
+  },
+  {
+    "id": "9e059a5a-33bd-43d6-bae5-29e52d3ab146",
+    "name": "VS Code Marketplace",
+    "url": "https://marketplace.visualstudio.com/vscode",
+    "category": "Editor extensions",
+    "notes": ""
+  },
+  {
+    "id": "5cb28fd6-8569-405c-8fa5-e5a333a87cf4",
+    "name": "Open VSX",
+    "url": "https://open-vsx.org",
+    "category": "Editor extensions",
+    "notes": "Open extension registry"
+  },
+  {
+    "id": "554ed6b4-50af-4780-b952-660c40a823a7",
+    "name": "JetBrains Marketplace",
+    "url": "https://plugins.jetbrains.com",
+    "category": "Editor extensions",
+    "notes": ""
+  },
+  {
+    "id": "2848e672-52f8-4f93-9b04-4892358f8ac8",
+    "name": "Chrome Web Store",
+    "url": "https://chromewebstore.google.com",
+    "category": "Browser extensions",
+    "notes": ""
+  },
+  {
+    "id": "fb8a9355-6460-4e7c-b297-259f1b311dcb",
+    "name": "Firefox Add-ons",
+    "url": "https://addons.mozilla.org",
+    "category": "Browser extensions",
+    "notes": ""
+  },
+  {
+    "id": "5a252725-06c8-4d1e-a1e1-e27e2f51200d",
+    "name": "Homebrew",
+    "url": "https://formulae.brew.sh",
+    "category": "System packages",
+    "notes": "macOS/Linux"
+  },
+  {
+    "id": "11e6e214-4001-4750-9b4e-c12a59268c19",
+    "name": "Render",
+    "url": "https://dashboard.render.com",
+    "category": "Hosting",
+    "notes": "Deploys this app"
+  },
+  {
+    "id": "b6443dab-8488-41f0-b02c-2310374b9b1e",
+    "name": "MDN Web Docs",
+    "url": "https://developer.mozilla.org",
+    "category": "References",
+    "notes": ""
+  },
+  {
+    "id": "785bc381-7e13-458a-b474-f4a5c548abba",
+    "name": "Can I use",
+    "url": "https://caniuse.com",
+    "category": "References",
+    "notes": "Browser support tables"
+  },
+  {
+    "id": "bd765e60-2d7b-4750-ab7a-94472291041a",
+    "name": "regex101",
+    "url": "https://regex101.com",
+    "category": "References",
+    "notes": ""
+  }
+]

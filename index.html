@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
   <title>DevHub — developer toolkit</title>
-  <meta name="description" content="Formatters, file converters, developer tools, daily tasks and tool store links, synced to your GitHub repo as JSON.">
+  <meta name="description" content="Formatters, file converters, developer tools, a task tracker and tool store links with private user accounts.">
   <meta name="theme-color" content="#3346D3">
   <meta name="mobile-web-app-capable" content="yes">
   <meta name="apple-mobile-web-app-capable" content="yes">
@@ -23,14 +23,16 @@
     <nav class="nav" aria-label="Main">
       <div class="brand"><span class="brand-mark">{ }</span><span>DevHub</span></div>
       <a href="#tools" data-route="tools">Tools</a>
-      <a href="#today" data-route="today">Today</a>
+      <a href="#tasks" data-route="tasks">Tasks</a>
       <a href="#links" data-route="links">Tool stores</a>
-      <a href="#settings" data-route="settings">GitHub sync</a>
-      <div class="sync" id="syncStatus" role="status" aria-live="polite">Local only</div>
+      <a href="#account" data-route="account" class="nav-link">Account</a>
+      <div class="nav-user" id="navUser" role="status" aria-live="polite"></div>
     </nav>
     <main id="view" tabindex="-1"></main>
   </div>
   <div class="toast" id="toast" role="status" aria-live="polite"></div>
+  <script src="config.js"></script>
   <script src="app.js"></script>
+  <script src="tasks.js"></script>
 </body>
 </html>

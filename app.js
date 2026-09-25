@@ -1,8 +1,7 @@
 /* DevHub — developer toolkit PWA
- * Data lives in two JSON files in your GitHub repo:
- *   <dataDir>/tasks.json   { "2026-09-26": [ {id,text,done,priority,created} ] }
- *   <dataDir>/links.json   [ {id,name,url,category,notes} ]
- * A local copy is cached so the app works offline; changes push to GitHub automatically.
+ * Developer tools run entirely in the browser. Tasks, links and preferences belong to a signed-in
+ * user: they are cached on the device (so the app works offline) and synced through server.js,
+ * which stores each user's JSON files separately in a private GitHub repo.
  */
 (() => {
   'use strict';
@@ -25,104 +24,140 @@
   };
   const b64decUtf8 = b64 => new TextDecoder().decode(Uint8Array.from(atob(b64.replace(/\s/g, '')), c => c.charCodeAt(0)));
   let toastTimer;
-  const toast = msg => { const t = $('#toast'); t.textContent = msg; t.classList.add('show'); clearTimeout(toastTimer); toastTimer = setTimeout(() => t.classList.remove('show'), 2200); };
+  const toast = (msg, action) => {
+    const t = $('#toast'); t.innerHTML = `<span>${esc(msg)}</span>${action ? `<button type="button">${esc(action.label)}</button>` : ''}`;
+    if (action) $('button', t).onclick = () => { t.classList.remove('show'); action.fn(); };
+    t.classList.add('show'); clearTimeout(toastTimer); toastTimer = setTimeout(() => t.classList.remove('show'), action ? 6000 : 2400);
+  };
   const copy = async text => { try { await navigator.clipboard.writeText(text); toast('Copied'); } catch { toast('Copy failed — select and copy manually'); } };
 
-  // ---------- state ----------
-  const state = {
-    tasks: store.get('devhub:tasks', {}),
-    links: store.get('devhub:links', null),
-    gh: store.get('devhub:gh', { owner: '', repo: '', branch: 'main', dir: 'data', token: '' }),
-    sha: store.get('devhub:sha', { tasks: null, links: null }),
-    dirty: store.get('devhub:dirty', { tasks: false, links: false }),
-    day: dayKey(new Date())
+  // ---------- config, session & API ----------
+  const CONFIG = window.DEVHUB_CONFIG || {};
+  const API = String(CONFIG.apiBase || '').replace(/\/$/, '');
+  const raw = { get: k => { try { return sessionStorage.getItem(k) ?? localStorage.getItem(k); } catch { return null; } } };
+  const session = {
+    token: raw.get('devhub:token'),
+    user: store.get('devhub:user', null) || (() => { try { return JSON.parse(sessionStorage.getItem('devhub:user')); } catch { return null; } })(),
+    save(token, user, remember = true) {
+      this.token = token; this.user = user;
+      try { const s = remember ? localStorage : sessionStorage; s.setItem('devhub:token', token); s.setItem('devhub:user', JSON.stringify(user)); (remember ? sessionStorage : localStorage).removeItem('devhub:token'); } catch {}
+    },
+    setUser(user) { this.user = user; try { (localStorage.getItem('devhub:token') ? localStorage : sessionStorage).setItem('devhub:user', JSON.stringify(user)); } catch {} },
+    clear() { this.token = null; this.user = null; try { ['devhub:token', 'devhub:user'].forEach(k => { localStorage.removeItem(k); sessionStorage.removeItem(k); }); } catch {} }
+  };
+  let serverConfig = { registration: 'open' };
+
+  async function api(path, { method = 'GET', body } = {}) {
+    let r;
+    try {
+      r = await fetch(API + '/api' + path, { method, headers: { 'Content-Type': 'application/json', ...(session.token ? { Authorization: 'Bearer ' + session.token } : {}) }, body: body === undefined ? undefined : JSON.stringify(body), cache: 'no-store' });
+    } catch { const e = new Error('Can’t reach the server. Check your connection.'); e.offline = true; throw e; }
+    let j = {}; try { j = await r.json(); } catch {}
+    if (!r.ok) {
+      const e = new Error(j.error || `Request failed (${r.status})`); e.status = r.status; e.body = j;
+      if (r.status === 401 && session.token && !path.startsWith('/auth/login')) sessionExpired();
+      throw e;
+    }
+    return j;
+  }
+
+  // ---------- per-user data: cached on the device, synced to the server ----------
+  const DOCS = ['tasks', 'links', 'prefs'];
+  const data = {
+    docs: {}, ver: {}, dirty: {}, listeners: new Set(),
+    key(k) { return `devhub:u:${session.user.id}:${k}`; },
+    load() { this.docs = {}; DOCS.forEach(d => this.docs[d] = store.get(this.key(d), null)); this.ver = store.get(this.key('ver'), {}); this.dirty = store.get(this.key('dirty'), {}); },
+    persist() { DOCS.forEach(d => store.set(this.key(d), this.docs[d])); store.set(this.key('ver'), this.ver); store.set(this.key('dirty'), this.dirty); },
+    get(name) { return this.docs[name]; },
+    set(name, value) { this.docs[name] = value; this.dirty[name] = true; this.persist(); schedulePush(); },
+    hasUnsynced() { return DOCS.some(d => this.dirty[d]); },
+    wipe(uidToWipe) { ['tasks', 'links', 'prefs', 'ver', 'dirty'].forEach(k => store.del(`devhub:u:${uidToWipe}:${k}`)); },
+    changed() { this.listeners.forEach(fn => fn()); }
   };
 
-  // ---------- GitHub sync ----------
-  const gh = {
-    ready: () => !!(state.gh.owner && state.gh.repo && state.gh.token),
-    url: name => `https://api.github.com/repos/${encodeURIComponent(state.gh.owner)}/${encodeURIComponent(state.gh.repo)}/contents/${state.gh.dir.replace(/^\/|\/$/g, '')}/${name}.json`,
-    headers: () => ({ Authorization: `Bearer ${state.gh.token}`, Accept: 'application/vnd.github+json', 'X-GitHub-Api-Version': '2022-11-28' }),
-    async get(name) {
-      const r = await fetch(`${gh.url(name)}?ref=${encodeURIComponent(state.gh.branch)}&t=${Date.now()}`, { headers: gh.headers(), cache: 'no-store' });
-      if (r.status === 404) return { data: null, sha: null };
-      if (!r.ok) throw new Error(`GitHub ${r.status}: ${(await r.json().catch(() => ({}))).message || r.statusText}`);
-      const j = await r.json();
-      return { data: JSON.parse(b64decUtf8(j.content)), sha: j.sha };
-    },
-    async put(name, data, sha) {
-      const body = { message: `devhub: update ${name}.json`, content: b64encUtf8(JSON.stringify(data, null, 2) + '\n'), branch: state.gh.branch };
-      if (sha) body.sha = sha;
-      const r = await fetch(gh.url(name), { method: 'PUT', headers: { ...gh.headers(), 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
-      if (!r.ok) { const e = new Error(`GitHub ${r.status}: ${(await r.json().catch(() => ({}))).message || r.statusText}`); e.status = r.status; throw e; }
-      return (await r.json()).content.sha;
-    }
-  };
+  // Merge two copies of a document edited on different devices: newest version of each item wins.
+  function mergeById(a = [], b = []) {
+    const m = new Map();
+    for (const x of b) m.set(x.id, x);
+    for (const x of a) { const y = m.get(x.id); if (!y || String(x.updatedAt || '') >= String(y.updatedAt || '')) m.set(x.id, x); }
+    return [...m.values()];
+  }
+  function mergeDoc(name, local, remote) {
+    if (remote == null) return local; if (local == null) return remote;
+    if (name === 'links' && Array.isArray(local) && Array.isArray(remote)) return mergeById(local, remote);
+    if (name === 'tasks' && local.tasks && remote.tasks) return { ...remote, ...local, tasks: mergeById(local.tasks, remote.tasks), projects: mergeById(local.projects, remote.projects) };
+    return local;
+  }
 
   const setStatus = (text, cls = '') => {
-    const el = $('#syncStatus'); el.textContent = text; el.className = 'sync ' + cls;
-    const m = $('.mobile-sync'); if (m) m.textContent = text;
+    const el = $('#syncStatus'); if (el) { el.textContent = text; el.className = 'sync ' + cls; }
+    document.querySelectorAll('.mobile-sync').forEach(m => m.textContent = text);
   };
+  const stamp = () => new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
 
   async function pull() {
-    if (!gh.ready()) return;
-    setStatus('Pulling from GitHub…', 'busy');
+    if (!session.user) return;
+    setStatus('Syncing…', 'busy');
     try {
-      for (const name of ['tasks', 'links']) {
-        if (state.dirty[name]) continue; // unsent local edits win; they'll push next
-        const { data, sha } = await gh.get(name);
-        state.sha[name] = sha;
-        if (data !== null) state[name] = data;
+      let changed = false;
+      for (const name of DOCS) {
+        const r = await api('/data/' + name);
+        if (r.data == null && name === 'links' && data.docs.links == null) { // first sign-in: start with the default tool store list
+          try { data.docs.links = await fetch('seed/links.json').then(x => x.json()); data.dirty.links = true; changed = true; } catch {}
+          continue;
+        }
+        if (data.dirty[name]) { if (r.version !== data.ver[name]) { data.docs[name] = mergeDoc(name, data.docs[name], r.data); data.ver[name] = r.version; changed = true; } }
+        else if (r.version !== data.ver[name]) { data.docs[name] = r.data; data.ver[name] = r.version; changed = true; }
       }
-      persistLocal();
-      setStatus(`Synced · ${new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}`, 'ok');
-      const route = (location.hash.slice(1) || 'tools').split('/')[0];
-      if (route !== 'tools') render(); // don't wipe a tool's input
-      else document.querySelector('.mobile-sync') && ($('.mobile-sync').textContent = $('#syncStatus').textContent);
-      if (state.dirty.tasks || state.dirty.links) push();
-    } catch (e) { setStatus('Pull failed — see GitHub sync', 'err'); console.error(e); }
+      data.persist();
+      if (changed) data.changed();
+      setStatus(`Synced ${stamp()}`, 'ok');
+      if (data.hasUnsynced()) await push();
+    } catch (e) { setStatus(e.offline ? 'Offline — changes saved on this device' : 'Sync paused — ' + e.message, e.offline ? '' : 'err'); }
   }
 
-  let pushing = false;
+  let pushing = false, pushTimer;
   async function push() {
-    if (!gh.ready() || pushing) return;
-    pushing = true; setStatus('Saving to GitHub…', 'busy');
+    if (!session.user || pushing) return;
+    pushing = true; setStatus('Saving…', 'busy');
     try {
-      for (const name of ['tasks', 'links']) {
-        if (!state.dirty[name]) continue;
-        try { state.sha[name] = await gh.put(name, state[name], state.sha[name]); }
-        catch (e) {
-          if (e.status === 409 || e.status === 422) { // sha out of date → refetch sha, retry once (last write wins)
-            const cur = await gh.get(name); state.sha[name] = await gh.put(name, state[name], cur.sha);
-          } else throw e;
+      for (const name of DOCS) {
+        if (!data.dirty[name]) continue;
+        for (let attempt = 0; attempt < 3; attempt++) {
+          try {
+            const r = await api('/data/' + name, { method: 'PUT', body: { data: data.docs[name], baseVersion: data.ver[name] || 0 } });
+            data.ver[name] = r.version; data.dirty[name] = false; break;
+          } catch (e) {
+            if (e.status !== 409) throw e;
+            data.docs[name] = mergeDoc(name, data.docs[name], e.body.data); data.ver[name] = e.body.version; data.changed();
+          }
         }
-        state.dirty[name] = false;
       }
-      persistLocal();
-      setStatus(`Saved · ${new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}`, 'ok');
-    } catch (e) { setStatus('Save failed — changes kept locally', 'err'); console.error(e); }
+      data.persist();
+      setStatus(`Saved ${stamp()}`, 'ok');
+    } catch (e) { setStatus(e.offline ? 'Offline — changes saved on this device' : 'Not saved — ' + e.message, e.offline ? '' : 'err'); }
     finally { pushing = false; }
   }
+  function schedulePush() { setStatus('Unsaved changes…', 'busy'); clearTimeout(pushTimer); pushTimer = setTimeout(push, 1200); }
 
-  let pushTimer;
-  function changed(name) {
-    state.dirty[name] = true; persistLocal();
-    if (gh.ready()) { setStatus('Unsaved changes…', 'busy'); clearTimeout(pushTimer); pushTimer = setTimeout(push, 1500); }
+  function startSession(token, user, remember) {
+    session.save(token, user, remember);
+    data.load(); renderNavUser(); pull();
   }
-  function persistLocal() {
-    store.set('devhub:tasks', state.tasks); store.set('devhub:links', state.links);
-    store.set('devhub:sha', state.sha); store.set('devhub:dirty', state.dirty);
+  function sessionExpired() {
+    const had = session.user; session.clear(); renderNavUser();
+    if (had) { toast('Your session ended. Sign in again.'); location.hash = 'login'; }
   }
-
-  // Seed data when nothing is configured: read the JSON shipped with the deployment.
-  async function loadSeed() {
-    if (state.links) return;
-    try {
-      const [t, l] = await Promise.all([fetch('data/tasks.json').then(r => r.json()), fetch('data/links.json').then(r => r.json())]);
-      if (!Object.keys(state.tasks).length) state.tasks = t;
-      state.links = l;
-    } catch { state.links = []; }
-    persistLocal();
+  async function signOut() {
+    if (data.hasUnsynced()) { await push(); if (data.hasUnsynced() && !confirm('Some changes haven’t reached the server yet and will be lost. Sign out anyway?')) return; }
+    const id = session.user.id; data.wipe(id); session.clear(); renderNavUser(); location.hash = 'login'; toast('Signed out');
+  }
+  function renderNavUser() {
+    const el = $('#navUser'); if (!el) return;
+    const u = session.user;
+    el.innerHTML = u ? `<a href="#account" class="user-chip" data-route="account"><span class="avatar" aria-hidden="true">${esc((u.name || u.username).trim().split(/\s+/).map(w => w[0]).slice(0, 2).join('').toUpperCase())}</span><span class="uc-text"><b>${esc(u.name || u.username)}</b><span class="sync" id="syncStatus">Synced</span></span></a>`
+      : `<a href="#login" class="user-chip signin" data-route="login">Sign in</a>`;
+    const acc = $('.nav a[data-route="account"].nav-link'); if (acc) acc.textContent = u ? 'Account' : 'Sign in';
   }
 
   // ---------- developer tools ----------
@@ -550,7 +585,7 @@
 
   // ---------- views ----------
   const view = () => $('#view');
-  const syncLine = () => `<div class="mobile-sync">${esc($('#syncStatus').textContent)}</div>`;
+  const syncLine = () => session.user ? `<div class="mobile-sync">${esc($('#syncStatus')?.textContent || '')}</div>` : '';
 
   function renderTools(sub) {
     const t = TOOLS.find(x => x.id === sub) || TOOLS[0];
@@ -568,55 +603,21 @@
     t.render($('#ws'));
   }
 
-  function renderToday() {
-    const k = state.day, list = state.tasks[k] || [], done = list.filter(t => t.done).length, today = dayKey(new Date());
-    const d = new Date(k + 'T12:00:00');
-    const title = k === today ? 'Today' : k === addDays(today, -1) ? 'Yesterday' : k === addDays(today, 1) ? 'Tomorrow' : d.toLocaleDateString(undefined, { weekday: 'long' });
-    const order = { high: 0, med: 1, low: 2 };
-    const sorted = [...list].sort((a, b) => a.done - b.done || order[a.priority] - order[b.priority]);
-    const week = Array.from({ length: 7 }, (_, i) => addDays(k, i - 3));
-    const prev = (state.tasks[addDays(k, -1)] || []).filter(t => !t.done).length;
-
-    view().innerHTML = `${syncLine()}
-      <div class="today-head"><div><p class="day-title">${title}</p><div class="day-sub">${d.toLocaleDateString(undefined, { year: 'numeric', month: 'long', day: 'numeric' })} · ${done} of ${list.length} done</div></div>
-        <div class="row"><button id="prev" aria-label="Previous day">‹</button><button id="tod">Today</button><button id="next" aria-label="Next day">›</button></div></div>
-      <div class="progress" aria-hidden="true"><span style="width:${list.length ? (done / list.length) * 100 : 0}%"></span></div>
-      <div class="week">${week.map(w => { const l = state.tasks[w] || []; const p = l.length ? l.filter(t => t.done).length / l.length : 0;
-        return `<button data-d="${w}" class="${w === k ? 'sel' : ''}" aria-label="${w}, ${Math.round(p * 100)}% done">${new Date(w + 'T12:00:00').toLocaleDateString(undefined, { weekday: 'short' })}<span>${+w.slice(8)}</span><span class="bar"><i style="height:${p * 100}%"></i></span></button>`; }).join('')}</div>
-      <form class="row" id="add" style="max-width:720px"><input id="txt" placeholder="Add a task — e.g. Review PR #142" autocomplete="off" required style="flex:3 1 240px">
-        <select id="pr" aria-label="Priority" style="flex:0 1 130px"><option value="high">High</option><option value="med" selected>Medium</option><option value="low">Low</option></select><button class="primary">Add task</button></form>
-      ${prev && k === today ? `<p class="hint" style="margin-top:12px">${prev} unfinished task${prev > 1 ? 's' : ''} from yesterday. <button class="ghost" id="carry" style="padding:2px 6px;color:var(--accent)">Move them to today</button></p>` : ''}
-      <ul class="tasks">${sorted.length ? sorted.map(t => `<li class="${t.done ? 'done' : ''}" data-id="${t.id}"><input type="checkbox" ${t.done ? 'checked' : ''} aria-label="Mark done"><span class="t">${esc(t.text)}</span><span class="prio ${t.priority}">${{ high: 'High', med: 'Med', low: 'Low' }[t.priority]}</span><button class="ghost danger" data-del aria-label="Delete task">✕</button></li>`).join('')
-        : `<li class="empty" style="border:0">No tasks for this day yet. Add the first one above.</li>`}</ul>`;
-
-    const go = key => { state.day = key; renderToday(); };
-    $('#prev').onclick = () => go(addDays(k, -1)); $('#next').onclick = () => go(addDays(k, 1)); $('#tod').onclick = () => go(today);
-    view().querySelectorAll('.week button').forEach(b => b.onclick = () => go(b.dataset.d));
-    $('#add').onsubmit = e => { e.preventDefault(); const text = $('#txt').value.trim(); if (!text) return;
-      (state.tasks[k] ||= []).push({ id: uid(), text, done: false, priority: $('#pr').value, created: new Date().toISOString() }); changed('tasks'); renderToday(); $('#txt').focus(); };
-    const carry = $('#carry'); if (carry) carry.onclick = () => { const y = addDays(k, -1); const moving = state.tasks[y].filter(t => !t.done);
-      state.tasks[y] = state.tasks[y].filter(t => t.done); if (!state.tasks[y].length) delete state.tasks[y];
-      (state.tasks[k] ||= []).push(...moving); changed('tasks'); renderToday(); toast(`Moved ${moving.length} task${moving.length > 1 ? 's' : ''}`); };
-    view().querySelectorAll('.tasks li[data-id]').forEach(li => {
-      const t = list.find(x => x.id === li.dataset.id);
-      $('input', li).onchange = e => { t.done = e.target.checked; t.completed = t.done ? new Date().toISOString() : undefined; changed('tasks'); renderToday(); };
-      $('[data-del]', li).onclick = () => { state.tasks[k] = list.filter(x => x !== t); if (!state.tasks[k].length) delete state.tasks[k]; changed('tasks'); renderToday(); };
-    });
-  }
-
+  // ---------- tool store links (per user) ----------
   let linkQuery = '', linkCat = '';
   function renderLinks() {
-    const links = state.links || [];
+    const links = (data.get('links') || []).filter(l => !l.deleted);
+    const saveLinks = next => data.set('links', next);
     const cats = [...new Set(links.map(l => l.category || 'Other'))].sort();
     const q = linkQuery.toLowerCase();
     const shown = links.filter(l => (!linkCat || (l.category || 'Other') === linkCat) && (!q || [l.name, l.url, l.notes, l.category].join(' ').toLowerCase().includes(q)));
     const groups = {}; shown.forEach(l => (groups[l.category || 'Other'] ||= []).push(l));
-    view().innerHTML = `${syncLine()}<h1>Tool stores</h1><p class="lede">Package registries, marketplaces and references you use. Stored in <span class="mono">links.json</span>.</p>
-      <div class="links-bar"><input id="q" placeholder="Search links" value="${esc(linkQuery)}" aria-label="Search links">
+    view().innerHTML = `${syncLine()}<h1>Tool stores</h1><p class="lede">Package registries, marketplaces and references. Only you can see your list.</p>
+      <div class="links-bar"><input id="q" type="search" placeholder="Search links" value="${esc(linkQuery)}" aria-label="Search links">
         <select id="cf" aria-label="Category"><option value="">All categories</option>${cats.map(c => `<option ${c === linkCat ? 'selected' : ''}>${esc(c)}</option>`).join('')}</select>
         <button class="primary" id="new">Add link</button></div>
       ${Object.keys(groups).sort().map(c => `<section class="cat"><h2>${esc(c)} <span class="hint">${groups[c].length}</span></h2><div class="link-grid">${groups[c].map(l => `
-        <div class="link"><a href="${esc(l.url)}" target="_blank" rel="noopener">${esc(l.name)}</a><span class="u">${esc(l.url.replace(/^https?:\/\//, ''))}</span>${l.notes ? `<span class="n">${esc(l.notes)}</span>` : ''}
+        <div class="link"><a href="${esc(/^https?:\/\//i.test(l.url) ? l.url : '#')}" target="_blank" rel="noopener">${esc(l.name)}</a><span class="u">${esc(l.url.replace(/^https?:\/\//, ''))}</span>${l.notes ? `<span class="n">${esc(l.notes)}</span>` : ''}
         <div class="acts"><button data-edit="${l.id}">Edit</button><button class="danger" data-rm="${l.id}">Delete</button></div></div>`).join('')}</div></section>`).join('')
       || `<p class="empty">${links.length ? 'No links match that search.' : 'No links yet. Add your first tool store.'}</p>`}
       <dialog id="dlg"><form method="dialog" id="lf"><h2 id="dt">Add link</h2>
@@ -629,65 +630,164 @@
     const open = l => { editing = l; $('#dt').textContent = l ? 'Edit link' : 'Add link'; $('#ln').value = l?.name || ''; $('#lu').value = l?.url || ''; $('#lc').value = l?.category || linkCat || ''; $('#lnotes').value = l?.notes || ''; dlg.showModal(); };
     $('#new').onclick = () => open(null);
     dlg.onclose = () => { if (dlg.returnValue !== 'ok') return;
-      const v = { name: $('#ln').value.trim(), url: $('#lu').value.trim(), category: $('#lc').value.trim() || 'Other', notes: $('#lnotes').value.trim() };
-      if (editing) Object.assign(editing, v); else (state.links ||= []).push({ id: uid(), ...v });
-      changed('links'); renderLinks(); toast(editing ? 'Link updated' : 'Link added'); };
+      const all = data.get('links') || [], now = new Date().toISOString();
+      const v = { name: $('#ln').value.trim(), url: $('#lu').value.trim(), category: $('#lc').value.trim() || 'Other', notes: $('#lnotes').value.trim(), updatedAt: now };
+      saveLinks(editing ? all.map(x => x.id === editing.id ? { ...x, ...v } : x) : [...all, { id: uid(), ...v }]);
+      renderLinks(); toast(editing ? 'Link updated' : 'Link added'); };
     view().querySelectorAll('[data-edit]').forEach(b => b.onclick = () => open(links.find(l => l.id === b.dataset.edit)));
-    view().querySelectorAll('[data-rm]').forEach(b => b.onclick = () => { const l = links.find(x => x.id === b.dataset.rm); if (!confirm(`Delete "${l.name}"?`)) return; state.links = links.filter(x => x !== l); changed('links'); renderLinks(); });
+    view().querySelectorAll('[data-rm]').forEach(b => b.onclick = () => {
+      const all = data.get('links') || [], l = all.find(x => x.id === b.dataset.rm);
+      saveLinks(all.map(x => x === l ? { ...x, deleted: true, updatedAt: new Date().toISOString() } : x)); renderLinks();
+      toast(`Deleted “${l.name}”`, { label: 'Undo', fn: () => { saveLinks((data.get('links') || []).map(x => x.id === l.id ? { ...x, deleted: false, updatedAt: new Date().toISOString() } : x)); renderLinks(); } });
+    });
   }
 
-  function renderSettings() {
-    const g = state.gh;
-    view().innerHTML = `${syncLine()}<h1>GitHub sync</h1><p class="lede">Your tasks and links are saved as JSON files in a GitHub repository. Each change becomes a commit.</p>
-      <div class="panel" style="max-width:620px"><form id="sf">
-        <div class="row"><div style="flex:1 1 180px"><label for="ow">Owner</label><input id="ow" value="${esc(g.owner)}" placeholder="your-username" autocomplete="off"></div>
-        <div style="flex:1 1 180px"><label for="rp">Repository</label><input id="rp" value="${esc(g.repo)}" placeholder="devhub" autocomplete="off"></div></div>
-        <div class="row"><div style="flex:1 1 140px"><label for="br">Branch</label><input id="br" value="${esc(g.branch)}"></div>
-        <div style="flex:1 1 140px"><label for="dr">Data folder</label><input id="dr" value="${esc(g.dir)}"></div></div>
-        <label for="tk">Personal access token</label><input id="tk" type="password" value="${esc(g.token)}" placeholder="github_pat_…" autocomplete="off">
-        <p class="hint">Create a <a href="https://github.com/settings/personal-access-tokens/new" target="_blank" rel="noopener">fine-grained token</a> limited to this one repository with <b>Contents: Read and write</b>. The token is stored only in this browser.</p>
-        <div class="row" style="margin-top:14px"><button class="primary">Save and connect</button><button type="button" id="pl">Pull now</button><button type="button" id="ps">Push now</button><button type="button" class="danger" id="dc">Disconnect</button></div>
-      </form></div>
-      <div class="panel" style="max-width:620px;margin-top:18px"><h2>Backup</h2><p class="hint">Download or restore both files as a single JSON backup.</p>
-        <div class="row"><button id="ex">Export JSON</button><label class="btn" style="margin:0;font-weight:600">Import JSON<input type="file" id="im" accept="application/json" hidden></label></div></div>`;
-    $('#sf').onsubmit = async e => { e.preventDefault();
-      state.gh = { owner: $('#ow').value.trim(), repo: $('#rp').value.trim(), branch: $('#br').value.trim() || 'main', dir: $('#dr').value.trim() || 'data', token: $('#tk').value.trim() };
-      store.set('devhub:gh', state.gh); state.sha = { tasks: null, links: null };
-      if (!gh.ready()) { toast('Fill in owner, repository and token'); return; }
-      try { setStatus('Checking access…', 'busy');
-        const r = await fetch(`https://api.github.com/repos/${state.gh.owner}/${state.gh.repo}`, { headers: gh.headers() });
-        if (!r.ok) throw new Error(r.status === 404 ? 'Repository not found, or the token cannot see it.' : r.status === 401 ? 'Token rejected. Check that it is valid.' : `GitHub error ${r.status}`);
-        const repo = await r.json(); if (!repo.permissions?.push) throw new Error('This token cannot write to the repository. Give it Contents: Read and write.');
-        toast('Connected'); await pull();
-      } catch (err) { setStatus('Not connected', 'err'); toast(err.message); }
+  // ---------- sign in / register ----------
+  const fieldErrors = (form, fields = {}) => {
+    form.querySelectorAll('.field-err').forEach(e => e.remove());
+    form.querySelectorAll('[aria-invalid]').forEach(i => i.removeAttribute('aria-invalid'));
+    Object.entries(fields).forEach(([k, msg]) => { const i = form.querySelector(`[name="${k}"]`); if (!i) return; i.setAttribute('aria-invalid', 'true'); i.insertAdjacentHTML('afterend', `<p class="field-err">${esc(msg)}</p>`); });
+    const first = form.querySelector('[aria-invalid]'); if (first) first.focus();
+  };
+  const pwToggle = form => form.querySelectorAll('.pw-toggle').forEach(b => b.onclick = () => { const i = b.previousElementSibling; const show = i.type === 'password'; i.type = show ? 'text' : 'password'; b.textContent = show ? 'Hide' : 'Show'; b.setAttribute('aria-pressed', show); });
+  const nextRoute = () => new URLSearchParams(location.hash.split('?')[1] || '').get('next') || 'tasks';
+  const authShell = inner => `<div class="auth"><div class="auth-card"><div class="auth-brand"><span class="brand-mark">{ }</span><span>DevHub</span></div>${inner}</div>
+    <p class="auth-foot hint">Your tasks and links are private to your account.${API ? '' : ''} The developer tools work without signing in — <a href="#tools">open tools</a>.</p></div>`;
+
+  function renderLogin() {
+    if (session.user) { location.hash = nextRoute(); return; }
+    view().innerHTML = authShell(`<h1>Sign in</h1><p class="hint auth-sub">Welcome back. Sign in to see your tasks.</p>
+      <form id="af" novalidate>
+        <label for="login">Username or email</label><input id="login" name="login" autocomplete="username" autocapitalize="off" spellcheck="false" required>
+        <label for="password">Password</label><div class="pw"><input id="password" name="password" type="password" autocomplete="current-password" required><button type="button" class="pw-toggle ghost" aria-pressed="false">Show</button></div>
+        <label class="check-line"><input type="checkbox" name="remember" checked> Keep me signed in on this device</label>
+        <p class="form-err" role="alert" hidden></p>
+        <button class="primary wide">Sign in</button>
+      </form>
+      <p class="auth-switch">New here? <a href="#register${location.hash.includes('?') ? '?' + location.hash.split('?')[1] : ''}">Create an account</a></p>`);
+    const f = $('#af'); pwToggle(f); $('#login').focus();
+    f.onsubmit = async e => {
+      e.preventDefault(); const btn = $('button.primary', f), err = $('.form-err', f); err.hidden = true;
+      if (!f.login.value.trim() || !f.password.value) { err.textContent = 'Enter your username and password.'; err.hidden = false; return; }
+      btn.disabled = true; btn.textContent = 'Signing in…';
+      try { const r = await api('/auth/login', { method: 'POST', body: { login: f.login.value, password: f.password.value } }); startSession(r.token, r.user, f.remember.checked); toast(`Welcome back, ${r.user.name.split(' ')[0]}`); location.hash = nextRoute(); }
+      catch (x) { err.textContent = x.message; err.hidden = false; btn.disabled = false; btn.textContent = 'Sign in'; f.password.select(); }
     };
-    $('#pl').onclick = () => gh.ready() ? pull() : toast('Connect a repository first');
-    $('#ps').onclick = () => { if (!gh.ready()) return toast('Connect a repository first'); state.dirty = { tasks: true, links: true }; push(); };
-    $('#dc').onclick = () => { if (!confirm('Remove the token and repository from this browser? Your local data stays.')) return; state.gh = { owner: '', repo: '', branch: 'main', dir: 'data', token: '' }; store.set('devhub:gh', state.gh); setStatus('Local only'); renderSettings(); };
-    $('#ex').onclick = () => { const blob = new Blob([JSON.stringify({ exported: new Date().toISOString(), tasks: state.tasks, links: state.links }, null, 2)], { type: 'application/json' });
-      const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = `devhub-backup-${dayKey(new Date())}.json`; a.click(); URL.revokeObjectURL(a.href); };
-    $('#im').onchange = async e => { const f = e.target.files[0]; if (!f) return;
-      try { const j = JSON.parse(await f.text()); if (typeof j.tasks !== 'object' || !Array.isArray(j.links)) throw new Error();
+  }
+
+  function strength(pw) {
+    let s = 0; if (pw.length >= 8) s++; if (pw.length >= 12) s++; if (/[a-z]/.test(pw) && /[A-Z]/.test(pw)) s++; if (/\d/.test(pw)) s++; if (/[^A-Za-z0-9]/.test(pw)) s++;
+    return pw ? Math.min(4, Math.max(1, s - (pw.length < 8 ? 1 : 0))) : 0;
+  }
+  function renderRegister() {
+    if (session.user) { location.hash = nextRoute(); return; }
+    const closed = serverConfig.registration === 'closed', code = serverConfig.registration === 'code';
+    view().innerHTML = authShell(closed ? `<h1>Registration is closed</h1><p class="hint auth-sub">Ask the administrator of this DevHub to create an account for you.</p><a class="btn primary wide" href="#login">Back to sign in</a>` :
+      `<h1>Create your account</h1><p class="hint auth-sub">Plan your day, track time and keep your tool links — synced across your devices.</p>
+      <form id="af" novalidate>
+        <label for="name">Full name</label><input id="name" name="name" autocomplete="name" required>
+        <label for="username">Username</label><input id="username" name="username" autocomplete="username" autocapitalize="off" spellcheck="false" required placeholder="e.g. ada.l">
+        <label for="email">Email <span class="opt">optional — lets you sign in with it</span></label><input id="email" name="email" type="email" autocomplete="email">
+        <label for="password">Password</label><div class="pw"><input id="password" name="password" type="password" autocomplete="new-password" required minlength="8"><button type="button" class="pw-toggle ghost" aria-pressed="false">Show</button></div>
+        <div class="meter" aria-hidden="true"><span></span><span></span><span></span><span></span></div><p class="hint meter-text">At least 8 characters.</p>
+        <label for="confirm">Confirm password</label><input id="confirm" name="confirm" type="password" autocomplete="new-password" required>
+        ${code ? `<label for="code">Invite code</label><input id="code" name="code" autocomplete="off" required>` : ''}
+        <p class="form-err" role="alert" hidden></p>
+        <button class="primary wide">Create account</button>
+      </form>
+      <p class="auth-switch">Already have an account? <a href="#login">Sign in</a></p>`);
+    const f = $('#af'); if (!f) return; pwToggle(f); $('#name').focus();
+    const labels = ['At least 8 characters.', 'Weak — add length or variety.', 'Fair — a longer passphrase is stronger.', 'Good.', 'Strong.'];
+    f.password.oninput = () => { const s = strength(f.password.value); f.querySelectorAll('.meter span').forEach((b, i) => b.className = i < s ? 'on s' + s : ''); $('.meter-text', f).textContent = labels[s]; };
+    f.onsubmit = async e => {
+      e.preventDefault(); const btn = $('button.primary', f), err = $('.form-err', f); err.hidden = true;
+      const local = {};
+      if (!f.name.value.trim()) local.name = 'Enter your name.';
+      if (!/^[a-zA-Z0-9_.-]{3,32}$/.test(f.username.value.trim())) local.username = 'Use 3–32 letters, numbers, dots, dashes or underscores.';
+      if (f.email.value && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(f.email.value.trim())) local.email = 'Enter a valid email address, or leave it blank.';
+      if (f.password.value.length < 8) local.password = 'Use at least 8 characters.';
+      else if (f.password.value !== f.confirm.value) local.confirm = 'Passwords don’t match.';
+      if (code && !f.code.value.trim()) local.code = 'Enter your invite code.';
+      fieldErrors(f, local); if (Object.keys(local).length) return;
+      btn.disabled = true; btn.textContent = 'Creating account…';
+      try {
+        const r = await api('/auth/register', { method: 'POST', body: { name: f.name.value, username: f.username.value, email: f.email.value, password: f.password.value, code: f.code?.value } });
+        startSession(r.token, r.user, true); toast(`Welcome, ${r.user.name.split(' ')[0]}! Your account is ready.`); location.hash = nextRoute();
+      } catch (x) { fieldErrors(f, x.body?.fields); err.textContent = x.message; err.hidden = false; btn.disabled = false; btn.textContent = 'Create account'; }
+    };
+  }
+
+  // ---------- account ----------
+  function renderAccount() {
+    const u = session.user;
+    view().innerHTML = `${syncLine()}<h1>Account</h1><p class="lede">Signed in as <b>${esc(u.username)}</b>. Your data is stored privately under your account.</p>
+      <div class="acct-grid">
+        <section class="panel"><h2>Profile</h2><form id="pf" novalidate>
+          <label for="pn">Full name</label><input id="pn" name="name" value="${esc(u.name)}" autocomplete="name">
+          <label for="pe">Email</label><input id="pe" name="email" type="email" value="${esc(u.email)}" autocomplete="email">
+          <p class="hint">Member since ${new Date(u.createdAt).toLocaleDateString(undefined, { year: 'numeric', month: 'long', day: 'numeric' })}</p>
+          <button class="primary">Save profile</button></form></section>
+        <section class="panel"><h2>Password</h2><form id="pwf" novalidate>
+          <label for="cur">Current password</label><input id="cur" name="current" type="password" autocomplete="current-password">
+          <label for="nx">New password</label><input id="nx" name="next" type="password" autocomplete="new-password" minlength="8">
+          <p class="hint">Changing your password signs you out on your other devices.</p>
+          <button class="primary">Change password</button></form></section>
+        <section class="panel"><h2>Sync and data</h2>
+          <p class="hint" id="acctSync">${data.hasUnsynced() ? 'Some changes are waiting to sync.' : 'Everything is synced.'}</p>
+          <div class="row"><button id="syncNow">Sync now</button><button id="ex">Export my data</button><label class="btn" style="margin:0">Import backup<input type="file" id="im" accept="application/json,.json" hidden></label></div>
+          <p class="hint" style="margin-top:10px">Export downloads your tasks, projects and links as one JSON file.</p></section>
+        <section class="panel"><h2>Sessions</h2>
+          <div class="row"><button id="so">Sign out</button><button id="soa">Sign out on all devices</button></div>
+          <h2 style="margin-top:22px">Delete account</h2><p class="hint">Permanently deletes your account and all your tasks and links.</p>
+          <button class="danger" id="del">Delete account…</button></section>
+      </div>`;
+    const pf = $('#pf');
+    pf.onsubmit = async e => { e.preventDefault(); fieldErrors(pf);
+      try { const r = await api('/auth/profile', { method: 'POST', body: { name: pf.name.value, email: pf.email.value } }); session.setUser(r.user); renderNavUser(); toast('Profile saved'); }
+      catch (x) { fieldErrors(pf, x.body?.fields); toast(x.message); } };
+    const pwf = $('#pwf');
+    pwf.onsubmit = async e => { e.preventDefault(); fieldErrors(pwf);
+      if (pwf.next.value.length < 8) return fieldErrors(pwf, { next: 'Use at least 8 characters.' });
+      try { const r = await api('/auth/password', { method: 'POST', body: { current: pwf.current.value, next: pwf.next.value } }); session.save(r.token, r.user, !!localStorage.getItem('devhub:token')); pwf.reset(); toast('Password changed'); }
+      catch (x) { fieldErrors(pwf, x.body?.fields); if (!x.body?.fields) toast(x.message); } };
+    $('#syncNow').onclick = async () => { await pull(); await push(); $('#acctSync').textContent = data.hasUnsynced() ? 'Some changes are waiting to sync.' : 'Everything is synced.'; };
+    $('#ex').onclick = () => saveBlob(new Blob([JSON.stringify({ app: 'devhub', exported: new Date().toISOString(), user: u.username, tasks: data.get('tasks'), links: data.get('links'), prefs: data.get('prefs') }, null, 2)], { type: 'application/json' }), `devhub-${u.username}-${dayKey(new Date())}.json`);
+    $('#im').onchange = async e => { const file = e.target.files[0]; if (!file) return;
+      try { const j = JSON.parse(await file.text()); if (!j.tasks && !j.links) throw 0;
         if (!confirm('Replace your current tasks and links with this backup?')) return;
-        state.tasks = j.tasks; state.links = j.links; changed('tasks'); changed('links'); toast('Backup restored');
-      } catch { toast('That file is not a DevHub backup'); } };
+        if (j.tasks) data.set('tasks', j.tasks); if (j.links) data.set('links', j.links); if (j.prefs) data.set('prefs', j.prefs); data.changed(); toast('Backup imported');
+      } catch { toast('That file isn’t a DevHub backup'); } e.target.value = ''; };
+    $('#so').onclick = signOut;
+    $('#soa').onclick = async () => { if (!confirm('Sign out on every device, including this one?')) return; try { await push(); await api('/auth/logout-all', { method: 'POST' }); } catch (x) { return toast(x.message); } const id = session.user.id; data.wipe(id); session.clear(); renderNavUser(); location.hash = 'login'; toast('Signed out on all devices'); };
+    $('#del').onclick = async () => { const pw = prompt('This permanently deletes your account and data. Enter your password to confirm:'); if (!pw) return;
+      try { await api('/auth/account', { method: 'DELETE', body: { password: pw } }); const id = session.user.id; data.wipe(id); session.clear(); renderNavUser(); location.hash = 'register'; toast('Your account was deleted'); } catch (x) { toast(x.message); } };
   }
 
   // ---------- router ----------
+  const routes = { tools: sub => renderTools(sub), links: renderLinks, account: renderAccount, login: renderLogin, register: renderRegister };
+  const PRIVATE = new Set(['tasks', 'links', 'account']);
   function render() {
-    const [route, sub] = (location.hash.slice(1) || 'tools').split('/');
-    document.querySelectorAll('.nav a').forEach(a => a.classList.toggle('active', a.dataset.route === route));
-    ({ tools: () => renderTools(sub), today: renderToday, links: renderLinks, settings: renderSettings }[route] || (() => renderTools()))();
+    let [route, sub] = (location.hash.slice(1).split('?')[0] || 'tools').split('/');
+    if (route === 'today' || route === 'settings') route = route === 'today' ? 'tasks' : 'account';
+    if (PRIVATE.has(route) && !session.user) { location.replace('#login?next=' + route); return; }
+    document.querySelectorAll('.nav a[data-route]').forEach(a => a.classList.toggle('active', a.dataset.route === route || (route === 'register' && a.dataset.route === 'login')));
+    document.body.dataset.route = route;
+    (routes[route] || routes.tools)(sub);
   }
   window.addEventListener('hashchange', () => { render(); view().focus({ preventScroll: true }); window.scrollTo(0, 0); });
-  window.addEventListener('online', () => { if (state.dirty.tasks || state.dirty.links) push(); });
-  document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible' && gh.ready() && !pushing) pull(); });
+  window.addEventListener('online', () => { if (session.user) pull(); });
+  document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible' && session.user && !pushing) pull(); });
+  data.listeners.add(() => { const r = document.body.dataset.route; if ((r === 'tasks' || r === 'links') && !document.querySelector('dialog[open]')) render(); });
 
-  (async () => {
-    await loadSeed();
-    setStatus(gh.ready() ? 'Connecting…' : 'Local only');
+  // Shared with tasks.js
+  window.DH = { $, esc, toast, uid, dayKey, addDays, store, data, session, api, routes, render, copy, saveBlob, view, syncLine };
+
+  window.addEventListener('DOMContentLoaded', () => {
+    if (session.user && session.token) data.load(); else session.clear();
+    renderNavUser();
     render();
-    pull();
+    api('/config').then(c => { serverConfig = c; if (document.body.dataset.route === 'register') render(); }).catch(() => {});
+    if (session.user) { pull(); api('/auth/me').then(r => { session.setUser(r.user); renderNavUser(); }).catch(() => {}); }
     if ('serviceWorker' in navigator && !isNative()) navigator.serviceWorker.register('sw.js').catch(console.error);
-  })();
+  });
 })();

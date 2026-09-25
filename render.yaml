@@ -1,19 +1,32 @@
-# Render Blueprint — static site, no build step.
+# Render Blueprint — Node web service (no npm dependencies, no build step).
 services:
   - type: web
     name: devhub
-    runtime: static
+    runtime: node
+    plan: free
     buildCommand: echo "No build needed"
-    staticPublishPath: .
-    # Data commits from the app shouldn't trigger redeploys
+    startCommand: node server.js
+    healthCheckPath: /api/health
     buildFilter:
       ignoredPaths:
-        - data/**
         - .github/workflows/android.yml
-    headers:
-      - path: /sw.js
-        name: Cache-Control
-        value: no-cache
-      - path: /*
-        name: X-Content-Type-Options
-        value: nosniff
+        - README.md
+    envVars:
+      - key: NODE_VERSION
+        value: "22"
+      - key: SESSION_SECRET          # signs login sessions; generated once by Render
+        generateValue: true
+      - key: GITHUB_TOKEN            # fine-grained token: Contents read/write on the data repo only
+        sync: false
+      - key: DATA_REPO               # owner/repo of a PRIVATE repo that stores user data
+        sync: false
+      - key: DATA_BRANCH
+        value: main
+      - key: DATA_DIR
+        value: devhub
+      - key: REGISTRATION            # open | code | closed
+        value: open
+      - key: REGISTRATION_CODE       # required when REGISTRATION=code
+        sync: false
+      - key: CORS_ORIGINS            # e.g. https://you.github.io (only if you also use GitHub Pages)
+        sync: false

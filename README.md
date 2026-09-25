@@ -1,121 +1,119 @@
-# DevHub — developer toolkit PWA
+# DevHub
 
-Installable, offline-capable web app for phone, tablet and desktop, plus an Android APK built by GitHub Actions.
+A developer toolkit for phone, tablet and desktop, with private user accounts:
 
-**30 tools in 6 groups**
+- **Tasks:** a full task tracker with Today, Upcoming, Board, All tasks and Insights views.
+- **30 developer tools:** formatters, large-file converters, encoders and generators. They run entirely in the browser and need no account.
+- **Tool store links:** your own list of registries and marketplaces.
+- **Accounts:** registration and sign-in, where every user sees only their own data.
 
-| Group | Tools |
+It's installable as a PWA, and an Android APK is built by GitHub Actions.
+
+## How it fits together
+
+```
+Browser / Android app ──HTTPS──▶ server.js on Render ──GitHub API──▶ private data repo
+  (tools run locally,             (accounts, sessions,                devhub/users/index.json
+   tasks cached offline)           per-user access)                   devhub/users/<id>/tasks.json
+                                                                      devhub/users/<id>/links.json
+```
+
+The GitHub token lives only on the server. Every data request carries a signed session token, and the server takes the user id from that token. So a user can never read or write another user's files, whatever the browser sends.
+
+**Accounts:** passwords are stored as salted scrypt hashes, never in plain text. Sign-in attempts are rate limited. Changing a password or choosing "Sign out on all devices" revokes existing sessions.
+
+**Offline:** each user's data is cached on the device, so the app keeps working offline and syncs when it reconnects. If two devices edit at once, changes merge per task, and the most recent edit to each task wins. Signing out wipes that user's data from the device.
+
+## Task tracker
+
+- **Quick add with smart parsing:** for example, `Fix login bug #backend @web !high tomorrow 45m every weekday`. This one line sets tags, a project, the priority, the due date, an estimate and a repeat rule.
+- **Views:**
+  - Today: overdue tasks (with "Move all to today"), today's tasks with planned time, and a collapsible "Completed today".
+  - Upcoming: the next 14 days, "Later" and "No date".
+  - Board: kanban columns. Drag and drop with a mouse; on touch, use the ← → buttons.
+  - All tasks: filter by status and sort.
+  - Insights: tasks done over 14 days, week-over-week change, on-time rate, focus time, streak, priority mix and project progress.
+- **Task details:** status, priority (Urgent/High/Medium/Low), due date, project, repeat, estimate, tags, notes, subtasks and a start/stop timer. Only one timer runs at a time.
+- **Recurring tasks:** completing one schedules the next occurrence.
+- **Projects:** each has a colour, and you can create one inline with `@name`.
+- **Header stats:** daily goal ring, streak, focus time today and overdue count.
+- **Other:** undo after deleting, and keyboard shortcuts: `N` new task, `/` search, `1`–`5` switch view.
+
+## Deploy
+
+### 1. Create a private data repo
+Create an empty **private** repository, e.g. `you/devhub-data`, with a first commit such as a README. This is where user data lives. Keep it separate from the app repo so it's never published.
+
+### 2. Create a GitHub token for the server
+Go to GitHub → Settings → Developer settings → **Fine-grained tokens** → Generate:
+- **Repository access:** only `devhub-data`
+- **Permissions:** Contents → **Read and write**
+
+### 3. Deploy on Render
+1. Push this project to GitHub (the app repo).
+2. In Render, choose **New → Blueprint** and pick the app repo. `render.yaml` creates a Node web service.
+3. Fill in the environment variables Render asks for:
+
+| Variable | Value |
 |---|---|
-| Formatters | JSON, HTML, CSS/SCSS/Less, JavaScript/TypeScript/JSX, XML/SVG, SQL (11 dialects), YAML — format, and minify for JSON/CSS/XML |
-| Converters | Any-format converter, JSON ⇄ CSV, JSON ⇄ Excel, CSV ⇄ Excel, XML ⇄ JSON, XML → CSV/Excel, YAML ⇄ JSON, Data → SQL inserts |
-| Encode & decode | Base64, URL, JWT, HTML entities, hashes |
-| Text | Regex tester, case converter, text diff |
-| Generators | UUID, password, lorem ipsum |
-| Utilities | Timestamp, cron explainer, color, number base |
+| `GITHUB_TOKEN` | the token from step 2 |
+| `DATA_REPO` | `you/devhub-data` |
+| `REGISTRATION` | `open` (anyone can sign up), `code` (needs an invite code), or `closed` |
+| `REGISTRATION_CODE` | the invite code, if `REGISTRATION=code` |
+| `SESSION_SECRET` | generated automatically — keep it; changing it signs everyone out |
 
-Plus a **daily task tracker** and **tool store links**, stored as JSON in your GitHub repo.
+Open your `https://….onrender.com` URL and create the first account.
 
-### Converters
+**Tip:** if the site is public, use `REGISTRATION=code` so strangers can't create accounts that write to your repo.
 
-Inputs: JSON, NDJSON/JSON Lines, CSV, TSV, Excel (.xlsx, .xls, .ods), XML, YAML.
-Outputs: JSON, NDJSON, CSV, TSV, Excel (.xlsx), XML, YAML, SQL inserts, Markdown table.
+On Render's free plan the service sleeps when idle, so the first request after a while takes a few seconds. The app keeps working from its offline copy meanwhile.
 
-Open a file from your computer, phone or tablet (file picker or drag and drop), or paste text. Results can be downloaded, shared through the phone's share sheet, or copied.
+### 4. Android APK (GitHub Actions)
+1. In the app repo, go to Settings → Secrets and variables → Actions → **Variables**, and add `API_BASE_URL` = your Render URL.
+2. Go to **Actions → Build Android APK → Run workflow**, then download the APK from the run's Artifacts.
+3. Optional: tag a release with `git tag v3.0.0 && git push --tags` to publish the APK to a GitHub Release.
+4. Optional: for a signed release APK, add the secrets `ANDROID_KEYSTORE_BASE64`, `ANDROID_KEYSTORE_PASSWORD`, `ANDROID_KEY_ALIAS` and `ANDROID_KEY_PASSWORD`. Create the keystore with `keytool -genkey -v -keystore release.keystore -alias devhub -keyalg RSA -keysize 2048 -validity 10000`, then run `base64 -w0 release.keystore`.
 
-### Large files
+### 5. GitHub Pages (optional)
+Pages can host the front end only; accounts still go through Render.
+1. Set the `API_BASE_URL` variable as in step 4.
+2. On Render, set `CORS_ORIGINS=https://you.github.io`.
+3. In the repo, go to Settings → Pages → Source: **GitHub Actions**.
 
-All formatting and conversion runs in a Web Worker, so the page never freezes, and you can cancel at any time.
-
-- JSON arrays and NDJSON are **streamed** record by record, never loaded as one giant string.
-- CSV is parsed in 4 MB chunks.
-- Output is assembled as Blob parts, so results can exceed the browser's single-string limit.
-- Only a preview (first 100 rows / 64 KB) is drawn on screen; the full result goes to Download.
-- Excel output splits across sheets past 1,048,576 rows and flags cells over 32,767 characters.
-
-Measured in desktop Chrome: 300,000 nested records (54 MB JSON) → CSV in about 3 s, → Excel in about 13 s. Excel and XML inputs are read whole, so their practical size depends on device memory; phones handle tens of MB comfortably, desktops hundreds.
-
-No build step for the web app — plain HTML, CSS and JavaScript. Libraries are vendored in `vendor/` (SheetJS, Papa Parse, fast-xml-parser, js-yaml, js-beautify, sql-formatter) so everything works offline.
-
-## 1. Put it on GitHub
+## Run locally
 
 ```bash
-git init && git add . && git commit -m "DevHub"
-git branch -M main
-git remote add origin https://github.com/<you>/devhub.git
-git push -u origin main
+node server.js          # http://localhost:3000 — stores data in ./storage (no GitHub needed)
 ```
 
-## 2. Deploy on Render (gets you a URL)
+Node 22+, no `npm install` needed for the server. To use GitHub storage locally, set the same environment variables as on Render.
 
-1. Render dashboard → **New → Blueprint** → pick your `devhub` repo. `render.yaml` is detected automatically.
-   *(Or **New → Static Site**, Build command: empty, Publish directory: `.`)*
-2. Deploy. Your app is live at `https://devhub-xxxx.onrender.com`.
+## Server configuration
 
-Pushes to `main` redeploy automatically. Commits that only touch `data/` are ignored, so saving tasks doesn't trigger a redeploy.
+| Variable | Default | Purpose |
+|---|---|---|
+| `PORT` | `3000` | HTTP port (Render sets this) |
+| `GITHUB_TOKEN`, `DATA_REPO` | — | Enable GitHub storage. Without them, data goes to `STORAGE_DIR` |
+| `DATA_BRANCH` / `DATA_DIR` | `main` / `devhub` | Branch and folder inside the data repo |
+| `STORAGE_DIR` | `./storage` | Local storage (development only — Render's disk is wiped on deploy) |
+| `SESSION_SECRET` | random | Signs sessions |
+| `SESSION_DAYS` | `30` | How long a sign-in lasts |
+| `REGISTRATION`, `REGISTRATION_CODE` | `open` | Who can create accounts |
+| `CORS_ORIGINS` | — | Extra allowed web origins, comma-separated. The Android app is always allowed |
 
-## 3. (Optional) Also deploy on GitHub Pages
+## API
 
-Repo → **Settings → Pages → Source: GitHub Actions**. The included workflow publishes to `https://<you>.github.io/devhub/`.
+All data routes require `Authorization: Bearer <token>`.
 
-## 4. Build the Android APK (GitHub Actions)
+| Route | |
+|---|---|
+| `POST /api/auth/register` | `{name, username, email?, password, code?}` → `{token, user}` |
+| `POST /api/auth/login` | `{login, password}` (username or email) → `{token, user}` |
+| `GET /api/auth/me` · `POST /api/auth/profile` · `POST /api/auth/password` · `POST /api/auth/logout-all` · `DELETE /api/auth/account` | account management |
+| `GET /api/data/{tasks,links,prefs}` | → `{data, version}` for the signed-in user |
+| `PUT /api/data/{tasks,links,prefs}` | `{data, baseVersion}` → `{version}`, or `409` with the server copy if another device saved first |
 
-The workflow `.github/workflows/android.yml` wraps the app with [Capacitor](https://capacitorjs.com) and builds with Gradle.
+## Limits worth knowing
 
-- **Debug APK:** repo → **Actions → Build Android APK → Run workflow**. When it finishes, download `DevHub-…-apk` from the run's **Artifacts**. Install it on your phone (allow "install unknown apps").
-- **Release on tag:** `git tag v2.0.0 && git push --tags` builds the APK and attaches it to a GitHub Release.
-- **Signed release APK (optional, needed for Play Store or clean updates):** create a keystore once:
-  ```bash
-  keytool -genkey -v -keystore release.keystore -alias devhub -keyalg RSA -keysize 2048 -validity 10000
-  base64 -w0 release.keystore   # copy the output
-  ```
-  Add repo secrets `ANDROID_KEYSTORE_BASE64`, `ANDROID_KEYSTORE_PASSWORD`, `ANDROID_KEY_ALIAS`, `ANDROID_KEY_PASSWORD`. The workflow then also produces `DevHub-…-release.apk`.
-- **App id:** defaults to `io.github.devhub`. Set a repo variable `ANDROID_APP_ID` (e.g. `com.yourname.devhub`) to change it.
-
-The APK bundles the app files, so all tools work offline. In the app, **Download** writes the file and opens Android's share sheet, where you can save it to Files, Drive, or send it anywhere.
-
-To work on the Android app locally: `npm install && npm run android:sync && npm run android:open` (needs Android Studio).
-
-## 5. Connect storage
-
-1. Create a **fine-grained personal access token**: GitHub → Settings → Developer settings → Fine-grained tokens.
-   - Repository access: **only** your data repo
-   - Permissions: **Contents → Read and write**
-2. Open the app → **GitHub sync** → enter owner, repo, branch (`main`), data folder (`data`) and token → **Save and connect**.
-
-The data repo can be the same repo as the app, or a separate **private** repo (recommended if your tasks are personal).
-
-## How sync works
-
-- Edits save locally at once and push to GitHub 1.5 s later (debounced).
-- Offline? Changes queue locally and push when you're back online.
-- On open, and when you return to the tab, the app pulls the latest JSON.
-- If the file changed elsewhere, the last write wins (history stays in git).
-
-## Security notes
-
-- The token is kept in this browser's localStorage only; it's never in the repo. Anyone with access to your browser profile could read it, so use a fine-grained token scoped to one repo.
-- If your data repo is public, your tasks are public. Use a private repo for personal data.
-- Tools never send your input anywhere.
-
-## Data format
-
-```jsonc
-// data/tasks.json
-{ "2026-09-26": [ { "id": "…", "text": "Review PR #142", "done": false, "priority": "high", "created": "2026-09-26T09:12:00.000Z" } ] }
-
-// data/links.json
-[ { "id": "…", "name": "npm", "url": "https://www.npmjs.com", "category": "Package registries", "notes": "" } ]
-```
-
-## Adding a tool
-
-Add an entry to the `TOOLS` array in `app.js`:
-
-```js
-{ id: 'reverse', group: 'Text', name: 'Reverse text', desc: 'Reverse a string.',
-  render: el => io(el, { actions: [{ label: 'Reverse', fn: s => [...s].reverse().join('') }] }) }
-```
-
-After changing app files, bump `CACHE` in `sw.js` (e.g. `devhub-v3`) so installed copies update.
-
-Converter and formatter logic lives in `worker.js`; add a new output format by writing a writer function there and adding it to `OUT_FORMATS` in `app.js`.
+- Every save is a commit to the data repo. The app batches edits (about 1 s), and the server caps each user at 240 saves an hour. GitHub allows 5,000 API calls an hour per token, which suits individuals and small teams. For large teams, swap the storage adapter in `server.js` for a database.
+- There's no email-based password reset (the server doesn't send email). To reset a password, the admin can remove the user from `users/index.json` in the data repo so they can register again. Their data files stay in place.
