@@ -1,0 +1,36 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>DevHub — developer toolkit</title>
+  <meta name="description" content="Formatters, file converters, developer tools, daily tasks and tool store links, synced to your GitHub repo as JSON.">
+  <meta name="theme-color" content="#3346D3">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-title" content="DevHub">
+  <meta name="format-detection" content="telephone=no">
+  <link rel="manifest" href="manifest.webmanifest">
+  <link rel="icon" href="icons/icon.svg" type="image/svg+xml">
+  <link rel="apple-touch-icon" href="icons/icon-192.png">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Instrument+Sans:wght@400;500;600;700&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <div class="shell">
+    <nav class="nav" aria-label="Main">
+      <div class="brand"><span class="brand-mark">{ }</span><span>DevHub</span></div>
+      <a href="#tools" data-route="tools">Tools</a>
+      <a href="#today" data-route="today">Today</a>
+      <a href="#links" data-route="links">Tool stores</a>
+      <a href="#settings" data-route="settings">GitHub sync</a>
+      <div class="sync" id="syncStatus" role="status" aria-live="polite">Local only</div>
+    </nav>
+    <main id="view" tabindex="-1"></main>
+  </div>
+  <div class="toast" id="toast" role="status" aria-live="polite"></div>
+  <script src="app.js"></script>
+</body>
+</html>

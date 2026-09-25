@@ -1,0 +1,21 @@
+{
+  "name": "DevHub — developer toolkit",
+  "short_name": "DevHub",
+  "description": "Developer tools, daily tasks and tool store links, synced to GitHub as JSON.",
+  "start_url": "./#today",
+  "scope": "./",
+  "display": "standalone",
+  "background_color": "#EEF1F6",
+  "theme_color": "#3346D3",
+  "icons": [
+    { "src": "icons/icon-192.png", "sizes": "192x192", "type": "image/png" },
+    { "src": "icons/icon-512.png", "sizes": "512x512", "type": "image/png" },
+    { "src": "icons/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable" },
+    { "src": "icons/icon.svg", "sizes": "any", "type": "image/svg+xml" }
+  ],
+  "shortcuts": [
+    { "name": "Today", "url": "./#today" },
+    { "name": "JSON formatter", "url": "./#tools/json" },
+    { "name": "Tool stores", "url": "./#links" }
+  ]
+}
