@@ -158,6 +158,28 @@ Pages can host the front end only; accounts still go through Render.
 2. On Render, set `CORS_ORIGINS=https://<you>.github.io`.
 3. In the **app repo**, go to Settings → Pages → Source: **GitHub Actions**.
 
+## Icons
+
+Every icon comes from one design (a white `{ }` with a yellow bar on DevHub blue):
+
+| Where | Files |
+|---|---|
+| Browser tab | `favicon.ico`, `icons/icon.svg`, `icons/favicon-32.png` |
+| iPhone/iPad home screen | `icons/apple-touch-icon.png` |
+| Installed web app (PWA) | `icons/icon-192/512.png`, `icons/icon-maskable-192/512.png` (via `manifest.webmanifest`) |
+| Android app icon | `android-res/mipmap-*/` (adaptive, legacy and round) |
+| Android launch screen | `android-res/drawable*/splash.png`, plus a blue Android 12+ launch screen |
+
+The APK workflow copies `android-res/` over Capacitor's defaults, so the app never shows the Capacitor logo.
+
+To change the design or colours, edit `scripts/make-icons.py` and run:
+
+```bash
+pip install fonttools cairosvg && python3 scripts/make-icons.py
+```
+
+Then commit the updated `icons/`, `favicon.ico` and `android-res/`.
+
 ## Run locally
 
 ```bash

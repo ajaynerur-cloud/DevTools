@@ -5,7 +5,7 @@
   "description": "DevHub developer toolkit — web app plus Android wrapper (Capacitor).",
   "scripts": {
     "start": "node server.js",
-    "www": "rm -rf www && mkdir www && cp -r index.html styles.css config.js offline-db.js app.js tasks.js worker.js sw.js manifest.webmanifest icons vendor seed www/",
+    "www": "rm -rf www && mkdir www && cp -r index.html styles.css config.js offline-db.js app.js tasks.js worker.js sw.js manifest.webmanifest favicon.ico icons vendor seed www/",
     "android:sync": "npm run www && npx cap sync android",
     "android:open": "npx cap open android"
   },

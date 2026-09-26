@@ -11,6 +11,7 @@ services:
       ignoredPaths:
         - .github/workflows/android.yml
         - android-res/**
+        - scripts/**
         - README.md
     envVars:
       - key: NODE_VERSION
