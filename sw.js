@@ -1,7 +1,7 @@
 // DevHub service worker: offline app shell, never caches GitHub API calls.
-const CACHE = 'devhub-v3';
+const CACHE = 'devhub-v4';
 const SHELL = ['./', 'index.html', 'styles.css', 'app.js', 'manifest.webmanifest',
-  'icons/icon.svg', 'icons/icon-192.png', 'icons/icon-512.png', 'seed/links.json', 'config.js', 'tasks.js', 'worker.js',
+  'icons/icon.svg', 'icons/icon-192.png', 'icons/icon-512.png', 'seed/links.json', 'config.js', 'tasks.js', 'offline-db.js', 'worker.js', 'vendor/sql-wasm.js', 'vendor/sql-wasm.wasm',
   'vendor/papaparse.min.js', 'vendor/xlsx.full.min.js', 'vendor/fxp.min.js', 'vendor/js-yaml.min.js', 'vendor/beautifier.min.js', 'vendor/sql-formatter.min.js'];
 
 self.addEventListener('install', e => {

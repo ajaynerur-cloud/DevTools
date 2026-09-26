@@ -65,7 +65,8 @@
   const DOCS = ['tasks', 'links', 'prefs'];
   const data = {
     docs: {}, ver: {}, dirty: {}, listeners: new Set(),
-    key(k) { return `devhub:u:${session.user.id}:${k}`; },
+    ns: null,
+    key(k) { return `devhub:u:${this.ns}:${k}`; },
     load() { this.docs = {}; DOCS.forEach(d => this.docs[d] = store.get(this.key(d), null)); this.ver = store.get(this.key('ver'), {}); this.dirty = store.get(this.key('dirty'), {}); },
     persist() { DOCS.forEach(d => store.set(this.key(d), this.docs[d])); store.set(this.key('ver'), this.ver); store.set(this.key('dirty'), this.dirty); },
     get(name) { return this.docs[name]; },
@@ -91,7 +92,7 @@
 
   const setStatus = (text, cls = '') => {
     const el = $('#syncStatus'); if (el) { el.textContent = text; el.className = 'sync ' + cls; }
-    document.querySelectorAll('.mobile-sync').forEach(m => m.textContent = text);
+    document.querySelectorAll('.mobile-sync .ms-text').forEach(m => m.textContent = text);
   };
   const stamp = () => new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
 
@@ -138,11 +139,12 @@
     } catch (e) { setStatus(e.offline ? 'Offline — changes saved on this device' : 'Not saved — ' + e.message, e.offline ? '' : 'err'); }
     finally { pushing = false; }
   }
-  function schedulePush() { setStatus('Unsaved changes…', 'busy'); clearTimeout(pushTimer); pushTimer = setTimeout(push, 1200); }
+  function schedulePush() { if (offline.active()) return markOfflineDirty(); setStatus('Unsaved changes…', 'busy'); clearTimeout(pushTimer); pushTimer = setTimeout(push, 1200); }
 
   function startSession(token, user, remember) {
+    if (offline.meta) { clearTimeout(offline.timer); data.wipe('offline'); offline.setMeta(null); offline.handle = null; idb.del('offline-handle'); }
     session.save(token, user, remember);
-    data.load(); renderNavUser(); pull();
+    data.ns = user.id; data.load(); renderNavUser(); pull();
   }
   function sessionExpired() {
     const had = session.user; session.clear(); renderNavUser();
@@ -156,9 +158,91 @@
     const el = $('#navUser'); if (!el) return;
     const u = session.user;
     el.innerHTML = u ? `<a href="#account" class="user-chip" data-route="account"><span class="avatar" aria-hidden="true">${esc((u.name || u.username).trim().split(/\s+/).map(w => w[0]).slice(0, 2).join('').toUpperCase())}</span><span class="uc-text"><b>${esc(u.name || u.username)}</b><span class="sync" id="syncStatus">Synced</span></span></a>`
-      : `<a href="#login" class="user-chip signin" data-route="login">Sign in</a>`;
-    const acc = $('.nav a[data-route="account"].nav-link'); if (acc) acc.textContent = u ? 'Account' : 'Sign in';
+      : offline.meta ? `<a href="#account" class="user-chip" data-route="account"><span class="avatar db" aria-hidden="true">DB</span><span class="uc-text"><b>${esc(offline.meta.name)}</b><span class="sync" id="syncStatus">Offline</span></span></a><button type="button" class="db-save primary" data-save-db hidden>Save file</button>`
+      : `<a href="#start" class="user-chip signin" data-route="start">Sign in or use offline</a>`;
+    const acc = $('.nav a[data-route="account"].nav-link'); if (acc) acc.textContent = u ? 'Account' : offline.meta ? 'Database' : 'Start';
   }
+
+  // ---------- offline database mode (no account; data lives in a JSON or SQLite file) ----------
+  const canFSA = () => 'showSaveFilePicker' in window && 'showOpenFilePicker' in window && window.isSecureContext && !isNative();
+  const idb = {
+    open() { return this.p ||= new Promise((res, rej) => { const r = indexedDB.open('devhub', 1); r.onupgradeneeded = () => r.result.createObjectStore('kv'); r.onsuccess = () => res(r.result); r.onerror = () => rej(r.error); }); },
+    async run(mode, fn) { try { const db = await this.open(); return await new Promise((res, rej) => { const tx = db.transaction('kv', mode); const q = fn(tx.objectStore('kv')); tx.oncomplete = () => res(q && q.result); tx.onerror = () => rej(tx.error); }); } catch { return undefined; } },
+    get(k) { return this.run('readonly', s => s.get(k)); },
+    set(k, v) { return this.run('readwrite', s => s.put(v, k)); },
+    del(k) { return this.run('readwrite', s => s.delete(k)); }
+  };
+  const offline = {
+    meta: store.get('devhub:offline', null), handle: null, saving: false, needsPermission: false, timer: null,
+    active() { return !session.user && !!this.meta; },
+    setMeta(m) { this.meta = m; m ? store.set('devhub:offline', m) : store.del('devhub:offline'); }
+  };
+  const FILE_TYPES = [{ description: 'DevHub database', accept: { 'application/json': ['.json'], 'application/vnd.sqlite3': ['.sqlite', '.sqlite3', '.db'] } }];
+  const slug = s => (s.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '') || 'devhub-tasks').slice(0, 40);
+
+  function offlineStatus() {
+    const m = offline.meta; if (!m || session.user) return;
+    let text, cls = '';
+    if (offline.saving) { text = 'Saving to file…'; cls = 'busy'; }
+    else if (offline.needsPermission) { text = 'Press Save to reconnect the file'; cls = 'err'; }
+    else if (m.fileDirty) { text = offline.handle ? 'Unsaved changes…' : 'Kept in this browser · not in file yet'; cls = offline.handle ? 'busy' : ''; }
+    else text = m.savedAt ? `Saved to file ${new Date(m.savedAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}` : 'Ready';
+    setStatus(text, cls);
+    document.querySelectorAll('[data-save-db]').forEach(b => b.hidden = !(m.fileDirty || offline.needsPermission));
+  }
+  async function saveOffline({ as } = {}) {
+    const m = offline.meta; if (!m) return false;
+    const format = as || m.format;
+    offline.saving = true; offlineStatus();
+    try {
+      const blob = await DevHubDB.encode(format, data.docs, m);
+      if (!as && offline.handle) {
+        let perm = await offline.handle.queryPermission({ mode: 'readwrite' });
+        if (perm !== 'granted') perm = await offline.handle.requestPermission({ mode: 'readwrite' }).catch(() => 'denied');
+        if (perm !== 'granted') { offline.needsPermission = true; return false; }
+        const w = await offline.handle.createWritable(); await w.write(blob); await w.close();
+        offline.needsPermission = false;
+      } else await saveBlob(blob, as ? m.fileName.replace(/\.[^.]+$/, '') + DevHubDB.ext(format) : m.fileName);
+      if (!as) { m.fileDirty = false; m.savedAt = new Date().toISOString(); offline.setMeta(m); }
+      return true;
+    } catch (e) { if (e.name !== 'AbortError') toast('Couldn’t save the database: ' + e.message); return false; }
+    finally { offline.saving = false; offlineStatus(); }
+  }
+  function markOfflineDirty() {
+    const m = offline.meta; m.fileDirty = true; offline.setMeta(m);
+    if (offline.handle && !offline.needsPermission) { clearTimeout(offline.timer); offline.timer = setTimeout(() => saveOffline(), 700); }
+    offlineStatus();
+  }
+  function activateOffline(meta, docs, handle) {
+    if (session.user) { data.wipe(session.user.id); session.clear(); }
+    data.wipe('offline'); data.ns = 'offline'; data.docs = docs; data.ver = {}; data.dirty = {}; data.persist();
+    offline.setMeta(meta); offline.handle = handle || null; offline.needsPermission = false;
+    handle ? idb.set('offline-handle', handle) : idb.del('offline-handle');
+    renderNavUser(); offlineStatus();
+  }
+  async function closeOffline() {
+    if (offline.meta?.fileDirty) {
+      if (confirm('Some changes aren’t in the database file yet. Save the file first?')) { if (!(await saveOffline())) return false; }
+      else if (!confirm('Close without saving? Changes since your last save will be lost.')) return false;
+    }
+    clearTimeout(offline.timer); data.wipe('offline'); data.docs = {}; offline.setMeta(null); offline.handle = null; idb.del('offline-handle'); renderNavUser();
+    return true;
+  }
+  async function openDbFile(file, handle, next) {
+    const r = await DevHubDB.decode(file), now = new Date().toISOString();
+    activateOffline({ id: uid(), name: r.name, format: r.format, fileName: file.name, createdAt: r.createdAt || now, savedAt: now, fileDirty: false }, r.docs, handle);
+    const n = r.docs.tasks.tasks.filter(t => !t.deleted).length;
+    toast(`Opened “${r.name}” · ${n} task${n === 1 ? '' : 's'}`);
+    location.hash = next || 'tasks';
+  }
+  async function pickDbFile(input) {
+    if (canFSA()) {
+      let h; try { [h] = await window.showOpenFilePicker({ types: FILE_TYPES, multiple: false }); } catch (e) { if (e.name === 'AbortError') return null; throw e; }
+      return { file: await h.getFile(), handle: h };
+    }
+    return new Promise(resolve => { input.value = ''; input.onchange = () => resolve(input.files[0] ? { file: input.files[0], handle: null } : null); input.click(); });
+  }
+  document.addEventListener('click', e => { if (e.target.closest('[data-save-db]')) { e.preventDefault(); saveOffline(); } });
 
   // ---------- developer tools ----------
   const io = (el, { inLabel = 'Input', outLabel = 'Output', placeholder = '', actions, sample = '' }) => {
@@ -585,7 +669,7 @@
 
   // ---------- views ----------
   const view = () => $('#view');
-  const syncLine = () => session.user ? `<div class="mobile-sync">${esc($('#syncStatus')?.textContent || '')}</div>` : '';
+  const syncLine = () => session.user || offline.meta ? `<div class="mobile-sync"><span class="ms-text">${esc($('#syncStatus')?.textContent || '')}</span>${!session.user && offline.meta ? '<button type="button" class="ghost" data-save-db hidden>Save file</button>' : ''}</div>` : '';
 
   function renderTools(sub) {
     const t = TOOLS.find(x => x.id === sub) || TOOLS[0];
@@ -651,7 +735,7 @@
   };
   const pwToggle = form => form.querySelectorAll('.pw-toggle').forEach(b => b.onclick = () => { const i = b.previousElementSibling; const show = i.type === 'password'; i.type = show ? 'text' : 'password'; b.textContent = show ? 'Hide' : 'Show'; b.setAttribute('aria-pressed', show); });
   const nextRoute = () => new URLSearchParams(location.hash.split('?')[1] || '').get('next') || 'tasks';
-  const authShell = inner => `<div class="auth"><div class="auth-card"><div class="auth-brand"><span class="brand-mark">{ }</span><span>DevHub</span></div>${inner}</div>
+  const authShell = inner => `<div class="auth"><div class="auth-card"><div class="auth-brand"><span class="brand-mark">{ }</span><span>DevHub</span></div>${offline.meta ? `<p class="form-note">Signing in closes your offline database “${esc(offline.meta.name)}”.${offline.meta.fileDirty ? ' It has changes that aren’t saved to the file yet — <a href="#account">save it first</a>.' : ''}</p>` : ''}${inner}</div>
     <p class="auth-foot hint">Your tasks and links are private to your account.${API ? '' : ''} The developer tools work without signing in — <a href="#tools">open tools</a>.</p></div>`;
 
   function renderLogin() {
@@ -664,7 +748,8 @@
         <p class="form-err" role="alert" hidden></p>
         <button class="primary wide">Sign in</button>
       </form>
-      <p class="auth-switch">New here? <a href="#register${location.hash.includes('?') ? '?' + location.hash.split('?')[1] : ''}">Create an account</a></p>`);
+      <p class="auth-switch">New here? <a href="#register${location.hash.includes('?') ? '?' + location.hash.split('?')[1] : ''}">Create an account</a></p>
+      <p class="auth-switch alt">Don’t want an account? <a href="#start?next=${nextRoute()}">Use DevHub offline</a></p>`);
     const f = $('#af'); pwToggle(f); $('#login').focus();
     f.onsubmit = async e => {
       e.preventDefault(); const btn = $('button.primary', f), err = $('.form-err', f); err.hidden = true;
@@ -695,7 +780,8 @@
         <p class="form-err" role="alert" hidden></p>
         <button class="primary wide">Create account</button>
       </form>
-      <p class="auth-switch">Already have an account? <a href="#login">Sign in</a></p>`);
+      <p class="auth-switch">Already have an account? <a href="#login">Sign in</a></p>
+      <p class="auth-switch alt">Don’t want an account? <a href="#start?next=${nextRoute()}">Use DevHub offline</a></p>`);
     const f = $('#af'); if (!f) return; pwToggle(f); $('#name').focus();
     const labels = ['At least 8 characters.', 'Weak — add length or variety.', 'Fair — a longer passphrase is stronger.', 'Good.', 'Strong.'];
     f.password.oninput = () => { const s = strength(f.password.value); f.querySelectorAll('.meter span').forEach((b, i) => b.className = i < s ? 'on s' + s : ''); $('.meter-text', f).textContent = labels[s]; };
@@ -734,8 +820,8 @@
           <button class="primary">Change password</button></form></section>
         <section class="panel"><h2>Sync and data</h2>
           <p class="hint" id="acctSync">${data.hasUnsynced() ? 'Some changes are waiting to sync.' : 'Everything is synced.'}</p>
-          <div class="row"><button id="syncNow">Sync now</button><button id="ex">Export my data</button><label class="btn" style="margin:0">Import backup<input type="file" id="im" accept="application/json,.json" hidden></label></div>
-          <p class="hint" style="margin-top:10px">Export downloads your tasks, projects and links as one JSON file.</p></section>
+          <div class="row"><button id="syncNow">Sync now</button><button id="ex">Export JSON</button><button id="exq">Export SQLite</button><label class="btn" style="margin:0">Import backup<input type="file" id="im" ${accept} hidden></label></div>
+          <p class="hint" style="margin-top:10px">Exports are offline databases too — open one with “Use offline” on any device. Import accepts JSON or SQLite files.</p></section>
         <section class="panel"><h2>Sessions</h2>
           <div class="row"><button id="so">Sign out</button><button id="soa">Sign out on all devices</button></div>
           <h2 style="margin-top:22px">Delete account</h2><p class="hint">Permanently deletes your account and all your tasks and links.</p>
@@ -751,28 +837,145 @@
       try { const r = await api('/auth/password', { method: 'POST', body: { current: pwf.current.value, next: pwf.next.value } }); session.save(r.token, r.user, !!localStorage.getItem('devhub:token')); pwf.reset(); toast('Password changed'); }
       catch (x) { fieldErrors(pwf, x.body?.fields); if (!x.body?.fields) toast(x.message); } };
     $('#syncNow').onclick = async () => { await pull(); await push(); $('#acctSync').textContent = data.hasUnsynced() ? 'Some changes are waiting to sync.' : 'Everything is synced.'; };
-    $('#ex').onclick = () => saveBlob(new Blob([JSON.stringify({ app: 'devhub', exported: new Date().toISOString(), user: u.username, tasks: data.get('tasks'), links: data.get('links'), prefs: data.get('prefs') }, null, 2)], { type: 'application/json' }), `devhub-${u.username}-${dayKey(new Date())}.json`);
+    const dbMeta = { name: `${u.name || u.username}'s tasks` };
+    $('#ex').onclick = async () => saveBlob(await DevHubDB.encode('json', data.docs, dbMeta), `devhub-${u.username}-${dayKey(new Date())}.json`);
+    $('#exq').onclick = async () => { try { saveBlob(await DevHubDB.encode('sqlite', data.docs, dbMeta), `devhub-${u.username}-${dayKey(new Date())}.sqlite`); } catch (x) { toast(x.message); } };
     $('#im').onchange = async e => { const file = e.target.files[0]; if (!file) return;
-      try { const j = JSON.parse(await file.text()); if (!j.tasks && !j.links) throw 0;
-        if (!confirm('Replace your current tasks and links with this backup?')) return;
-        if (j.tasks) data.set('tasks', j.tasks); if (j.links) data.set('links', j.links); if (j.prefs) data.set('prefs', j.prefs); data.changed(); toast('Backup imported');
-      } catch { toast('That file isn’t a DevHub backup'); } e.target.value = ''; };
+      try { const r = await DevHubDB.decode(file);
+        if (!confirm(`Replace your current tasks and links with “${r.name}”?`)) return;
+        data.set('tasks', r.docs.tasks); data.set('links', r.docs.links); data.set('prefs', r.docs.prefs); data.changed(); toast('Imported ' + r.name);
+      } catch (x) { toast(x.message); } e.target.value = ''; };
     $('#so').onclick = signOut;
     $('#soa').onclick = async () => { if (!confirm('Sign out on every device, including this one?')) return; try { await push(); await api('/auth/logout-all', { method: 'POST' }); } catch (x) { return toast(x.message); } const id = session.user.id; data.wipe(id); session.clear(); renderNavUser(); location.hash = 'login'; toast('Signed out on all devices'); };
     $('#del').onclick = async () => { const pw = prompt('This permanently deletes your account and data. Enter your password to confirm:'); if (!pw) return;
       try { await api('/auth/account', { method: 'DELETE', body: { password: pw } }); const id = session.user.id; data.wipe(id); session.clear(); renderNavUser(); location.hash = 'register'; toast('Your account was deleted'); } catch (x) { toast(x.message); } };
   }
 
+  // ---------- start: choose online or offline ----------
+  const ICON_CLOUD = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7 18h10a4 4 0 0 0 .6-7.96A6 6 0 0 0 6.2 9.1 4.5 4.5 0 0 0 7 18z" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg>';
+  const ICON_DB = '<svg viewBox="0 0 24 24" aria-hidden="true"><ellipse cx="12" cy="5.5" rx="7" ry="2.8" fill="none" stroke="currentColor" stroke-width="1.8"/><path d="M5 5.5v13c0 1.5 3.1 2.8 7 2.8s7-1.3 7-2.8v-13M5 12c0 1.5 3.1 2.8 7 2.8s7-1.3 7-2.8" fill="none" stroke="currentColor" stroke-width="1.8"/></svg>';
+  const accept = coarse ? '' : 'accept=".json,.sqlite,.sqlite3,.db,application/json,application/vnd.sqlite3,application/x-sqlite3"';
+
+  function renderStart() {
+    const next = nextRoute(), qs = location.hash.includes('?') ? '?' + location.hash.split('?')[1] : '';
+    if (session.user || offline.meta) { location.replace('#' + next); return; }
+    view().innerHTML = `<div class="start">
+      <h1>How would you like to keep your tasks?</h1>
+      <p class="lede">Choose one — you can switch later. The developer tools work either way, no sign-in needed.</p>
+      <div class="start-grid">
+        <section class="start-card">
+          <div class="start-ico">${ICON_CLOUD}</div><h2>Online</h2>
+          <p>Sign in and your tasks and links sync across your phone, tablet and computer.</p>
+          <ul class="ticks"><li>Syncs between all your devices</li><li>Stored safely on the server</li><li class="minus">Needs an account, and internet to sync</li></ul>
+          <div class="start-actions"><a class="btn primary" href="#login${qs}">Sign in</a><a class="btn" href="#register${qs}">Create account</a></div>
+        </section>
+        <section class="start-card">
+          <div class="start-ico">${ICON_DB}</div><h2>Offline</h2>
+          <p>No account. Your tasks live in a database file on this device — JSON or SQLite.</p>
+          <ul class="ticks"><li>Works without internet</li><li>You own the file — copy it, back it up, open it in other tools</li><li class="minus">No automatic sync; move the file yourself</li></ul>
+          <div class="start-actions"><button class="primary" id="stNew">Create new database</button><button id="stOpen">Open database file</button></div>
+          <input type="file" id="stFile" hidden ${accept}>
+          <p class="form-err" id="stErr" role="alert" hidden></p>
+        </section>
+      </div>
+      <section class="panel start-create" id="stCreate" hidden></section>
+    </div>`;
+    const err = $('#stErr'), panel = $('#stCreate');
+    const fail = m => { err.textContent = m; err.hidden = false; };
+    $('#stOpen').onclick = async () => {
+      err.hidden = true;
+      try { const r = await pickDbFile($('#stFile')); if (r) await openDbFile(r.file, r.handle, next); }
+      catch (e) { fail(e.message); }
+    };
+    $('#stNew').onclick = () => {
+      err.hidden = true; panel.hidden = false;
+      panel.innerHTML = `<h2>Create a new database</h2><form id="stForm" novalidate>
+        <label for="dbName">Database name</label><input id="dbName" name="name" value="My tasks" maxlength="60" required>
+        <fieldset class="fmt"><legend>File format</legend>
+          <label class="fmt-opt"><input type="radio" name="format" value="json" checked><span><b>JSON</b><small>Readable text. Easy to look inside, edit or keep in Git.</small></span></label>
+          <label class="fmt-opt"><input type="radio" name="format" value="sqlite"><span><b>SQLite</b><small>A real database. Query it with DB Browser for SQLite, sqlite3 or DBeaver.</small></span></label>
+        </fieldset>
+        <p class="hint">${canFSA() ? 'Next you’ll choose where to save the file. After that, every change is saved into it automatically.' : 'While you work, your database is kept in this browser. Tap “Save file” any time to save a copy — to Downloads on a computer, or to Files on a phone or tablet.'}</p>
+        <p class="form-err" role="alert" hidden></p>
+        <div class="row"><button class="primary">Create database</button><button type="button" class="ghost" id="stCancel">Cancel</button></div></form>`;
+      panel.scrollIntoView({ behavior: 'smooth', block: 'start' }); $('#dbName').focus(); $('#dbName').select();
+      $('#stCancel').onclick = () => { panel.hidden = true; };
+      $('#stForm').onsubmit = async e => {
+        e.preventDefault();
+        const f = e.target, name = f.name.value.trim(), format = f.format.value, ferr = $('.form-err', f), btn = $('button.primary', f);
+        if (!name) { fieldErrors(f, { name: 'Give your database a name.' }); return; }
+        btn.disabled = true; btn.textContent = 'Creating…';
+        try {
+          const docs = DevHubDB.emptyDocs();
+          try { docs.links = await fetch('seed/links.json').then(r => r.json()); } catch {}
+          if (format === 'sqlite') await DevHubDB.loadSql();
+          const now = new Date().toISOString();
+          const meta = { id: uid(), name, format, fileName: slug(name) + DevHubDB.ext(format), createdAt: now, savedAt: null, fileDirty: true };
+          let handle = null;
+          if (canFSA()) {
+            try { handle = await window.showSaveFilePicker({ suggestedName: meta.fileName, types: [format === 'sqlite' ? { description: 'SQLite database', accept: { 'application/vnd.sqlite3': ['.sqlite', '.db'] } } : { description: 'JSON database', accept: { 'application/json': ['.json'] } }] }); meta.fileName = handle.name; }
+            catch (x) { if (x.name === 'AbortError') { btn.disabled = false; btn.textContent = 'Create database'; return; } handle = null; }
+          }
+          activateOffline(meta, docs, handle);
+          if (handle && await saveOffline()) { toast(`Created “${name}” — changes save to ${meta.fileName} automatically`); location.hash = next; return; }
+          panel.innerHTML = `<div class="ready"><span class="ready-ico" aria-hidden="true">✓</span><div><h2>“${esc(name)}” is ready</h2>
+            <p>Your database is kept in this browser, so nothing is lost if you close the page. Save the file now to have a copy on your device, or start adding tasks and save later.</p>
+            <div class="row"><button class="primary" id="stGo">Continue to tasks</button><button id="stDl">Save file now</button></div></div></div>`;
+          $('#stGo').onclick = () => location.hash = next;
+          $('#stDl').onclick = () => saveOffline();
+          $('#stGo').focus();
+        } catch (x) { ferr.textContent = x.message; ferr.hidden = false; btn.disabled = false; btn.textContent = 'Create database'; }
+      };
+    };
+  }
+
+  // ---------- offline database page ----------
+  const plural = (n, w) => `${n} ${w}${n === 1 ? '' : 's'}`;
+  function renderOfflineDb() {
+    const m = offline.meta, t = data.get('tasks') || {}, tasks = (t.tasks || []).filter(x => !x.deleted), links = (data.get('links') || []).filter(x => !x.deleted);
+    view().innerHTML = `${syncLine()}<h1>Offline database</h1><p class="lede">Your tasks and links are stored in a file on this device. No account needed.</p>
+      <div class="acct-grid">
+        <section class="panel"><h2>${esc(m.name)}</h2>
+          <dl class="kv2"><dt>Format</dt><dd>${m.format === 'sqlite' ? 'SQLite' : 'JSON'}</dd><dt>File</dt><dd class="mono">${esc(m.fileName)}</dd>
+            <dt>Saving</dt><dd>${offline.handle ? 'Automatic — every change is written to the file' : 'Kept in this browser; press Save file to write a copy to your device'}</dd>
+            <dt>Last saved</dt><dd>${m.savedAt ? new Date(m.savedAt).toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'short' }) : 'Not saved to a file yet'}</dd>
+            <dt>Contents</dt><dd>${plural(tasks.length, 'task')} · ${plural((t.projects || []).filter(p => !p.deleted).length, 'project')} · ${plural(links.length, 'link')}</dd></dl>
+          <div class="row" style="margin-top:14px"><button class="primary" id="dbSave">${offline.handle ? 'Save now' : 'Save file'}</button></div>
+          ${offline.handle ? '' : '<p class="hint" style="margin-top:10px">Each save downloads the whole database. Your browser may add a number to the name (for example “my-tasks (1).json”) — open the newest one next time.</p>'}
+        </section>
+        <section class="panel"><h2>Download a copy</h2><p class="hint">Both formats hold exactly the same data, so you can convert any time.</p>
+          <div class="row"><button id="dlJson">Download as JSON</button><button id="dlSqlite">Download as SQLite</button></div>
+          <p class="hint" style="margin-top:12px">Want to move this data online? Sign in, then use Account → Import backup with one of these files.</p></section>
+        <section class="panel"><h2>Switch database</h2>
+          <div class="row"><button id="dbOpen">Open another file</button><button id="dbNew">Create new database</button></div><input type="file" id="dbFile" hidden ${accept}>
+          <h2 style="margin-top:22px">Use online instead</h2><p class="hint">Close this database and sign in to sync across devices.</p>
+          <button id="dbOnline">Close and sign in</button></section>
+      </div>`;
+    offlineStatus();
+    $('#dbSave').onclick = () => saveOffline().then(ok => { if (ok) { toast('Database saved'); renderOfflineDb(); } });
+    $('#dlJson').onclick = () => saveOffline({ as: 'json' });
+    $('#dlSqlite').onclick = () => saveOffline({ as: 'sqlite' });
+    $('#dbOpen').onclick = async () => {
+      let r; try { r = await pickDbFile($('#dbFile')); } catch (e) { return toast(e.message); }
+      if (!r) return;
+      try { await DevHubDB.decode(r.file); } catch (e) { return toast(e.message); }
+      if (await closeOffline()) openDbFile(r.file, r.handle, 'tasks').catch(e => toast(e.message));
+    };
+    $('#dbNew').onclick = async () => { if (await closeOffline()) { location.hash = 'start?next=tasks'; setTimeout(() => $('#stNew')?.click(), 50); } };
+    $('#dbOnline').onclick = async () => { if (await closeOffline()) location.hash = 'login?next=tasks'; };
+  }
+
   // ---------- router ----------
-  const routes = { tools: sub => renderTools(sub), links: renderLinks, account: renderAccount, login: renderLogin, register: renderRegister };
+  const routes = { tools: sub => renderTools(sub), links: renderLinks, account: () => offline.active() ? renderOfflineDb() : renderAccount(), login: renderLogin, register: renderRegister, start: renderStart };
   const PRIVATE = new Set(['tasks', 'links', 'account']);
   function render() {
     let [route, sub] = (location.hash.slice(1).split('?')[0] || 'tools').split('/');
     if (route === 'today' || route === 'settings') route = route === 'today' ? 'tasks' : 'account';
-    if (PRIVATE.has(route) && !session.user) { location.replace('#login?next=' + route); return; }
-    document.querySelectorAll('.nav a[data-route]').forEach(a => a.classList.toggle('active', a.dataset.route === route || (route === 'register' && a.dataset.route === 'login')));
+    if (PRIVATE.has(route) && !session.user && !offline.meta) { location.replace('#start?next=' + route); return; }
+    document.querySelectorAll('.nav a[data-route]').forEach(a => a.classList.toggle('active', a.dataset.route === route || (route === 'start' && a.dataset.route === 'account')));
     document.body.dataset.route = route;
     (routes[route] || routes.tools)(sub);
+    if (offline.active()) offlineStatus();
   }
   window.addEventListener('hashchange', () => { render(); view().focus({ preventScroll: true }); window.scrollTo(0, 0); });
   window.addEventListener('online', () => { if (session.user) pull(); });
@@ -783,7 +986,19 @@
   window.DH = { $, esc, toast, uid, dayKey, addDays, store, data, session, api, routes, render, copy, saveBlob, view, syncLine };
 
   window.addEventListener('DOMContentLoaded', () => {
-    if (session.user && session.token) data.load(); else session.clear();
+    if (session.user && session.token) { data.ns = session.user.id; data.load(); }
+    else {
+      session.clear();
+      if (offline.meta) {
+        data.ns = 'offline'; data.load();
+        idb.get('offline-handle').then(async h => { // reconnect to the file picked earlier (Chrome/Edge desktop)
+          if (!h || !offline.meta) return;
+          offline.handle = h;
+          try { if ((await h.queryPermission({ mode: 'readwrite' })) !== 'granted' && offline.meta.fileDirty) offline.needsPermission = true; } catch {}
+          offlineStatus();
+        });
+      }
+    }
     renderNavUser();
     render();
     api('/config').then(c => { serverConfig = c; if (document.body.dataset.route === 'register') render(); }).catch(() => {});
