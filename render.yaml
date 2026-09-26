@@ -10,6 +10,7 @@ services:
     buildFilter:
       ignoredPaths:
         - .github/workflows/android.yml
+        - android-res/**
         - README.md
     envVars:
       - key: NODE_VERSION
