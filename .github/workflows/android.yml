@@ -28,14 +28,20 @@ jobs:
           java-version: 21
 
       - uses: android-actions/setup-android@v3
-        with:
-          packages: 'platform-tools'
 
       - name: Install Capacitor
         run: npm install --no-audit --no-fund
 
       - name: Copy web app into www/
         run: npm run www
+
+      - name: Point the app at your DevHub server
+        env:
+          API_BASE_URL: ${{ vars.API_BASE_URL }}
+        run: |
+          if [ -z "$API_BASE_URL" ]; then echo "::warning::Set the repository variable API_BASE_URL (your Render URL) so the app can sign in. Tools still work offline."; fi
+          printf 'window.DEVHUB_CONFIG = { apiBase: %s };\n' "$(jq -Rn --arg u "${API_BASE_URL%/}" '$u')" > www/config.js
+          cat www/config.js
 
       - name: Set app id
         run: jq --arg id "$APP_ID" '.appId = $id' capacitor.config.json > c.tmp && mv c.tmp capacitor.config.json
@@ -45,19 +51,25 @@ jobs:
           npx cap add android
           npx cap sync android
 
-      - name: Generate app icons and splash
-        continue-on-error: true
+      - name: Apply DevHub icons and launch screen
         run: |
-          mkdir -p assets
-          cp icons/icon-1024.png assets/icon-only.png
-          cp icons/icon-1024.png assets/icon-foreground.png
-          npx capacitor-assets generate --android \
-            --iconBackgroundColor '#3346D3' --iconBackgroundColorDark '#3346D3' \
-            --splashBackgroundColor '#EEF1F6' --splashBackgroundColorDark '#151A24'
+          # android-res/ holds DevHub's launcher icons and splash images (made by scripts/make-icons.py).
+          # They replace Capacitor's default icon and the Capacitor logo shown while the app starts.
+          RES=android/app/src/main/res
+          cp -r android-res/. "$RES/"
+          # Android 12+ draws its own launch screen from the theme: give it DevHub's blue instead of white.
+          if ! grep -q windowSplashScreenBackground "$RES/values/styles.xml"; then
+            sed -i 's#<item name="android:background">@drawable/splash</item>#&\n        <item name="windowSplashScreenBackground">@color/ic_launcher_background</item>#' "$RES/values/styles.xml"
+          fi
+          # WebView background while the page loads
+          jq '.android.backgroundColor = "#3346D3"' capacitor.config.json > c.tmp && mv c.tmp capacitor.config.json
+          npx cap copy android
+          grep -n "Splash" "$RES/values/styles.xml"
+          ls "$RES/mipmap-anydpi-v26" "$RES/drawable-port-xxxhdpi"
 
       - name: Set version
         run: |
-          if [[ "$GITHUB_REF" == refs/tags/v* ]]; then VERSION="${GITHUB_REF_NAME#v}"; else VERSION="2.0.${{ github.run_number }}"; fi
+          if [[ "$GITHUB_REF" == refs/tags/v* ]]; then VERSION="${GITHUB_REF_NAME#v}"; else VERSION="3.0.${{ github.run_number }}"; fi
           echo "VERSION=$VERSION" >> "$GITHUB_ENV"
           sed -i -E "s/versionCode [0-9]+/versionCode ${{ github.run_number }}/; s/versionName \"[^\"]+\"/versionName \"$VERSION\"/" android/app/build.gradle
           grep -E "versionCode|versionName|applicationId" android/app/build.gradle
