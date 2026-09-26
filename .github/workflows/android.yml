@@ -27,7 +27,20 @@ jobs:
           distribution: temurin
           java-version: 21
 
-      - uses: android-actions/setup-android@v3
+      - name: Use the runner's preinstalled Android SDK
+        run: |
+          SDK="${ANDROID_HOME:-${ANDROID_SDK_ROOT:-/usr/local/lib/android/sdk}}"
+          if [ ! -d "$SDK" ]; then echo "::error::Android SDK not found on this runner"; exit 1; fi
+          echo "ANDROID_HOME=$SDK" >> "$GITHUB_ENV"
+          echo "ANDROID_SDK_ROOT=$SDK" >> "$GITHUB_ENV"
+          SDKM=$(ls "$SDK"/cmdline-tools/latest/bin/sdkmanager "$SDK"/cmdline-tools/*/bin/sdkmanager 2>/dev/null | head -1)
+          if [ -n "$SDKM" ]; then
+            # Accept licences so Gradle can download any platform or build-tools version it needs
+            yes | "$SDKM" --licenses > /dev/null 2>&1 || true
+          fi
+          echo "SDK: $SDK"
+          echo "Platforms: $(ls "$SDK/platforms" | tr '\n' ' ')"
+          echo "Build tools: $(ls "$SDK/build-tools" | tr '\n' ' ')"
 
       - name: Install Capacitor
         run: npm install --no-audit --no-fund
