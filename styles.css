@@ -493,3 +493,29 @@ dialog.tk-dialog { width: min(520px, 94vw); }
   .start-card { padding: 18px; }
 }
 main:focus, main:focus-visible { outline: none; }
+
+/* ================= Data migrator ================= */
+.mig-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+.mig-grid section { min-width: 0; }
+.mig-h { display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap; font-size: 1rem; margin: 0 0 10px; }
+.mig-h .hint { font-weight: 400; }
+.mig-n { display: inline-grid; place-items: center; width: 22px; height: 22px; border-radius: 50%; background: var(--accent); color: var(--accent-ink); font-size: .78rem; font-weight: 700; flex: none; align-self: center; }
+.mig-new { margin: 8px 0 0; display: flex; align-items: center; gap: 4px; flex-wrap: wrap; }
+.mig-new button { padding: 2px 10px; font-size: .85rem; }
+[data-map] { margin-top: 22px; padding-top: 16px; border-top: 1px solid var(--line); }
+.mig-global { gap: 4px 20px; margin-bottom: 8px; }
+.mig-global .check-line { margin-top: 4px; }
+.mig-col { border: 1px solid var(--line); border-radius: 10px; padding: 4px 14px 10px; margin-top: 12px; background: var(--surface); }
+.mig-col.off > :not(.mig-title) { display: none; }
+.mig-col.off { opacity: .7; }
+.mig-title { margin-top: 10px; flex-wrap: wrap; overflow-wrap: anywhere; }
+.mig-opts { padding-bottom: 4px; }
+.mig-opts > label { display: flex; flex-direction: column; }
+.mig-fields summary { cursor: pointer; font-weight: 500; color: var(--accent); padding: 6px 0; font-size: .9rem; }
+.mig-fields .table-wrap { max-height: 360px; }
+.mig-fields td select { min-height: 0; padding: 4px 8px; font-size: .85rem; width: 100%; min-width: 180px; }
+.mig-fields .table-wrap td { overflow: visible; max-width: none; }
+.mig-report { margin: 8px 0 12px; max-height: none; }
+.mig-bad { color: var(--danger); }
+[data-result] .out.err { white-space: pre-wrap; margin: 8px 0; }
+@media (max-width: 800px) { .mig-grid { grid-template-columns: 1fr; } }

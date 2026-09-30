@@ -520,8 +520,176 @@
     };
   }
 
+  // ---------- data migrator: merge .db / .json / .xml into an existing .db / .json / .xml ----------
+  const MIG_ACCEPT = '.db,.db3,.sqlite,.sqlite3,.s3db,.sl3,.json,.xml,application/json,application/xml,text/xml,application/vnd.sqlite3,application/x-sqlite3';
+  const MIG_KIND = { sqlite: 'SQLite database', json: 'JSON', xml: 'XML' };
+  const MIG_MODES = { upsert: 'Update matching records, add the rest', 'insert-new': 'Add only records that aren’t there yet', append: 'Add every record', replace: 'Replace everything in the target collection' };
+  const migNorm = s => String(s).replace(/^[@#]/, '').toLowerCase().replace(/[^a-z0-9]/g, '');
+  const migSing = s => migNorm(s).replace(/(ies)$/, 'y').replace(/(ses|xes)$/, s => s.slice(0, -2)).replace(/s$/, '');
+
+  function migratorTool() {
+    return el => {
+      el.innerHTML = `<div class="mig-grid">
+          <section><h3 class="mig-h"><span class="mig-n">1</span> Source <span class="hint">— the data to move</span></h3><div data-side="src"></div><p class="hint" data-info="src"></p></section>
+          <section><h3 class="mig-h"><span class="mig-n">2</span> Target <span class="hint">— the existing file to add it to</span></h3><div data-side="dst"></div>
+            <p class="hint mig-new">No target yet? Start an empty one: <button type="button" class="ghost" data-new="sqlite">SQLite</button><button type="button" class="ghost" data-new="json">JSON</button><button type="button" class="ghost" data-new="xml">XML</button></p>
+            <p class="hint" data-info="dst"></p></section></div>
+        <div data-map hidden></div>
+        <div data-prog hidden></div><div data-result hidden></div>`;
+      const files = { src: null, dst: null }, info = { src: null, dst: null };
+      const mapEl = $('[data-map]', el), resEl = $('[data-result]', el);
+      let busy = false, pending = false;
+
+      async function inspectAll() {
+        if (busy) { pending = true; return; }
+        mapEl.hidden = true; resEl.hidden = true;
+        if (!files.src || !files.dst) return;
+        busy = true;
+        try {
+          for (const side of ['src', 'dst']) {
+            const f = files[side]; if (info[side] && info[side].file === f) continue;
+            const r = await runJob({ kind: 'inspect', source: f.blob, name: f.name }, progressUI($('[data-prog]', el)));
+            info[side] = { ...r.info, file: f };
+            const i = info[side];
+            $(`[data-info="${side}"]`, el).textContent = `${MIG_KIND[i.kind]} · ${i.collections.length ? i.collections.map(c => `${c.label} (${c.count.toLocaleString()})`).join(', ') : 'empty — new collections will be created'}`;
+          }
+          renderMap();
+        } catch (e) { mapEl.hidden = false; mapEl.innerHTML = `<div class="out err">${esc(e.message)}</div>`; }
+        $('[data-prog]', el).hidden = true; busy = false;
+        if (pending) { pending = false; inspectAll(); }
+      }
+      const pick = side => x => { files[side] = x; info[side] = null; $(`[data-info="${side}"]`, el).textContent = ''; inspectAll(); };
+      fileSource($('[data-side="src"]', el), { accept: MIG_ACCEPT, onFile: pick('src') });
+      const dstSrc = fileSource($('[data-side="dst"]', el), { accept: MIG_ACCEPT, onFile: pick('dst') });
+      el.querySelectorAll('[data-new]').forEach(b => b.onclick = () => {
+        const k = b.dataset.new, name = 'migrated.' + (k === 'sqlite' ? 'db' : k);
+        dstSrc.clear(); pick('dst')({ blob: new Blob([], { type: 'application/octet-stream' }), name, size: 0 });
+        $('[data-info="dst"]', el).textContent = `New empty ${MIG_KIND[k]} (${name})`;
+      });
+
+      function renderMap() {
+        const S = info.src, D = info.dst;
+        if (!S.collections.length) { mapEl.hidden = false; mapEl.innerHTML = `<div class="out err">No tables or lists of records were found in ${esc(S.name)}.</div>`; return; }
+        const noun = D.kind === 'sqlite' ? 'table' : 'collection', fnoun = D.kind === 'sqlite' ? 'column' : D.kind === 'xml' ? 'element' : 'field';
+        const bestDst = sc => {
+          const hit = D.collections.find(c => migNorm(c.name) === migNorm(sc.name)) || D.collections.find(c => migSing(c.name) === migSing(sc.name));
+          if (hit) return hit.id;
+          if (S.collections.length === 1 && D.collections.length === 1) return D.collections[0].id;
+          return D.rootArray && D.collections.length ? D.collections[0].id : 'new';
+        };
+        mapEl.hidden = false;
+        mapEl.innerHTML = `<h3 class="mig-h"><span class="mig-n">3</span> Map ${S.collections.length === 1 ? 'the data' : 'each source ' + (S.kind === 'sqlite' ? 'table' : 'collection')}</h3>
+          <div class="row mig-global"><label class="check-line"><input type="checkbox" data-addnew checked> Add ${fnoun}s the target doesn’t have yet</label>
+          ${D.kind === 'json' ? '<label class="check-line"><input type="checkbox" data-parsejson checked> Turn JSON text (e.g. from SQLite) into real objects and arrays</label>' : ''}
+          ${S.kind === 'xml' ? '<label class="check-line"><input type="checkbox" data-infer checked> Detect numbers and true/false in XML values</label>' : ''}</div>
+          ${S.collections.map((sc, i) => `<div class="mig-col" data-i="${i}">
+            <label class="check-line mig-title"><input type="checkbox" data-inc ${sc.count ? 'checked' : ''}> <b>${esc(sc.label)}</b> <span class="hint">${sc.count.toLocaleString()} records · ${sc.columns.length} fields</span></label>
+            <div class="mig-opts opt-grid">
+              <label>Into ${noun}<select data-dst>${D.rootArray ? '' : `<option value="new">+ New ${noun}</option>`}${D.collections.map(c => `<option value="${esc(c.id)}">${esc(c.label)} (${c.count.toLocaleString()})</option>`).join('')}</select></label>
+              <label data-nn>New ${noun} name<input data-newname value="${esc(sc.name)}"></label>
+              <label>How<select data-mode>${Object.entries(MIG_MODES).map(([k, v]) => `<option value="${k}">${v}</option>`).join('')}</select></label>
+              <label data-k>Match source field<select data-skey>${sc.columns.map(c => `<option>${esc(c.name)}</option>`).join('')}</select></label>
+              <label data-k>…to target ${fnoun}<select data-dkey></select></label>
+            </div>
+            <details class="mig-fields"><summary></summary><div class="table-wrap"><table><thead><tr><th>Source field</th><th>→ Target ${fnoun}</th></tr></thead><tbody></tbody></table></div></details>
+          </div>`).join('')}
+          <div class="row action-bar"><button class="primary" data-go>Migrate into ${esc(D.name)}</button></div>`;
+        mapEl.querySelectorAll('.mig-col').forEach(box => {
+          const sc = S.collections[+box.dataset.i], dsel = $('[data-dst]', box);
+          dsel.value = bestDst(sc); if (!dsel.value) dsel.selectedIndex = 0;
+          const upd = () => {
+            const dc = D.collections.find(c => c.id === dsel.value), isNew = !dc, addNew = $('[data-addnew]', mapEl).checked;
+            $('[data-nn]', box).hidden = !isNew;
+            const tcols = dc ? dc.columns : [];
+            // key defaults
+            const dkey = $('[data-dkey]', box), skey = $('[data-skey]', box);
+            const keyCols = isNew ? sc.columns.map(c => c.name) : tcols.map(c => c.name);
+            dkey.innerHTML = keyCols.map(c => `<option>${esc(c)}</option>`).join('');
+            const tk = isNew ? sc.key : dc.key, sk = sc.key;
+            let pairS = null, pairD = null;
+            if (tk) { pairD = tk; pairS = sc.columns.find(c => migNorm(c.name) === migNorm(tk))?.name || (isNew ? tk : sk); }
+            else if (sk) { pairS = sk; pairD = keyCols.find(c => migNorm(c) === migNorm(sk)) || null; }
+            if (pairS && pairD) { skey.value = pairS; dkey.value = pairD; }
+            const hasKey = !!(pairS && pairD && (isNew || tcols.length));
+            $('[data-mode]', box).value = isNew || !dc.count ? (hasKey ? 'upsert' : 'append') : hasKey ? 'upsert' : 'append';
+            // field mapping rows
+            const tb = $('tbody', box);
+            tb.innerHTML = sc.columns.map(c => {
+              const m = tcols.find(t => migNorm(t.name) === migNorm(c.name));
+              const opt = `<option value="__new">+ New ${fnoun} “${esc(c.name.replace(/^[@#]/, ''))}”</option><option value="__skip">Skip</option>${tcols.map(t => `<option value="${esc(t.name)}">${esc(t.name)}${t.type ? ` · ${esc(t.type.toLowerCase())}` : ''}</option>`).join('')}`;
+              const v = m ? m.name : isNew || addNew ? '__new' : '__skip';
+              return `<tr data-from="${esc(c.name)}"><td>${esc(c.name)}${c.type ? ` <span class="hint">${esc(c.type.toLowerCase())}</span>` : ''}</td><td><select aria-label="Target for ${esc(c.name)}">${opt}</select></td></tr>`.replace(`value="${esc(v)}"`, `value="${esc(v)}" selected`);
+            }).join('');
+            tb.querySelectorAll('select').forEach(s => s.onchange = sum);
+            modeUI(); sum();
+          };
+          const modeUI = () => { const m = $('[data-mode]', box).value; box.querySelectorAll('[data-k]').forEach(n => n.hidden = !(m === 'upsert' || m === 'insert-new')); };
+          const sum = () => {
+            const v = [...box.querySelectorAll('tbody select')].map(s => s.value);
+            const nNew = v.filter(x => x === '__new').length, nSkip = v.filter(x => x === '__skip').length, nMap = v.length - nNew - nSkip;
+            $('summary', box).textContent = `Fields: ${nMap} matched · ${nNew} new · ${nSkip} skipped — change`;
+          };
+          box.upd = upd;
+          dsel.onchange = upd; $('[data-mode]', box).onchange = modeUI;
+          $('[data-inc]', box).onchange = e => box.classList.toggle('off', !e.target.checked);
+          box.classList.toggle('off', !sc.count);
+          upd();
+        });
+        $('[data-addnew]', mapEl).onchange = () => mapEl.querySelectorAll('.mig-col').forEach(b => b.upd());
+        $('[data-go]', mapEl).onclick = run;
+      }
+
+      async function run() {
+        const S = info.src, D = info.dst;
+        const plan = [...mapEl.querySelectorAll('.mig-col')].filter(b => $('[data-inc]', b).checked).map(b => {
+          const sc = S.collections[+b.dataset.i], dst = $('[data-dst]', b).value, mode = $('[data-mode]', b).value;
+          const cols = [...b.querySelectorAll('tbody tr')].map(tr => { const v = $('select', tr).value, from = tr.dataset.from;
+            return { from, to: v === '__skip' ? null : v === '__new' ? (D.kind === 'xml' ? from : from.replace(/^[@#]/, '')) : v }; });
+          const skey = $('[data-skey]', b).value; let dkey = $('[data-dkey]', b).value;
+          if (dst === 'new') dkey = cols.find(c => c.from === dkey)?.to || dkey;
+          return { src: sc.id, dst, newName: $('[data-newname]', b).value, mode, srcKey: skey, dstKey: dkey, cols, label: sc.label };
+        });
+        if (!plan.length) return toast('Tick at least one source collection to migrate');
+        const bad = plan.find(p => (p.mode === 'upsert' || p.mode === 'insert-new') && !p.cols.some(c => c.from === p.srcKey && c.to));
+        if (bad && bad.dst === 'new') return toast(`${bad.label}: the match field “${bad.srcKey}” is set to Skip`);
+        if (plan.some(p => p.mode === 'replace') && !confirm('“Replace everything” removes the existing records in those target collections before adding the new ones. Continue?')) return;
+        const opts = { parseJson: $('[data-parsejson]', mapEl)?.checked, inferTypes: $('[data-infer]', mapEl)?.checked };
+        const go = $('[data-go]', mapEl); go.disabled = true; resEl.hidden = true;
+        try {
+          const r = await runJob({ kind: 'migrate', source: files.src.blob, sourceName: files.src.name, target: files.dst.blob, targetName: files.dst.name, plan, opts }, progressUI($('[data-prog]', el)));
+          showResult(r);
+        } catch (e) { resEl.hidden = false; resEl.innerHTML = `<div class="out err">${esc(e.message)}</div><p class="hint">Nothing was changed — your files are untouched.</p>`; }
+        $('[data-prog]', el).hidden = true; go.disabled = false;
+      }
+
+      function showResult(r) {
+        const name = files.dst.name, tot = k => r.report.reduce((a, x) => a + x[k], 0);
+        resEl.hidden = false;
+        resEl.innerHTML = `<div class="result-head"><div><b>${esc(name)}</b> <span class="hint">updated</span>
+            <div class="hint">${tot('inserted').toLocaleString()} added · ${tot('updated').toLocaleString()} updated · ${tot('skipped').toLocaleString()} skipped${tot('failed') ? ` · <b class="mig-bad">${tot('failed').toLocaleString()} failed</b>` : ''} · ${fmtBytes(files.dst.size)} → ${fmtBytes(r.blob.size)} · ${(r.ms / 1000).toFixed(1)} s</div></div>
+          <div class="row"><button class="primary" data-dl>Download</button>${canShareFiles() ? '<button data-share>Share</button>' : ''}<button data-chain title="Keep working on the result, e.g. to migrate another source into it">Use as target</button></div></div>
+          <p class="hint">Download saves the updated copy as <b>${esc(name)}</b> — replace your original with it. Your original file was not changed.</p>
+          <div class="table-wrap mig-report"><table><thead><tr><th>Source</th><th>Target</th><th>Added</th><th>Updated</th><th>Skipped</th><th>Failed</th><th>Notes</th></tr></thead><tbody>
+          ${r.report.map(x => `<tr><td>${esc(x.src)}</td><td>${esc(x.dst)}</td><td>${x.inserted.toLocaleString()}</td><td>${x.updated.toLocaleString()}</td><td>${x.skipped.toLocaleString()}</td><td>${x.failed.toLocaleString()}</td><td>${esc([x.created ? 'new' : '', x.cleared ? 'replaced existing' : '', x.newColumns.length ? 'new fields: ' + x.newColumns.join(', ') : ''].filter(Boolean).join(' · '))}</td></tr>`).join('')}
+          </tbody></table></div>
+          ${r.report.filter(x => x.errors.length).map(x => `<div class="out err">${esc(x.src)}:\n${esc(x.errors.join('\n'))}${x.failed > x.errors.length ? `\n…and ${(x.failed - x.errors.length).toLocaleString()} more` : ''}</div>`).join('')}
+          ${r.notes.map(n => `<p class="hint">${esc(n)}</p>`).join('')}
+          ${r.previews.map(p => `<p class="hint">Preview: <b>${esc(p.label)}</b> — last ${Math.min(50, p.count)} of ${p.count.toLocaleString()} records after the migration</p>
+            <div class="table-wrap"><table><thead><tr>${p.columns.map(c => `<th>${esc(c)}</th>`).join('')}</tr></thead><tbody>${p.rows.map(row => `<tr>${row.map(v => `<td>${esc(v.length > 120 ? v.slice(0, 120) + '…' : v)}</td>`).join('')}</tr>`).join('')}</tbody></table></div>`).join('')}`;
+        $('[data-dl]', resEl).onclick = () => saveBlob(r.blob, name).catch(e => toast(e.message));
+        const sh = $('[data-share]', resEl); if (sh) sh.onclick = () => shareBlob(r.blob, name);
+        $('[data-chain]', resEl).onclick = () => {
+          dstSrc.clear(); files.dst = { blob: r.blob, name, size: r.blob.size }; info.dst = null;
+          $('[data-info="dst"]', el).textContent = `Using the migrated ${name} (${fmtBytes(r.blob.size)}) — choose another source to add more.`;
+          toast('The result is now the target'); inspectAll();
+        };
+      }
+    };
+  }
+
   const FILE_TOOLS = [
     ...Object.entries(FMT).map(([k, f]) => ({ id: 'fmt-' + k, group: 'Formatters', name: `${f.name} formatter`, desc: `Pretty-print${f.minify ? ' or minify' : ''} ${f.name}${k === 'js' ? ' and TypeScript/JSX' : k === 'css' ? ', SCSS and Less' : ''}. Open a file from your device or paste text.${k === 'yaml' ? ' Comments are not kept.' : ''}`, render: formatterTool(k) })),
+    { id: 'migrate', group: 'Converters', name: 'Data migrator (DB / JSON / XML)', desc: 'Move records from a .db/.sqlite, .json or .xml file into an existing .db/.sqlite, .json or .xml file — any combination. Map tables and fields, update matching records by key or add new ones, then download the updated file.', render: migratorTool() },
     { id: 'conv-any', group: 'Converters', name: 'Any format converter', desc: 'Convert between JSON, NDJSON, CSV, TSV, Excel, XML and YAML. Also exports SQL inserts and Markdown tables.', render: converterTool({}) },
     { id: 'conv-json-csv', group: 'Converters', name: 'JSON ⇄ CSV', desc: 'Nested objects become dot.columns; the reverse rebuilds them.', render: converterTool({ from: ['json', 'ndjson', 'csv', 'tsv'], to: ['csv', 'tsv', 'json', 'ndjson'] }) },
     { id: 'conv-json-xlsx', group: 'Converters', name: 'JSON ⇄ Excel', desc: 'Export JSON to a filtered .xlsx sheet, or read any sheet back to JSON.', render: converterTool({ from: ['json', 'ndjson', 'xlsx'], to: ['xlsx', 'json', 'ndjson'] }) },

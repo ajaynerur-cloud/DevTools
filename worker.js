@@ -1,5 +1,5 @@
 /* DevHub worker — formatting and conversion run here so the UI never freezes.
- * Messages in:  { kind: 'format', ... } | { kind: 'convert', ... }
+ * Messages in:  { kind: 'format', ... } | { kind: 'convert', ... } | { kind: 'inspect' | 'migrate', ... } (see migrate.js)
  * Messages out: { type: 'progress', text, pct } | { type: 'done', ... } | { type: 'error', message }
  */
 'use strict';
@@ -409,6 +409,9 @@ async function format(job) {
 }
 
 self.onmessage = async ({ data: job }) => {
-  try { post(job.kind === 'format' ? await format(job) : await convert(job)); }
+  try {
+    if (job.kind === 'inspect' || job.kind === 'migrate') { if (typeof migrate !== 'function') importScripts('migrate.js'); post(job.kind === 'inspect' ? await inspect(job) : await migrate(job)); }
+    else post(job.kind === 'format' ? await format(job) : await convert(job));
+  }
   catch (e) { post({ type: 'error', message: e && e.message ? e.message : String(e) }); }
 };

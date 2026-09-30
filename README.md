@@ -3,7 +3,7 @@
 A developer toolkit for phone, tablet and desktop, with private user accounts:
 
 - **Tasks:** a full task tracker with Today, Upcoming, Board, All tasks and Insights views.
-- **30 developer tools:** formatters, large-file converters, encoders and generators. They run entirely in the browser and need no account.
+- **31 developer tools:** formatters, large-file converters, a data migrator, encoders and generators. They run entirely in the browser and need no account.
 - **Tool store links:** your own list of registries and marketplaces.
 - **Accounts:** registration and sign-in, where every user sees only their own data.
 
@@ -51,6 +51,31 @@ The developer tools never need either; they always work without signing in.
 - **Offline to online:** sign in, then use Account → Import backup with your `.json` or `.sqlite` file.
 - **Online to offline:** use Account → Export JSON or Export SQLite, then use "Open database file" on any device.
 
+## Data migrator (DB / JSON / XML)
+
+Tools → Converters → **Data migrator** moves records from one file into another file you already have. Any combination works:
+
+| Source ↓ / Target → | `.db` / `.sqlite` | `.json` | `.xml` |
+|---|---|---|---|
+| `.db` / `.sqlite` | ✓ | ✓ | ✓ |
+| `.json` | ✓ | ✓ | ✓ |
+| `.xml` | ✓ | ✓ | ✓ |
+
+1. **Source:** the file with the data to move. Every SQLite table, and every list of records in JSON/XML (e.g. `users`, `catalog › book`), is found automatically.
+2. **Target:** your existing file. Or start an empty SQLite, JSON or XML target.
+3. **Map:** for each source table/collection, pick the target table/collection (or create a new one), and how to merge:
+   - **Update matching records, add the rest** (upsert, matched on a key such as `id` ↔ `@id`)
+   - **Add only records that aren't there yet**
+   - **Add every record**
+   - **Replace everything in the target collection**
+
+   Fields are matched by name (`created_at` = `createdAt`, `@id` = `id`). Unmatched fields can be added as new columns/fields, mapped by hand, or skipped.
+4. **Download** the updated target (same file name). **Use as target** lets you merge another source into the result.
+
+What's kept: in SQLite targets, the other tables, views, indexes, triggers, defaults and constraints are untouched (new columns are added with `ALTER TABLE`); only the mapped columns of matching rows are updated. In JSON targets, everything outside the migrated arrays is kept, and so is the indentation. Values are converted to the target's types (e.g. SQLite `0/1` → JSON `true/false`, JSON text in a SQLite cell → real arrays/objects, XML text → numbers). Leading zeros in XML (`01234`) are kept. Rows that break a constraint are skipped and listed in the report; nothing else is lost. XML targets are re-indented, and their comments aren't kept.
+
+Everything runs in the browser's background worker (`migrate.js` + the bundled sql.js), so no data is uploaded.
+
 ## Task tracker
 
 - **Quick add with smart parsing:** for example, `Fix login bug #backend @web !high tomorrow 45m every weekday`. This one line sets tags, a project, the priority, the due date, an estimate and a repeat rule.
@@ -84,7 +109,7 @@ DevHub uses **two GitHub repositories**. All code goes in the first one, and the
 .github/workflows/android.yml   builds the Android APK
 .github/workflows/pages.yml     optional GitHub Pages deploy
 icons/  vendor/  seed/          icons, bundled libraries, default links
-index.html  styles.css  config.js  app.js  tasks.js  worker.js  sw.js  manifest.webmanifest
+index.html  styles.css  config.js  app.js  tasks.js  worker.js  migrate.js  sw.js  manifest.webmanifest
 server.js                       the server Render runs
 render.yaml                     tells Render how to run it
 package.json  capacitor.config.json   used by the APK build
