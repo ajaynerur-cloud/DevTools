@@ -43,7 +43,7 @@ jobs:
           API_BASE_URL: ${{ vars.API_BASE_URL }}
         run: |
           mkdir _site
-          cp -r index.html styles.css offline-db.js app.js tasks.js worker.js sw.js manifest.webmanifest favicon.ico icons vendor seed _site/
+          cp -r index.html styles.css offline-db.js app.js tasks.js worker.js migrate.js sw.js manifest.webmanifest favicon.ico icons vendor seed _site/
           touch _site/.nojekyll
           if [ -z "$API_BASE_URL" ]; then echo "::warning::Set the repository variable API_BASE_URL to your Render URL so online sign-in works on Pages. Offline mode and tools work without it."; fi
           printf 'window.DEVHUB_CONFIG = { apiBase: %s };\n' "$(jq -Rn --arg u "${API_BASE_URL%/}" '$u')" > _site/config.js
