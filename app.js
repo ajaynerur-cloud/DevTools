@@ -178,6 +178,14 @@
     setMeta(m) { this.meta = m; m ? store.set('devhub:offline', m) : store.del('devhub:offline'); }
   };
   const FILE_TYPES = [{ description: 'Task database (DevHub or your own)', accept: { 'application/json': ['.json'], 'application/vnd.sqlite3': ['.sqlite', '.sqlite3', '.db', '.db3'], 'application/xml': ['.xml'] } }];
+  // A File from a picker only points at the file on disk; once that file changes (another app, a sync client, our own save)
+  // Chrome refuses to read it again. Always work from an in-memory copy of the bytes.
+  const snapshot = async f => new File([await f.arrayBuffer()], f.name || 'file', { type: f.type || '' });
+  const FILE_CHANGED = /InvalidStateError|NotReadableError|NoModificationAllowedError|state had changed|could not be read|modified/i;
+  const friendlySaveError = e => FILE_CHANGED.test(`${e.name} ${e.message}`)
+    ? 'the file was changed or locked by another program (for example the app that uses it, or OneDrive/Dropbox syncing it). Your changes are safe in this browser — press Save file to try again, or close the other program first.'
+    : e.message;
+  const sleep = ms => new Promise(r => setTimeout(r, ms));
   const slug = s => (s.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '') || 'devhub-tasks').slice(0, 40);
 
   function offlineStatus() {
@@ -198,7 +206,9 @@
     try {
       let blob;
       if (m.adapter && !as) {
-        const src = await idb.get('offline-source');
+        let src = null;
+        if (offline.handle) { try { if (await offline.handle.queryPermission({ mode: 'readwrite' }) === 'granted') src = await snapshot(await offline.handle.getFile()); } catch {} }
+        if (!src) { const kept = await idb.get('offline-source'); if (kept) { try { src = await snapshot(kept); } catch {} } }
         if (!src) throw new Error('the original file isn’t in this browser any more — open it again from the Database page');
         const res = await DevHubAdapter.write(src, data.docs, m.adapter.mapping);
         blob = res.blob; await idb.set('offline-source', blob); data.persist();
@@ -207,12 +217,15 @@
         let perm = await offline.handle.queryPermission({ mode: 'readwrite' });
         if (perm !== 'granted') perm = await offline.handle.requestPermission({ mode: 'readwrite' }).catch(() => 'denied');
         if (perm !== 'granted') { offline.needsPermission = true; return false; }
-        const w = await offline.handle.createWritable(); await w.write(blob); await w.close();
+        for (let attempt = 0; ; attempt++) {
+          try { const w = await offline.handle.createWritable(); await w.write(blob); await w.close(); break; }
+          catch (e) { if (attempt < 2 && FILE_CHANGED.test(`${e.name} ${e.message}`)) { await sleep(400 * (attempt + 1)); continue; } throw e; }
+        }
         offline.needsPermission = false;
       } else await saveBlob(blob, as ? m.fileName.replace(/\.[^.]+$/, '') + (m.adapter ? '-devhub' : '') + DevHubDB.ext(format) : m.fileName);
       if (!as) { m.fileDirty = false; m.savedAt = new Date().toISOString(); offline.setMeta(m); }
       return true;
-    } catch (e) { if (e.name !== 'AbortError') toast('Couldn’t save the database: ' + e.message); return false; }
+    } catch (e) { if (e.name !== 'AbortError') toast('Couldn’t save the database: ' + friendlySaveError(e)); return false; }
     finally { offline.saving = false; offlineStatus(); }
   }
   function markOfflineDirty() {
@@ -239,6 +252,7 @@
   const maps = { all() { return store.get('devhub:maps', {}); }, save(m) { const a = this.all(); a[m.fingerprint] = m; store.set('devhub:maps', a); } };
   let pendingCustom = null;
   async function openCustomFile(file, handle, next, { remap } = {}) {
+    file = await snapshot(file);
     const info = await DevHubAdapter.inspect(file);
     if (!info.collections.length) throw new Error(`No list of records was found in ${file.name}, so it can’t be used as a task list.`);
     const saved = !remap && Object.values(maps.all()).find(m => info.collections.some(c => m.collection === c.id && DevHubAdapter.fingerprint(info, c.id) === m.fingerprint));
@@ -248,8 +262,9 @@
     location.hash = 'mapfile';
   }
   async function activateCustom(file, handle, mapping, next) {
+    file = await snapshot(file);
     const r = await DevHubAdapter.read(file, mapping), now = new Date().toISOString();
-    await idb.set('offline-source', file.slice(0, file.size, file.type));
+    await idb.set('offline-source', file);
     const labels = DevHubAdapter.labels(mapping);
     activateOffline({ id: uid(), name: file.name.replace(/\.[^.]+$/, ''), format: mapping.fingerprint.split('|')[0], fileName: file.name, createdAt: now, savedAt: now, fileDirty: false,
       adapter: { mapping, labels, choices: r.choices, extraFields: r.extraFields } }, r.docs, handle);
@@ -259,6 +274,7 @@
   }
   // Copy your file's tasks into a NEW standard DevHub database (JSON or SQLite). The original file isn't changed.
   async function importCustom(file, mapping, format, name, next) {
+    file = await snapshot(file);
     const r = await DevHubAdapter.read(file, mapping), docs = r.docs, now = new Date().toISOString();
     for (const t of docs.tasks.tasks) { delete t._key; delete t._base; delete t._fbase; delete t._gone; if (t.fields && !Object.keys(t.fields).length) delete t.fields; }
     try { docs.links = await fetch('seed/links.json').then(x => x.json()); } catch {}
@@ -643,7 +659,7 @@
         $('[data-prog]', el).hidden = true; busy = false;
         if (pending) { pending = false; inspectAll(); }
       }
-      const pick = side => x => { files[side] = x; info[side] = null; $(`[data-info="${side}"]`, el).textContent = ''; inspectAll(); };
+      const pick = side => async x => { if (x && x.size) { try { x = { ...x, blob: await snapshot(x.blob) }; } catch (e) { toast('Couldn’t read ' + x.name + ': ' + e.message); return; } } files[side] = x; info[side] = null; $(`[data-info="${side}"]`, el).textContent = ''; inspectAll(); };
       fileSource($('[data-side="src"]', el), { accept: MIG_ACCEPT, onFile: pick('src') });
       const dstSrc = fileSource($('[data-side="dst"]', el), { accept: MIG_ACCEPT, onFile: pick('dst') });
       el.querySelectorAll('[data-new]').forEach(b => b.onclick = () => {
