@@ -42,41 +42,23 @@ The developer tools never need either; they always work without signing in.
   - **JSON** is readable text you can keep in Git.
   - **SQLite** is a real database you can query with DB Browser for SQLite, `sqlite3` or DBeaver. It has tables `tasks`, `projects`, `links`, `settings` and `meta`, plus an `open_tasks` view.
 - **Open database file:** choose a `.json`, `.sqlite`, `.db` or `.xml` file from your computer, phone or tablet: a DevHub database, or your own task file (see below).
-- **How saving works:**
-  - **Chrome or Edge on a computer:** you pick where the file lives, and every change is saved into it automatically.
-  - **Phones, tablets, Firefox, Safari and the Android app:** your database is kept in the browser while you work, so nothing is lost on reload. Press **Save file** to write a copy to Downloads or Files (in the Android app, it opens the share sheet). The status line shows whether the file is up to date.
+- **How saving works:** there's always exactly one database, saved automatically. DevHub never creates extra copies.
+
+  | Where you use DevHub | Where the database is saved |
+  |---|---|
+  | Chrome or Edge on a computer | The file you choose once. Every change is saved into that same file. |
+  | Android app | `Documents/DevHub/<name>.sqlite` on the device, overwritten in place on every save |
+  | Firefox, Safari, phone browsers | Inside the browser, because these browsers can't write into a file on your device. Use **Download backup** when you want a file, and keep one somewhere safe, because clearing the browser's data removes the database. |
+
 - **The Database page** (bottom tab on phones, your name chip on desktop) shows file details. You can download the data as JSON or SQLite to convert between them, switch files, or close the database and sign in instead.
 
-### Use your own task file (offline)
+### Migrate an existing task file (offline)
 
-"Open database file" also accepts **any** task list you already have: a `.db`/`.sqlite` from another app, a `.json` or an `.xml`. It doesn't need to be a DevHub database.
+"Open database file" also accepts a task list you already have: a `.db`/`.sqlite` from another app, a `.json` or an `.xml`.
 
-When you open one, choose **how** to use it. Both options share the same field and value mapping:
-
-| | Work on my file directly | Import into a DevHub database |
-|---|---|---|
-| What happens | The tracker adapts to your file; the first save creates your own copy (DevHub database or same layout) | Tasks are copied into a new standard DevHub `.json` or `.sqlite` |
-| Your original file | Only read, never changed | Not changed |
-| Labels | Your own words (e.g. "Completed") | DevHub's (To do · In progress · Done) |
-| Extra fields (e.g. `rag`) | Kept in your copy | Kept in the DevHub database |
-| Subtasks, timers, repeat | Kept on this device | Stored in the file |
-| Next time | Open the file you saved to | Asks again, with your mapping prefilled |
-
-An own-file database can also be converted later: Database → **Import into a DevHub database**.
-
-1. **Set up your file** (first time only). DevHub finds the table or list that holds your tasks and suggests which of your fields is the title, status, priority, due date, project, notes, tags and dates. For example, `description` becomes Notes, `due_date` becomes Due date, and `created` becomes Created. It also asks what your status and priority values mean, for example `Completed` = Done and `In Progress` = In progress. You can change any of these.
-2. **The whole tracker works on it:** Today, Upcoming, Board, All tasks, Insights, timers and quick-add.
-   - Board columns and priorities use your file's own words (e.g. "Not Started · In Progress · Completed").
-   - Project names become projects.
-   - Fields DevHub has no place for (e.g. `rag`, `reminder`) show as chips and can be edited under **More fields** in each task.
-3. **Your original file is only read, never written.** That way the other program that uses it can't lock DevHub out, and the original stays exactly as it was. The **first save** asks you to choose DevHub's own file, and you open that file from then on:
-   - **DevHub database** (recommended, `.sqlite` or `.json`): migrates everything. Subtasks, timers and repeats are stored in the file, and extra fields like `rag` are kept. From then on it's a normal DevHub database.
-   - **Copy in the same layout** (e.g. `tasks-devhub.db`): the same tables and fields as the original, so your other app could still read it, and DevHub keeps using your own words. Only the fields you change are written, and values follow the file's style (`Completed`, `true`, `30/09/2026`…).
-   - On Chrome/Edge desktop, you pick where the new file goes, and every later change saves into it automatically. On phones and other browsers, it's downloaded, and **Save file** downloads an updated copy.
-   - If a save ever can't write to the file, automatic saving pauses and **Save file** reconnects the file or downloads a copy. No change counts as saved until it's really in a file.
-4. **Remembered on this device.** The mapping is saved for files with the same layout, so the next time you open the file it goes straight to your tasks. To change it, use Database → **Change field mapping**. Subtasks, timers and repeat rules your file has no column for are also kept on this device.
-
-To move a file like this fully into DevHub's own format, use Database → Download as JSON/SQLite. You can also use the **Data migrator** tool.
+1. **Map it once.** DevHub finds the table or list that holds your tasks and suggests which field is the title, status, priority, due date, project, notes and dates. For example, `description` becomes Notes and `due_date` becomes Due date. It also asks what your status and priority values mean, e.g. `Completed` = Done and `In Progress` = In progress. Fields DevHub has no place for (e.g. `rag`, `reminder`) are kept and editable in each task.
+2. **Migrate.** Your tasks are copied into **one** new DevHub database (SQLite or JSON). The original file is never changed or locked, and the mapping is remembered for next time.
+3. **From then on, there's one database.** DevHub saves automatically into the same place every time and never creates copies.
 
 **Moving between modes**
 - **Offline to online:** sign in, then use Account → Import backup with your `.json` or `.sqlite` file.

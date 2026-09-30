@@ -188,19 +188,29 @@
   const sleep = ms => new Promise(r => setTimeout(r, ms));
   const slug = s => (s.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '') || 'devhub-tasks').slice(0, 40);
 
+  // ---------- where the offline database is saved: ONE file, never copies ----------
+  //  'file'    Chrome/Edge on a computer: the file you chose once, saved in place every time
+  //  'device'  Android app: Documents/DevHub/<name>, overwritten on every save
+  //  'browser' Firefox/Safari/phone browsers can't write into a file in place, so the database is kept in the browser;
+  //            a file is only made when you press Download backup
+  const hasDeviceFs = () => isNative() && !!(window.Capacitor && window.Capacitor.Plugins && window.Capacitor.Plugins.Filesystem);
+  const target = () => offline.handle ? 'file' : hasDeviceFs() ? 'device' : 'browser';
+  const devicePath = m => 'DevHub/' + m.fileName;
+  const whereSaved = (m, tg = target()) => tg === 'file' ? m.fileName : tg === 'device' ? `${m.deviceDir === 'DATA' ? 'DevHub app storage' : 'Documents'}/${devicePath(m)}` : 'this browser';
+
   function offlineStatus() {
     const m = offline.meta; if (!m || session.user) return;
+    const tg = target(), when = m.savedAt ? new Date(m.savedAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : '';
     let text, cls = '';
-    if (offline.saving) { text = 'Saving to file…'; cls = 'busy'; }
+    if (offline.saving) { text = 'Saving…'; cls = 'busy'; }
     else if (offline.needsPermission) { text = 'Press Save to reconnect the file'; cls = 'err'; }
-    else if (m.adapter && !m.adapter.ownCopy && m.fileDirty) { text = 'Not saved yet · press Save to create your copy'; cls = 'busy'; }
-    else if (offline.writeFailed && m.fileDirty) { text = 'Couldn’t write to the file · press Save file'; cls = 'err'; }
-    else if (m.fileDirty) { text = offline.handle ? 'Unsaved changes…' : 'Kept in this browser · not in file yet'; cls = offline.handle ? 'busy' : ''; }
-    else text = m.savedAt ? `Saved to file ${new Date(m.savedAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}` : 'Ready';
+    else if (offline.writeFailed && m.fileDirty) { text = 'Couldn’t write to the file · press Save'; cls = 'err'; }
+    else if (m.fileDirty) { text = 'Saving soon…'; cls = 'busy'; }
+    else text = tg === 'browser' ? 'Saved in this browser' : when ? `Saved ${when}` : 'Ready';
     setStatus(text, cls);
-    document.querySelectorAll('[data-save-db]').forEach(b => b.hidden = !(m.fileDirty || offline.needsPermission || offline.writeFailed));
+    document.querySelectorAll('[data-save-db]').forEach(b => b.hidden = !(offline.needsPermission || (offline.writeFailed && m.fileDirty)));
   }
-  // Write a blob into the connected file. Retries briefly, and always releases a half-finished write so it can't block the next one.
+  // Write a blob into the chosen file. Retries briefly and always releases a half-finished write.
   async function writeToHandle(h, blob) {
     let last;
     for (let attempt = 0; attempt < 3; attempt++) {
@@ -210,138 +220,64 @@
     }
     throw last;
   }
-  const PICK_TYPES = f => f === 'sqlite' ? [{ description: 'SQLite database', accept: { 'application/vnd.sqlite3': ['.db', '.sqlite', '.sqlite3', '.db3'] } }]
-    : f === 'xml' ? [{ description: 'XML file', accept: { 'application/xml': ['.xml'] } }] : [{ description: 'JSON file', accept: { 'application/json': ['.json'] } }];
+  const PICK_TYPES = f => f === 'sqlite' ? [{ description: 'SQLite database', accept: { 'application/vnd.sqlite3': ['.sqlite', '.db', '.sqlite3', '.db3'] } }] : [{ description: 'JSON database', accept: { 'application/json': ['.json'] } }];
+  // Android app: overwrite the same file in Documents/DevHub (falls back to the app's own storage if Documents isn't writable)
+  async function writeDevice(blob, m) {
+    const { Filesystem } = window.Capacitor.Plugins, CH = 3 * 1024 * 1024;
+    const put = async directory => {
+      for (let i = 0; i < blob.size || i === 0; i += CH) {
+        const data = await blobToBase64(blob.slice(i, i + CH));
+        await (i === 0 ? Filesystem.writeFile({ path: devicePath(m), data, directory, recursive: true }) : Filesystem.appendFile({ path: devicePath(m), data, directory }));
+        if (!blob.size) break;
+      }
+    };
+    try { await put(m.deviceDir || 'DOCUMENTS'); m.deviceDir ||= 'DOCUMENTS'; }
+    catch (e) { if (m.deviceDir === 'DATA') throw e; await put('DATA'); m.deviceDir = 'DATA'; }
+  }
 
-  // manual = the person pressed Save (so we may show a file picker / download as a fallback); autosave never does
+  // as = 'json' | 'sqlite' → download a backup copy (only ever on request). Otherwise save to the one database file.
+  // manual = the person pressed Save (so a file picker may be shown to reconnect); autosave never shows anything.
   async function saveOffline({ as, manual } = {}) {
     const m = offline.meta; if (!m) return false;
-    if (m.adapter && !m.adapter.ownCopy && !as) return manual ? migrateOnSave() : false; // never write into the original
     if (offline.saving && !as) {
       if (!manual) { clearTimeout(offline.timer); offline.timer = setTimeout(() => saveOffline(), 500); return false; }
-      for (let i = 0; offline.saving && i < 100; i++) await sleep(100); // a Save press waits for the save already running
+      for (let i = 0; offline.saving && i < 100; i++) await sleep(100);
       if (offline.saving) return false;
     }
-    const format = as || m.format, rev = offline.rev || 0;
+    const tg = target(), rev = offline.rev || 0;
+    if (!as && tg === 'browser') { data.persist(); m.fileDirty = false; m.savedAt = new Date().toISOString(); offline.setMeta(m); offlineStatus(); return true; } // already stored in the browser
     offline.saving = true; offlineStatus();
     try {
-      let blob, commit = () => {};
-      if (m.adapter && !as) {
-        let src = null;
-        if (offline.handle) { try { if (await offline.handle.queryPermission({ mode: 'readwrite' }) === 'granted') { const f = await offline.handle.getFile(); if (f.size) src = await snapshot(f); } } catch {} }
-        if (!src) { const kept = await idb.get('offline-source'); if (kept) { try { src = await snapshot(kept); } catch {} } }
-        if (!src) throw new Error('the original file isn’t in this browser any more — open it again from the Database page');
-        // Work on a copy: the file only counts as saved once the write really succeeded, so a failed write can't lose changes
-        const work = JSON.parse(JSON.stringify(data.docs));
-        const res = await DevHubAdapter.write(src, work, m.adapter.mapping);
-        blob = res.blob;
-        commit = async () => {
-          const byId = new Map(work.tasks.tasks.map(t => [t.id, t]));
-          for (const t of data.docs.tasks.tasks) { const w = byId.get(t.id); if (!w) continue; for (const k of ['_key', '_gone']) t[k] = w[k];
-            // only mark fields as written if they haven't been edited again while saving
-            if (JSON.stringify({ ...t, _key: 0, _base: 0, _fbase: 0, _gone: 0 }) === JSON.stringify({ ...w, _key: 0, _base: 0, _fbase: 0, _gone: 0 })) { t._base = w._base; t._fbase = w._fbase; } }
-          await idb.set('offline-source', new File([blob], m.fileName, { type: blob.type })); data.persist();
-        };
-      } else blob = await DevHubDB.encode(format, data.docs, m);
-
-      if (as || !offline.handle) {
-        await saveBlob(blob, as ? m.fileName.replace(/\.[^.]+$/, '') + (m.adapter ? '-devhub' : '') + DevHubDB.ext(format) : m.fileName);
-      } else {
+      const blob = await DevHubDB.encode(as || m.format, data.docs, m);
+      if (as) { await saveBlob(blob, m.fileName.replace(/\.[^.]+$/, '') + DevHubDB.ext(as)); return true; }
+      if (tg === 'file') {
         let perm = await offline.handle.queryPermission({ mode: 'readwrite' });
-        if (perm !== 'granted') perm = await offline.handle.requestPermission({ mode: 'readwrite' }).catch(() => 'denied');
+        if (perm !== 'granted') perm = manual ? await offline.handle.requestPermission({ mode: 'readwrite' }).catch(() => 'denied') : perm;
         if (perm !== 'granted') { offline.needsPermission = true; return false; }
         try { await writeToHandle(offline.handle, blob); }
         catch (e) {
           if (e.name === 'AbortError') throw e;
-          if (!manual) { offline.writeFailed = true; offline.lastWriteError = e; return false; } // autosave: pause quietly, the status line says what to do
-          // 1) reconnect: choose the file again (fixes a stale connection, e.g. after the file was replaced or the page reloaded)
+          if (!manual) { offline.writeFailed = true; return false; } // autosave: pause quietly; the status line says what to do
+          // Reconnect by choosing the SAME file again — it's replaced, never duplicated
+          toast(`Couldn’t write to ${m.fileName}. Choose it again to reconnect.`);
           let h2 = null;
-          if (canFSA()) {
-            toast('DevHub couldn’t write to ' + m.fileName + '. Choose the file again to reconnect it.');
-            try { h2 = await window.showSaveFilePicker({ suggestedName: m.fileName, types: PICK_TYPES(m.format), startIn: offline.handle }); } catch (x) { if (x.name !== 'AbortError') h2 = null; }
-          }
-          let ok = false;
-          if (h2) { try { await writeToHandle(h2, blob); ok = true; offline.handle = h2; idb.set('offline-handle', h2); m.fileName = h2.name; } catch (e2) { e = e2; } }
-          if (!ok) { // 2) the file is locked by another program: hand over a downloaded copy instead
-            await saveBlob(blob, m.fileName);
-            offline.handle = null; idb.del('offline-handle'); offline.writeFailed = false;
-            toast(`Windows wouldn’t let DevHub write into ${m.fileName}${/InvalidState|NoModification|locked|state had changed/i.test(`${e.name} ${e.message}`) ? ' — it’s probably open in another program (or OneDrive is syncing it)' : ''}. An updated copy was downloaded instead: close the other program and replace the file with it. Later saves also download a copy; use Database → Reconnect file to save directly again.`);
-            await sleep(0);
-          }
+          try { h2 = await window.showSaveFilePicker({ suggestedName: m.fileName, types: PICK_TYPES(m.format), startIn: offline.handle }); } catch {}
+          if (!h2) { offline.writeFailed = true; toast('Not written to the file yet — your changes are safe in this browser. ' + friendlySaveError(e)); return false; }
+          await writeToHandle(h2, blob); offline.handle = h2; idb.set('offline-handle', h2); m.fileName = h2.name;
         }
-        offline.needsPermission = false; offline.writeFailed = false; offline.lastWriteError = null;
-      }
-      if (!as) {
-        await commit(); m.savedAt = new Date().toISOString();
-        m.fileDirty = (offline.rev || 0) !== rev; // edited again while saving → save once more
-        offline.setMeta(m);
-        if (m.fileDirty && offline.handle && !offline.writeFailed) { clearTimeout(offline.timer); offline.timer = setTimeout(() => saveOffline(), 700); }
-      }
+        offline.needsPermission = false; offline.writeFailed = false;
+      } else await writeDevice(blob, m);
+      m.savedAt = new Date().toISOString();
+      m.fileDirty = (offline.rev || 0) !== rev; // edited again while saving → save once more
+      offline.setMeta(m);
+      if (m.fileDirty) { clearTimeout(offline.timer); offline.timer = setTimeout(() => saveOffline(), 700); }
       return true;
     } catch (e) { if (e.name !== 'AbortError') toast('Couldn’t save the database: ' + friendlySaveError(e)); return false; }
-    finally { offline.saving = false; if (offline.meta && !session.user) renderNavUser(); offlineStatus(); }
-  }
-  // First save of an existing file: pick what DevHub's own file should be. The original is left exactly as it was.
-  function migrateOnSave() {
-    const m = offline.meta, A = m.adapter, base = m.fileName.replace(/\.[^.]+$/, ''), ext = (m.fileName.match(/\.[^.]+$/) || ['.' + m.format])[0];
-    let dlg = $('#migDlg'); if (!dlg) { dlg = document.createElement('dialog'); dlg.id = 'migDlg'; dlg.className = 'tk-dialog mig-dlg'; document.body.appendChild(dlg); }
-    dlg.innerHTML = `<form method="dialog">
-      <header class="dr-top"><h2>Save to your own file</h2><button class="ghost dr-x" value="cancel" aria-label="Close">✕</button></header>
-      <p class="hint">DevHub only reads <b>${esc(A.original)}</b> — it never writes into it, so the other program that uses it can’t lock DevHub out, and the original stays exactly as it was. Choose the file DevHub saves to; <b>open that file next time</b>.</p>
-      <fieldset class="fmt mig-choice">
-        <label class="fmt-opt"><input type="radio" name="kind" value="devhub" checked><span><b>DevHub database</b> <span class="chip">recommended</span><small>Migrates everything. Subtasks, timers and repeats are stored in the file; your extra fields (${esc(A.extraFields.join(', ') || 'none')}) are kept.</small></span></label>
-        <label class="fmt-opt"><input type="radio" name="kind" value="copy"><span><b>Copy in the same layout</b><small>Same tables and fields as ${esc(A.original)}, so your other app could still read it. DevHub keeps using your own words.</small></span></label>
-      </fieldset>
-      <div class="opt-grid mig-devhub">
-        <label>Name<input name="name" value="${esc(base)}" maxlength="60"></label>
-        <label>Format<select name="format"><option value="sqlite" ${m.format === 'sqlite' ? 'selected' : ''}>SQLite — a real database</option><option value="json" ${m.format !== 'sqlite' ? 'selected' : ''}>JSON — readable text</option></select></label>
-      </div>
-      <p class="hint mig-copy" hidden>Saved as <b class="mono">${esc(base)}-devhub${esc(ext)}</b>${canFSA() ? ' (you can change the name next)' : ''}.</p>
-      <div class="row action-bar"><button class="primary" value="go">Save</button><button value="cancel" class="ghost">Not now</button></div></form>`;
-    const f = $('form', dlg), sync = () => { const dh = f.kind.value === 'devhub'; $('.mig-devhub', dlg).hidden = !dh; $('.mig-copy', dlg).hidden = dh; };
-    f.kind.forEach(r => r.onchange = sync); sync();
-    return new Promise(resolve => {
-      dlg.onclose = async () => {
-        if (dlg.returnValue !== 'go') return resolve(false);
-        try { resolve(f.kind.value === 'devhub' ? await migrateToDevHub(f.name.value.trim() || base, f.format.value) : await saveOwnCopy(`${base}-devhub${ext}`)); }
-        catch (e) { if (e.name !== 'AbortError') toast('Couldn’t save: ' + e.message); resolve(false); }
-      };
-      dlg.returnValue = ''; dlg.showModal();
-    });
-  }
-  // Option 1: continue in a standard DevHub database (all current edits included)
-  async function migrateToDevHub(name, format) {
-    const m = offline.meta, docs = JSON.parse(JSON.stringify(data.docs)), now = new Date().toISOString(), from = m.adapter.original;
-    for (const t of docs.tasks.tasks) { delete t._key; delete t._base; delete t._fbase; delete t._gone; if (t.fields && !Object.keys(t.fields).length) delete t.fields; }
-    docs.tasks.tasks = docs.tasks.tasks.filter(t => !t.deleted);
-    if (!(docs.links || []).length) { try { docs.links = await fetch('seed/links.json').then(x => x.json()); } catch {} }
-    if (format === 'sqlite') await DevHubDB.loadSql();
-    const meta = { id: uid(), name, format, fileName: slug(name) + DevHubDB.ext(format), createdAt: now, savedAt: null, fileDirty: true, migratedFrom: from };
-    let handle = null;
-    if (canFSA()) { handle = await window.showSaveFilePicker({ suggestedName: meta.fileName, types: PICK_TYPES(format) }); meta.fileName = handle.name; } // AbortError → cancelled
-    activateOffline(meta, docs, handle); idb.del('offline-source');
-    const ok = await saveOffline({ manual: true });
-    if (ok) { toast(`Saved to ${meta.fileName} — a DevHub database. Open it next time; ${from} was left unchanged.`); render(); }
-    return ok;
-  }
-  // Option 2: continue on a copy in the file's own layout, which DevHub then owns and writes directly
-  async function saveOwnCopy(name) {
-    const m = offline.meta, A = m.adapter;
-    let handle = null;
-    if (canFSA()) { handle = await window.showSaveFilePicker({ suggestedName: name, types: PICK_TYPES(m.format) }); name = handle.name; }
-    if (handle && name === A.original) { toast(`Choose a new name — DevHub doesn’t write into ${A.original} itself.`); return false; }
-    const prev = { original: A.original, fileName: m.fileName };
-    A.ownCopy = true; m.fileName = name; offline.setMeta(m);
-    offline.handle = handle; handle ? idb.set('offline-handle', handle) : idb.del('offline-handle');
-    const ok = await saveOffline({ manual: true });
-    if (!ok) { A.ownCopy = false; A.original = prev.original; m.fileName = prev.fileName; offline.setMeta(m); offline.handle = null; idb.del('offline-handle'); return false; }
-    const mp = A.mapping; mp.ownCopies = [...new Set([...(mp.ownCopies || []), name])]; maps.save(mp); offline.setMeta(m);
-    toast(`Saved to ${name}. Open it next time — ${prev.original} was left unchanged.`); renderNavUser(); render();
-    return true;
+    finally { offline.saving = false; offlineStatus(); }
   }
   function markOfflineDirty() {
     const m = offline.meta; m.fileDirty = true; offline.rev = (offline.rev || 0) + 1; offline.setMeta(m);
-    if (offline.handle && !offline.needsPermission && !offline.writeFailed) { clearTimeout(offline.timer); offline.timer = setTimeout(() => saveOffline(), 700); }
+    if (!offline.needsPermission && !offline.writeFailed) { clearTimeout(offline.timer); offline.timer = setTimeout(() => saveOffline(), 700); }
     offlineStatus();
   }
   function activateOffline(meta, docs, handle) {
@@ -352,57 +288,47 @@
     renderNavUser(); offlineStatus();
   }
   async function closeOffline() {
-    if (offline.meta?.fileDirty) {
-      if (confirm('Some changes aren’t in the database file yet. Save the file first?')) { if (!(await saveOffline({ manual: true }))) return false; }
-      else if (!confirm('Close without saving? Changes since your last save will be lost.')) return false;
+    const m = offline.meta;
+    if (m && target() === 'browser') { // closing removes the only copy from the browser
+      if (confirm(`Closing removes “${m.name}” from this browser. Download a backup first?`)) { if (!(await saveOffline({ as: m.format }))) return false; }
+      else if (!confirm('Close without a backup? The tasks will be gone from this browser.')) return false;
+    } else if (m?.fileDirty) {
+      if (!(await saveOffline({ manual: true })) && !confirm('The latest changes couldn’t be saved to the file. Close anyway and lose them?')) return false;
     }
     clearTimeout(offline.timer); data.wipe('offline'); data.docs = {}; offline.setMeta(null); offline.handle = null; idb.del('offline-handle'); idb.del('offline-source'); renderNavUser();
     return true;
   }
-  // ---------- your own file (any .db / .json / .xml) as the task list ----------
+  // Where a new/migrated database goes: pick the file once on Chrome/Edge; fixed file on Android; browser elsewhere
+  async function chooseTarget(meta) {
+    if (!canFSA()) return null;
+    const h = await window.showSaveFilePicker({ suggestedName: meta.fileName, types: PICK_TYPES(meta.format) }); // AbortError = cancelled
+    meta.fileName = h.name; return h;
+  }
+  const savedWhereMsg = m => { const tg = target(); return tg === 'file' ? `DevHub saves into ${m.fileName} from now on` : tg === 'device' ? `saved on this device as ${whereSaved(m, tg)}` : 'saved in this browser — use Database → Download backup to keep a file'; };
+
+  // ---------- an existing file that isn't a DevHub database: map its fields once, then migrate ----------
   const maps = { all() { return store.get('devhub:maps', {}); }, save(m) { const a = this.all(); a[m.fingerprint] = m; store.set('devhub:maps', a); } };
   let pendingCustom = null;
-  async function openCustomFile(file, handle, next, { remap } = {}) {
+  async function openCustomFile(file, next) {
     file = await snapshot(file);
     const info = await DevHubAdapter.inspect(file);
-    if (!info.collections.length) throw new Error(`No list of records was found in ${file.name}, so it can’t be used as a task list.`);
-    const saved = !remap && Object.values(maps.all()).find(m => info.collections.some(c => m.collection === c.id && DevHubAdapter.fingerprint(info, c.id) === m.fingerprint));
-    if (saved && saved.mode !== 'import') return activateCustom(file, handle, saved, next);
-    const mapping = (remap && offline.meta?.adapter?.mapping) || (saved ? JSON.parse(JSON.stringify(saved)) : DevHubAdapter.guess(info));
-    pendingCustom = { file, handle, info, next, mapping, mode: remap === 'import' ? 'import' : mapping.mode || 'adapt', impFormat: 'json', impName: file.name.replace(/\.[^.]+$/, '') };
+    if (!info.collections.length) throw new Error(`No list of records was found in ${file.name}, so it can’t be migrated as tasks.`);
+    const saved = Object.values(maps.all()).find(m => info.collections.some(c => m.collection === c.id && DevHubAdapter.fingerprint(info, c.id) === m.fingerprint));
+    pendingCustom = { file, info, next, mapping: saved ? JSON.parse(JSON.stringify(saved)) : DevHubAdapter.guess(info), impFormat: 'sqlite', impName: file.name.replace(/\.[^.]+$/, '') };
     location.hash = 'mapfile';
   }
-  async function activateCustom(file, handle, mapping, next) {
-    file = await snapshot(file);
-    const r = await DevHubAdapter.read(file, mapping), now = new Date().toISOString();
-    await idb.set('offline-source', file);
-    const labels = DevHubAdapter.labels(mapping);
-    // The original file is only READ (so another program can keep it open without locking problems).
-    // The first save creates a file DevHub owns; copies DevHub made itself are written directly.
-    const ownCopy = (mapping.ownCopies || []).includes(file.name);
-    activateOffline({ id: uid(), name: file.name.replace(/\.[^.]+$/, ''), format: mapping.fingerprint.split('|')[0], fileName: file.name, createdAt: now, savedAt: now, fileDirty: false,
-      adapter: { mapping, labels, choices: r.choices, extraFields: r.extraFields, ownCopy, original: ownCopy ? null : file.name } }, r.docs, ownCopy ? handle : null);
-    const n = r.docs.tasks.tasks.length, done = r.docs.tasks.tasks.filter(t => t.status === 'done').length;
-    toast(`Opened ${file.name} · ${n} task${n === 1 ? '' : 's'}, ${done} done${ownCopy ? '' : ' · the original is only read — your first save creates your own copy'}`);
-    location.hash = next || 'tasks';
-  }
-  // Copy your file's tasks into a NEW standard DevHub database (JSON or SQLite). The original file isn't changed.
-  async function importCustom(file, mapping, format, name, next) {
-    file = await snapshot(file);
+  // Migrate: copy the tasks into ONE new DevHub database. The original file isn't changed.
+  async function migrateFile(file, mapping, format, name, next) {
     const r = await DevHubAdapter.read(file, mapping), docs = r.docs, now = new Date().toISOString();
     for (const t of docs.tasks.tasks) { delete t._key; delete t._base; delete t._fbase; delete t._gone; if (t.fields && !Object.keys(t.fields).length) delete t.fields; }
     try { docs.links = await fetch('seed/links.json').then(x => x.json()); } catch {}
     if (format === 'sqlite') await DevHubDB.loadSql();
-    const meta = { id: uid(), name, format, fileName: slug(name) + DevHubDB.ext(format), createdAt: now, savedAt: null, fileDirty: true };
-    let handle = null;
-    if (canFSA()) {
-      try { handle = await window.showSaveFilePicker({ suggestedName: meta.fileName, types: [format === 'sqlite' ? { description: 'SQLite database', accept: { 'application/vnd.sqlite3': ['.sqlite', '.db'] } } : { description: 'JSON database', accept: { 'application/json': ['.json'] } }] }); meta.fileName = handle.name; }
-      catch (x) { if (x.name === 'AbortError') return false; handle = null; }
-    }
+    const meta = { id: uid(), name, format, fileName: slug(name) + DevHubDB.ext(format), createdAt: now, savedAt: null, fileDirty: true, migratedFrom: file.name };
+    let handle; try { handle = await chooseTarget(meta); } catch (x) { if (x.name === 'AbortError') return false; throw x; }
     activateOffline(meta, docs, handle);
+    await saveOffline({ manual: true });
     const n = docs.tasks.tasks.length, done = docs.tasks.tasks.filter(t => t.status === 'done').length;
-    if (handle) await saveOffline();
-    toast(`Imported ${n} task${n === 1 ? '' : 's'} (${done} done) into “${name}”${handle ? '' : ' — press Save file to keep a copy'}`);
+    toast(`Migrated ${n} task${n === 1 ? '' : 's'} (${done} done) into “${name}” — ${savedWhereMsg(offline.meta)}. ${file.name} wasn’t changed.`);
     location.hash = next || 'tasks';
     return true;
   }
@@ -411,11 +337,12 @@
   async function openDbFile(file, handle, next) {
     let r;
     try { r = await DevHubDB.decode(file); }
-    catch (e) { if (isDevHubError(e)) return openCustomFile(file, handle, next); throw e; }
+    catch (e) { if (isDevHubError(e)) return openCustomFile(file, next); throw e; }
     const now = new Date().toISOString();
     activateOffline({ id: uid(), name: r.name, format: r.format, fileName: file.name, createdAt: r.createdAt || now, savedAt: now, fileDirty: false }, r.docs, handle);
+    if (target() === 'device') await saveOffline(); // Android: keep it as the one file in Documents/DevHub
     const n = r.docs.tasks.tasks.filter(t => !t.deleted).length;
-    toast(`Opened “${r.name}” · ${n} task${n === 1 ? '' : 's'}`);
+    toast(`Opened “${r.name}” · ${n} task${n === 1 ? '' : 's'} — ${savedWhereMsg(offline.meta)}`);
     location.hash = next || 'tasks';
   }
   async function pickDbFile(input) {
@@ -1324,7 +1251,7 @@
         </section>
         <section class="start-card">
           <div class="start-ico">${ICON_DB}</div><h2>Offline</h2>
-          <p>No account. Your tasks live in a file on this device — a DevHub database, or <b>your own</b> .db, .json or .xml task file (work on it directly, or import it into DevHub).</p>
+          <p>No account. Your tasks live in one database on this device. Open a DevHub database, or an existing .db / .json / .xml task file to migrate it once.</p>
           <ul class="ticks"><li>Works without internet</li><li>You own the file — copy it, back it up, open it in other tools</li><li class="minus">No automatic sync; move the file yourself</li></ul>
           <div class="start-actions"><button class="primary" id="stNew">Create new database</button><button id="stOpen">Open database file</button></div>
           <input type="file" id="stFile" hidden ${accept}>
@@ -1348,7 +1275,7 @@
           <label class="fmt-opt"><input type="radio" name="format" value="json" checked><span><b>JSON</b><small>Readable text. Easy to look inside, edit or keep in Git.</small></span></label>
           <label class="fmt-opt"><input type="radio" name="format" value="sqlite"><span><b>SQLite</b><small>A real database. Query it with DB Browser for SQLite, sqlite3 or DBeaver.</small></span></label>
         </fieldset>
-        <p class="hint">${canFSA() ? 'Next you’ll choose where to save the file. After that, every change is saved into it automatically.' : 'While you work, your database is kept in this browser. Tap “Save file” any time to save a copy — to Downloads on a computer, or to Files on a phone or tablet.'}</p>
+        <p class="hint">${canFSA() ? 'Next you’ll choose where to save the file. After that, every change is saved into that same file automatically.' : hasDeviceFs() ? 'It’s saved on this device in Documents/DevHub, and every change updates that same file automatically.' : 'It’s saved inside this browser automatically (this browser can’t write into a file on your device). Use Database → Download backup whenever you want a file.'}</p>
         <p class="form-err" role="alert" hidden></p>
         <div class="row"><button class="primary">Create database</button><button type="button" class="ghost" id="stCancel">Cancel</button></div></form>`;
       panel.scrollIntoView({ behavior: 'smooth', block: 'start' }); $('#dbName').focus(); $('#dbName').select();
@@ -1370,13 +1297,8 @@
             catch (x) { if (x.name === 'AbortError') { btn.disabled = false; btn.textContent = 'Create database'; return; } handle = null; }
           }
           activateOffline(meta, docs, handle);
-          if (handle && await saveOffline()) { toast(`Created “${name}” — changes save to ${meta.fileName} automatically`); location.hash = next; return; }
-          panel.innerHTML = `<div class="ready"><span class="ready-ico" aria-hidden="true">✓</span><div><h2>“${esc(name)}” is ready</h2>
-            <p>Your database is kept in this browser, so nothing is lost if you close the page. Save the file now to have a copy on your device, or start adding tasks and save later.</p>
-            <div class="row"><button class="primary" id="stGo">Continue to tasks</button><button id="stDl">Save file now</button></div></div></div>`;
-          $('#stGo').onclick = () => location.hash = next;
-          $('#stDl').onclick = () => saveOffline({ manual: true });
-          $('#stGo').focus();
+          await saveOffline({ manual: true });
+          toast(`Created “${name}” — ${savedWhereMsg(offline.meta)}`); location.hash = next;
         } catch (x) { ferr.textContent = x.message; ferr.hidden = false; btn.disabled = false; btn.textContent = 'Create database'; }
       };
     };
@@ -1386,55 +1308,48 @@
   const plural = (n, w) => `${n} ${w}${n === 1 ? '' : 's'}`;
   function renderOfflineDb() {
     const m = offline.meta, t = data.get('tasks') || {}, tasks = (t.tasks || []).filter(x => !x.deleted), links = (data.get('links') || []).filter(x => !x.deleted);
-    const A = m.adapter, R = A && A.mapping.roles, roleName = Object.fromEntries(DevHubAdapter.ROLES.map(([k, l]) => [k, l]));
-    view().innerHTML = `${syncLine()}<h1>Offline database</h1><p class="lede">Your tasks and links are stored in a file on this device. No account needed.</p>
+    const tg = target();
+    const saving = tg === 'file' ? `Automatic — every change is saved into <b class="mono">${esc(m.fileName)}</b> (the same file, never a copy)`
+      : tg === 'device' ? `Automatic — every change is saved into <b class="mono">${esc(whereSaved(m, tg))}</b> on this device (the same file, never a copy)`
+      : 'Automatic — saved inside this browser. This browser can’t write into a file on your device, so use <b>Download backup</b> when you want a file.';
+    view().innerHTML = `${syncLine()}<h1>Offline database</h1><p class="lede">One database, saved automatically. No account needed.</p>
       <div class="acct-grid">
         <section class="panel"><h2>${esc(m.name)}</h2>
-          <dl class="kv2"><dt>Format</dt><dd>${A ? `Your own ${m.format === 'sqlite' ? 'SQLite' : m.format.toUpperCase()} file · tasks from <b>${esc(A.mapping.collection.replace(/^t:|^p:/, '').replace(/[[\]"]/g, '').replace(/,/g, ' › '))}</b>` : m.format === 'sqlite' ? 'SQLite' : 'JSON'}</dd><dt>File</dt><dd class="mono">${esc(m.fileName)}</dd>
-            ${A ? `<dt>Fields</dt><dd>${Object.entries(R).filter(([, v]) => v).map(([k, v]) => `${esc(roleName[k])} ← <span class="mono">${esc(v)}</span>`).join(' · ')}${A.extraFields.length ? ` · also shown: <span class="mono">${esc(A.extraFields.join(', '))}</span>` : ''}</dd>` : ''}
-            <dt>Saving</dt><dd>${A && !A.ownCopy ? 'Read-only original — the first save creates your own file' : offline.handle ? 'Automatic — every change is written to the file' : 'Kept in this browser; press Save file to write a copy to your device'}</dd>${m.migratedFrom ? `<dt>Migrated from</dt><dd class="mono">${esc(m.migratedFrom)}</dd>` : ''}
-            <dt>Last saved</dt><dd>${m.savedAt ? new Date(m.savedAt).toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'short' }) : 'Not saved to a file yet'}</dd>
+          <dl class="kv2"><dt>Format</dt><dd>${m.format === 'sqlite' ? 'SQLite' : 'JSON'}</dd>
+            <dt>Saving</dt><dd>${saving}</dd>${m.migratedFrom ? `<dt>Migrated from</dt><dd class="mono">${esc(m.migratedFrom)} <span class="hint">(not changed)</span></dd>` : ''}
+            <dt>Last saved</dt><dd>${m.savedAt ? new Date(m.savedAt).toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'short' }) : '—'}</dd>
             <dt>Contents</dt><dd>${plural(tasks.length, 'task')} · ${plural((t.projects || []).filter(p => !p.deleted).length, 'project')} · ${plural(links.length, 'link')}</dd></dl>
-          <div class="row" style="margin-top:14px"><button class="primary" id="dbSave">${A && !A.ownCopy ? 'Save to your own file…' : offline.handle ? 'Save now' : 'Save file'}</button>${!offline.handle && canFSA() && !(A && !A.ownCopy) ? '<button id="dbReconnect" title="Choose your file so every change is saved straight into it">Reconnect file</button>' : ''}${A ? '<button id="dbRemap">Change field mapping</button><button id="dbConvert">Import into a DevHub database</button>' : ''}</div>
-          ${A ? (A.ownCopy ? '<p class="hint" style="margin-top:10px">This is DevHub’s own copy in your file’s layout — changes are saved straight into it. Subtasks, timers and repeat rules the layout has no place for are kept on this device.</p>'
-            : `<p class="hint" style="margin-top:10px"><b>${esc(A.original)}</b> is only read, never changed. Press <b>Save</b> to create your own copy — a DevHub database or a copy in the same layout — and open that file next time.</p>`) : ''}
-          ${offline.handle ? '' : '<p class="hint" style="margin-top:10px">Each save downloads the whole database. Your browser may add a number to the name (for example “my-tasks (1).json”) — open the newest one next time.</p>'}
+          <div class="row" style="margin-top:14px">${tg !== 'browser' ? '<button class="primary" id="dbSave">Save now</button>' : ''}${tg === 'browser' && canFSA() ? '<button class="primary" id="dbReconnect" title="Choose a file on this computer; every change is then saved into it">Save into a file on this computer…</button>' : ''}</div>
         </section>
-        <section class="panel"><h2>Download a copy</h2><p class="hint">${A ? 'Save a copy as a DevHub database (all DevHub features, stored in the file).' : 'Both formats hold exactly the same data, so you can convert any time.'}</p>
-          <div class="row"><button id="dlJson">Download as JSON</button><button id="dlSqlite">Download as SQLite</button></div>
+        <section class="panel"><h2>Download backup</h2><p class="hint">A one-off copy, only when you ask for it. Both formats hold the same data${tg === 'browser' ? ' — keep one somewhere safe, because clearing this browser’s data removes the database' : ''}.</p>
+          <div class="row"><button id="dlSqlite">Backup as SQLite</button><button id="dlJson">Backup as JSON</button></div>
           <p class="hint" style="margin-top:12px">Want to move this data online? Sign in, then use Account → Import backup with one of these files.</p></section>
         <section class="panel"><h2>Switch database</h2>
+          <p class="hint">Open a DevHub database, or an existing .db / .json / .xml task file to migrate it.</p>
           <div class="row"><button id="dbOpen">Open another file</button><button id="dbNew">Create new database</button></div><input type="file" id="dbFile" hidden ${accept}>
           <h2 style="margin-top:22px">Use online instead</h2><p class="hint">Close this database and sign in to sync across devices.</p>
           <button id="dbOnline">Close and sign in</button></section>
       </div>`;
     offlineStatus();
-    $('#dbSave').onclick = () => saveOffline({ manual: true }).then(ok => { if (ok) { toast('Database saved'); renderOfflineDb(); } });
+    const sv = $('#dbSave'); if (sv) sv.onclick = () => saveOffline({ manual: true }).then(ok => { if (ok) { toast('Saved to ' + whereSaved(offline.meta)); renderOfflineDb(); } });
     const rc = $('#dbReconnect'); if (rc) rc.onclick = async () => {
       let h; try { h = await window.showSaveFilePicker({ suggestedName: m.fileName, types: PICK_TYPES(m.format) }); } catch (e) { if (e.name !== 'AbortError') toast(e.message); return; }
       offline.handle = h; idb.set('offline-handle', h); m.fileName = h.name; offline.setMeta(m); offline.writeFailed = false;
-      if (await saveOffline({ manual: true })) { toast('Reconnected — changes now save into ' + h.name); renderOfflineDb(); }
+      if (await saveOffline({ manual: true })) { toast('Every change now saves into ' + h.name); renderOfflineDb(); }
     };
     $('#dlJson').onclick = () => saveOffline({ as: 'json' });
-    const remapAs = mode => async () => {
-      if (m.fileDirty && !(await saveOffline())) return;
-      const src = await idb.get('offline-source'); if (!src) return toast('Open the file again to change its mapping');
-      openCustomFile(new File([src], m.fileName, { type: src.type }), offline.handle, 'tasks', { remap: mode }).catch(e => toast(e.message));
-    };
-    const rm = $('#dbRemap'); if (rm) rm.onclick = remapAs(true);
-    const cv = $('#dbConvert'); if (cv) cv.onclick = remapAs('import');
     $('#dlSqlite').onclick = () => saveOffline({ as: 'sqlite' });
     $('#dbOpen').onclick = async () => {
       let r; try { r = await pickDbFile($('#dbFile')); } catch (e) { return toast(e.message); }
       if (!r) return;
-      try { await DevHubDB.decode(r.file); } catch (e) { if (!isDevHubError(e)) return toast(e.message); }
+      try { r.file = await snapshot(r.file); await DevHubDB.decode(r.file); } catch (e) { if (!isDevHubError(e)) return toast(e.message); }
       if (await closeOffline()) openDbFile(r.file, r.handle, 'tasks').catch(e => toast(e.message));
     };
     $('#dbNew').onclick = async () => { if (await closeOffline()) { location.hash = 'start?next=tasks'; setTimeout(() => $('#stNew')?.click(), 50); } };
     $('#dbOnline').onclick = async () => { if (await closeOffline()) location.hash = 'login?next=tasks'; };
   }
 
-  // ---------- mapping screen for your own file ----------
+  // ---------- migrate an existing file: map fields and values once ----------
   function renderMapFile() {
     const P = pendingCustom;
     if (!P) { location.replace(offline.meta ? '#tasks' : '#start?next=tasks'); return; }
@@ -1450,13 +1365,9 @@
       const valueTable = (role, map, choices) => { const v = vals(m.roles[role]); if (!m.roles[role]) return ''; if (!v) return `<p class="hint">“${esc(m.roles[role])}” has too many different values to map one by one.</p>`;
         return `<div class="table-wrap mf-vals"><table><thead><tr><th>In your file</th><th>Tasks</th><th>In DevHub</th></tr></thead><tbody>${v.map(x => `<tr><td><code>${esc(x.s === '' ? '(empty)' : x.s)}</code></td><td>${x.n}</td><td><select data-vmap="${role}" data-v="${esc(x.s)}">${choices.map(([k, l]) => opt(k, l, String(map[x.s]) === String(k))).join('')}</select></td></tr>`).join('')}</tbody></table></div>`; };
       view().innerHTML = `<h1>Set up your file</h1>
-        <p class="lede"><b>${esc(P.file.name)}</b> isn’t a DevHub database — that’s fine. Choose how to use it, then tell DevHub which of your fields mean what.</p>
+        <p class="lede"><b>${esc(P.file.name)}</b> isn’t a DevHub database. Check how its fields and values map, then migrate it <b>once</b> into a DevHub database — ${canFSA() ? 'you choose the file, and DevHub saves into that same file from then on' : hasDeviceFs() ? 'saved on this device in Documents/DevHub and updated in place from then on' : 'saved in this browser from then on'}. ${esc(P.file.name)} itself isn’t changed.</p>
         <section class="panel mf">
-          <fieldset class="fmt mf-mode"><legend>How do you want to use this file?</legend>
-            <label class="fmt-opt"><input type="radio" name="mfMode" value="adapt" ${P.mode !== 'import' ? 'checked' : ''}><span><b>Work with my file’s layout</b><small>The tracker adapts to your fields and your own words. ${esc(P.file.name)} is only read — your first save creates your own copy (a DevHub database, or a copy in the same layout), so it’s never locked by another program.</small></span></label>
-            <label class="fmt-opt"><input type="radio" name="mfMode" value="import" ${P.mode === 'import' ? 'checked' : ''}><span><b>Import into a DevHub database</b><small>Copies the tasks into a new standard DevHub file, with every DevHub feature stored in the file. ${esc(P.file.name)} isn’t changed.</small></span></label>
-          </fieldset>
-          <div class="opt-grid mf-imp" ${P.mode === 'import' ? '' : 'hidden'}>
+          <div class="opt-grid mf-imp">
             <label>New database name<input id="mfName" value="${esc(P.impName)}" maxlength="60"></label>
             <label>Format<select id="mfFmt">${opt('json', 'JSON — readable text', P.impFormat === 'json')}${opt('sqlite', 'SQLite — a real database', P.impFormat === 'sqlite')}</select></label>
           </div>
@@ -1468,13 +1379,12 @@
           <div class="table-wrap"><table class="mf-roles"><thead><tr><th>DevHub</th><th>Your field</th><th>Example</th></tr></thead><tbody>
             ${A.ROLES.map(([k, l]) => { const ex = (c.columns.find(x => x.name === m.roles[k]) || {}).sample || []; return `<tr><td><b>${esc(l)}</b>${k === 'title' ? ' <span class="hint">required</span>' : ''}</td><td><select data-role="${k}">${colOpts(m.roles[k])}</select></td><td class="hint">${esc(ex.slice(0, 2).join(' · ').slice(0, 80))}</td></tr>`; }).join('')}
           </tbody></table></div>
-          ${m.roles.status ? `<h2>Status values</h2><p class="hint">Which of your values mean to do, in progress and done.${P.mode === 'import' ? '' : ' DevHub’s board columns will use your own words.'}</p>${valueTable('status', m.statusMap, [['todo', A.STATUS_LABEL.todo], ['doing', A.STATUS_LABEL.doing], ['done', A.STATUS_LABEL.done]])}` : '<p class="hint">No status field chosen: every task starts as “To do”, and status is kept on this device only.</p>'}
+          ${m.roles.status ? `<h2>Status values</h2><p class="hint">Which of your values mean to do, in progress and done.</p>${valueTable('status', m.statusMap, [['todo', A.STATUS_LABEL.todo], ['doing', A.STATUS_LABEL.doing], ['done', A.STATUS_LABEL.done]])}` : '<p class="hint">No status field chosen: every task starts as “To do”.</p>'}
           ${m.roles.priority ? `<h2>Priority values</h2>${valueTable('priority', m.prioMap, [[1, 'Urgent'], [2, 'High'], [3, 'Medium'], [4, 'Low']])}` : ''}
-          <h2>Other fields</h2><p class="hint">${extra.length ? `<span class="mono">${esc(extra.join(', '))}</span> — shown and editable in each task’s details${P.mode === 'import' ? ', and kept in the DevHub database' : ', and saved back to your file'}.` : 'None — every field is mapped.'}</p>
+          <h2>Other fields</h2><p class="hint">${extra.length ? `<span class="mono">${esc(extra.join(', '))}</span> — kept in the DevHub database, and shown and editable in each task’s details.` : 'None — every field is mapped.'}</p>
           <p class="form-err" id="mfErr" role="alert" hidden></p>
-          <div class="row action-bar"><button class="primary" id="mfGo">${P.mode === 'import' ? 'Import' : 'Open'} ${c.count} task${c.count === 1 ? '' : 's'}</button><button type="button" class="ghost" id="mfCancel">Cancel</button><span class="hint">${P.mode === 'import' ? 'The mapping is remembered on this device, so the next import is quicker.' : 'Remembered on this device: next time this file opens straight to your tasks.'}</span></div>
+          <div class="row action-bar"><button class="primary" id="mfGo">Migrate ${c.count} task${c.count === 1 ? '' : 's'}</button><button type="button" class="ghost" id="mfCancel">Cancel</button><span class="hint">After this, open the new DevHub database — not ${esc(P.file.name)}.</span></div>
         </section>`;
-      view().querySelectorAll('[name="mfMode"]').forEach(r => r.onchange = () => { P.mode = r.value; draw(); });
       const nm = $('#mfName'); if (nm) nm.oninput = () => { P.impName = nm.value; };
       const fm = $('#mfFmt'); if (fm) fm.onchange = () => { P.impFormat = fm.value; };
       $('#mfCol').onchange = e => { m = A.guess(info, e.target.value); draw(); };
@@ -1493,14 +1403,14 @@
       $('#mfGo').onclick = async () => {
         const err = $('#mfErr'); err.hidden = true;
         if (!m.roles.title) { err.textContent = 'Choose which field holds the task title.'; err.hidden = false; return; }
-        const imp = P.mode === 'import', label = b0 => b0.textContent = `${imp ? 'Import' : 'Open'} ${col().count} tasks`;
-        if (imp && !P.impName.trim()) { err.textContent = 'Give the new DevHub database a name.'; err.hidden = false; return; }
-        const b = $('#mfGo'); b.disabled = true; b.textContent = imp ? 'Importing…' : 'Opening…';
+        const label = b0 => b0.textContent = `Migrate ${col().count} tasks`;
+        if (!P.impName.trim()) { err.textContent = 'Give the new DevHub database a name.'; err.hidden = false; return; }
+        const b = $('#mfGo'); b.disabled = true; b.textContent = 'Migrating…';
         try {
-          m.formats ||= {}; A.finish(info, m); m.mode = P.mode; maps.save(m);
+          m.formats ||= {}; A.finish(info, m); maps.save(m);
           if (offline.meta && !(await closeOffline())) { b.disabled = false; label(b); return; }
-          if (imp) { if (!(await importCustom(P.file, m, P.impFormat, P.impName.trim(), P.next))) { b.disabled = false; label(b); return; } pendingCustom = null; return; }
-          pendingCustom = null; await activateCustom(P.file, P.handle, m, P.next);
+          if (!(await migrateFile(P.file, m, P.impFormat, P.impName.trim(), P.next))) { b.disabled = false; label(b); return; }
+          pendingCustom = null;
         } catch (e) { err.textContent = e.message; err.hidden = false; b.disabled = false; b.textContent = 'Try again'; }
       };
     }
@@ -1526,7 +1436,7 @@
 
   // Shared with tasks.js
   // What the task tracker needs to adapt to your own file (null for DevHub databases and online accounts)
-  const custom = () => offline.active() && offline.meta.adapter ? offline.meta.adapter : null;
+  const custom = () => null; // (the tracker always uses DevHub's own format now; migrated extra fields still show per task)
   window.DH = { $, esc, toast, uid, dayKey, addDays, store, data, session, api, routes, render, copy, saveBlob, view, syncLine, custom };
 
   window.addEventListener('DOMContentLoaded', () => {
@@ -1535,8 +1445,9 @@
       session.clear();
       if (offline.meta) {
         data.ns = 'offline'; data.load();
+        if (offline.meta.adapter) { const m = offline.meta; delete m.adapter; m.migratedFrom = m.fileName; m.format = 'sqlite'; m.fileName = slug(m.name) + '.sqlite'; m.fileDirty = true; offline.setMeta(m); idb.del('offline-handle'); idb.del('offline-source'); }
         idb.get('offline-handle').then(async h => { // reconnect to the file picked earlier (Chrome/Edge desktop)
-          if (!h || !offline.meta) return;
+          if (!h || !offline.meta) { if (offline.meta?.fileDirty && target() !== 'file') saveOffline(); return; }
           offline.handle = h;
           try { if ((await h.queryPermission({ mode: 'readwrite' })) !== 'granted' && offline.meta.fileDirty) offline.needsPermission = true; } catch {}
           offlineStatus();
