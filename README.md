@@ -55,12 +55,12 @@ When you open one, choose **how** to use it. Both options share the same field a
 
 | | Work on my file directly | Import into a DevHub database |
 |---|---|---|
-| What happens | The tracker adapts to your file, and changes are saved back into it | Tasks are copied into a new standard DevHub `.json` or `.sqlite` |
-| Your original file | Updated in its own layout | Not changed |
+| What happens | The tracker adapts to your file; the first save creates your own copy (DevHub database or same layout) | Tasks are copied into a new standard DevHub `.json` or `.sqlite` |
+| Your original file | Only read, never changed | Not changed |
 | Labels | Your own words (e.g. "Completed") | DevHub's (To do · In progress · Done) |
-| Extra fields (e.g. `rag`) | Saved in your file | Kept in the DevHub database |
+| Extra fields (e.g. `rag`) | Kept in your copy | Kept in the DevHub database |
 | Subtasks, timers, repeat | Kept on this device | Stored in the file |
-| Next time | Opens straight to your tasks | Asks again, with your mapping prefilled |
+| Next time | Open the file you saved to | Asks again, with your mapping prefilled |
 
 An own-file database can also be converted later: Database → **Import into a DevHub database**.
 
@@ -69,13 +69,11 @@ An own-file database can also be converted later: Database → **Import into a D
    - Board columns and priorities use your file's own words (e.g. "Not Started · In Progress · Completed").
    - Project names become projects.
    - Fields DevHub has no place for (e.g. `rag`, `reminder`) show as chips and can be edited under **More fields** in each task.
-3. **Saving writes back into your file, in its own layout:**
-   - Only the fields you changed are written. Everything else stays exactly as it was, including other tables, views and indexes.
-   - Values follow the file's style: `Completed` / `true` / `1`, date formats like `2026-09-30T08:10:30` or `30/09/2026`, and the file's letter case.
-   - New tasks get the next id, and deleted tasks are removed.
-   - On Chrome/Edge desktop, saving goes straight into the file. Elsewhere, **Save file** downloads the updated copy.
-   - If Windows won't let DevHub write into the file, automatic saving pauses and the status line says **Press Save file**. This usually means the file is open in another program, or OneDrive/Dropbox is syncing it. Pressing Save file asks you to choose the file again, which reconnects it. If it's still locked, an updated copy is downloaded instead. No change is ever marked as saved until it's really in a file. Use Database → **Reconnect file** to go back to saving directly.
-   - For the smoothest direct saving, close the other app that uses the file, and keep the file in a folder that isn't being synced.
+3. **Your original file is only read, never written.** That way the other program that uses it can't lock DevHub out, and the original stays exactly as it was. The **first save** asks you to choose DevHub's own file, and you open that file from then on:
+   - **DevHub database** (recommended, `.sqlite` or `.json`): migrates everything. Subtasks, timers and repeats are stored in the file, and extra fields like `rag` are kept. From then on it's a normal DevHub database.
+   - **Copy in the same layout** (e.g. `tasks-devhub.db`): the same tables and fields as the original, so your other app could still read it, and DevHub keeps using your own words. Only the fields you change are written, and values follow the file's style (`Completed`, `true`, `30/09/2026`…).
+   - On Chrome/Edge desktop, you pick where the new file goes, and every later change saves into it automatically. On phones and other browsers, it's downloaded, and **Save file** downloads an updated copy.
+   - If a save ever can't write to the file, automatic saving pauses and **Save file** reconnects the file or downloads a copy. No change counts as saved until it's really in a file.
 4. **Remembered on this device.** The mapping is saved for files with the same layout, so the next time you open the file it goes straight to your tasks. To change it, use Database → **Change field mapping**. Subtasks, timers and repeat rules your file has no column for are also kept on this device.
 
 To move a file like this fully into DevHub's own format, use Database → Download as JSON/SQLite. You can also use the **Data migrator** tool.

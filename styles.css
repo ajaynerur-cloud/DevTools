@@ -551,3 +551,12 @@ select.mig-bad-sel { border-color: var(--danger); }
 .mf-mode { margin: 0 0 6px; }
 .mf-imp { margin-top: 4px; }
 .mf-imp > label { display: flex; flex-direction: column; }
+.mig-dlg { max-width: 640px; width: calc(100% - 32px); }
+.mig-dlg form { padding: 4px 4px 8px; }
+.mig-dlg .mig-choice { grid-template-columns: 1fr; }
+.mig-dlg .mig-devhub > label { display: flex; flex-direction: column; }
+.mig-dlg { max-width: 640px; width: calc(100% - 32px); }
+.mig-dlg form { padding: 4px 4px 8px; }
+.mig-dlg .mig-choice { grid-template-columns: 1fr; }
+.mig-dlg .mig-devhub > label { display: flex; flex-direction: column; }
+.mig-dlg .fmt-opt .chip { display: inline-block; width: auto; align-self: flex-start; margin: 2px 0 4px; font-size: .72rem; }
