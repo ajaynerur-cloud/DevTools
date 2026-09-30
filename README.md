@@ -74,6 +74,8 @@ An own-file database can also be converted later: Database → **Import into a D
    - Values follow the file's style: `Completed` / `true` / `1`, date formats like `2026-09-30T08:10:30` or `30/09/2026`, and the file's letter case.
    - New tasks get the next id, and deleted tasks are removed.
    - On Chrome/Edge desktop, saving goes straight into the file. Elsewhere, **Save file** downloads the updated copy.
+   - If Windows won't let DevHub write into the file, automatic saving pauses and the status line says **Press Save file**. This usually means the file is open in another program, or OneDrive/Dropbox is syncing it. Pressing Save file asks you to choose the file again, which reconnects it. If it's still locked, an updated copy is downloaded instead. No change is ever marked as saved until it's really in a file. Use Database → **Reconnect file** to go back to saving directly.
+   - For the smoothest direct saving, close the other app that uses the file, and keep the file in a folder that isn't being synced.
 4. **Remembered on this device.** The mapping is saved for files with the same layout, so the next time you open the file it goes straight to your tasks. To change it, use Database → **Change field mapping**. Subtasks, timers and repeat rules your file has no column for are also kept on this device.
 
 To move a file like this fully into DevHub's own format, use Database → Download as JSON/SQLite. You can also use the **Data migrator** tool.

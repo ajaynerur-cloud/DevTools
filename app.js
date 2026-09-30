@@ -173,7 +173,7 @@
     del(k) { return this.run('readwrite', s => s.delete(k)); }
   };
   const offline = {
-    meta: store.get('devhub:offline', null), handle: null, saving: false, needsPermission: false, timer: null,
+    meta: store.get('devhub:offline', null), handle: null, saving: false, needsPermission: false, writeFailed: false, timer: null,
     active() { return !session.user && !!this.meta; },
     setMeta(m) { this.meta = m; m ? store.set('devhub:offline', m) : store.del('devhub:offline'); }
   };
@@ -193,56 +193,107 @@
     let text, cls = '';
     if (offline.saving) { text = 'Saving to file…'; cls = 'busy'; }
     else if (offline.needsPermission) { text = 'Press Save to reconnect the file'; cls = 'err'; }
+    else if (offline.writeFailed && m.fileDirty) { text = 'Couldn’t write to the file · press Save file'; cls = 'err'; }
     else if (m.fileDirty) { text = offline.handle ? 'Unsaved changes…' : 'Kept in this browser · not in file yet'; cls = offline.handle ? 'busy' : ''; }
     else text = m.savedAt ? `Saved to file ${new Date(m.savedAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}` : 'Ready';
     setStatus(text, cls);
-    document.querySelectorAll('[data-save-db]').forEach(b => b.hidden = !(m.fileDirty || offline.needsPermission));
+    document.querySelectorAll('[data-save-db]').forEach(b => b.hidden = !(m.fileDirty || offline.needsPermission || offline.writeFailed));
   }
-  async function saveOffline({ as } = {}) {
+  // Write a blob into the connected file. Retries briefly, and always releases a half-finished write so it can't block the next one.
+  async function writeToHandle(h, blob) {
+    let last;
+    for (let attempt = 0; attempt < 3; attempt++) {
+      let w = null;
+      try { w = await h.createWritable(); await w.write(blob); await w.close(); return; }
+      catch (e) { last = e; if (w) { try { await w.abort(); } catch {} } if (!FILE_CHANGED.test(`${e.name} ${e.message}`)) throw e; await sleep(500 * (attempt + 1)); }
+    }
+    throw last;
+  }
+  const PICK_TYPES = f => f === 'sqlite' ? [{ description: 'SQLite database', accept: { 'application/vnd.sqlite3': ['.db', '.sqlite', '.sqlite3', '.db3'] } }]
+    : f === 'xml' ? [{ description: 'XML file', accept: { 'application/xml': ['.xml'] } }] : [{ description: 'JSON file', accept: { 'application/json': ['.json'] } }];
+
+  // manual = the person pressed Save (so we may show a file picker / download as a fallback); autosave never does
+  async function saveOffline({ as, manual } = {}) {
     const m = offline.meta; if (!m) return false;
-    if (offline.saving && !as) { clearTimeout(offline.timer); offline.timer = setTimeout(() => saveOffline(), 500); return false; }
-    const format = as || m.format;
+    if (offline.saving && !as) {
+      if (!manual) { clearTimeout(offline.timer); offline.timer = setTimeout(() => saveOffline(), 500); return false; }
+      for (let i = 0; offline.saving && i < 100; i++) await sleep(100); // a Save press waits for the save already running
+      if (offline.saving) return false;
+    }
+    const format = as || m.format, rev = offline.rev || 0;
     offline.saving = true; offlineStatus();
     try {
-      let blob;
+      let blob, commit = () => {};
       if (m.adapter && !as) {
         let src = null;
         if (offline.handle) { try { if (await offline.handle.queryPermission({ mode: 'readwrite' }) === 'granted') src = await snapshot(await offline.handle.getFile()); } catch {} }
         if (!src) { const kept = await idb.get('offline-source'); if (kept) { try { src = await snapshot(kept); } catch {} } }
         if (!src) throw new Error('the original file isn’t in this browser any more — open it again from the Database page');
-        const res = await DevHubAdapter.write(src, data.docs, m.adapter.mapping);
-        blob = res.blob; await idb.set('offline-source', blob); data.persist();
+        // Work on a copy: the file only counts as saved once the write really succeeded, so a failed write can't lose changes
+        const work = JSON.parse(JSON.stringify(data.docs));
+        const res = await DevHubAdapter.write(src, work, m.adapter.mapping);
+        blob = res.blob;
+        commit = async () => {
+          const byId = new Map(work.tasks.tasks.map(t => [t.id, t]));
+          for (const t of data.docs.tasks.tasks) { const w = byId.get(t.id); if (!w) continue; for (const k of ['_key', '_gone']) t[k] = w[k];
+            // only mark fields as written if they haven't been edited again while saving
+            if (JSON.stringify({ ...t, _key: 0, _base: 0, _fbase: 0, _gone: 0 }) === JSON.stringify({ ...w, _key: 0, _base: 0, _fbase: 0, _gone: 0 })) { t._base = w._base; t._fbase = w._fbase; } }
+          await idb.set('offline-source', new File([blob], m.fileName, { type: blob.type })); data.persist();
+        };
       } else blob = await DevHubDB.encode(format, data.docs, m);
-      if (!as && offline.handle) {
+
+      if (as || !offline.handle) {
+        await saveBlob(blob, as ? m.fileName.replace(/\.[^.]+$/, '') + (m.adapter ? '-devhub' : '') + DevHubDB.ext(format) : m.fileName);
+      } else {
         let perm = await offline.handle.queryPermission({ mode: 'readwrite' });
         if (perm !== 'granted') perm = await offline.handle.requestPermission({ mode: 'readwrite' }).catch(() => 'denied');
         if (perm !== 'granted') { offline.needsPermission = true; return false; }
-        for (let attempt = 0; ; attempt++) {
-          try { const w = await offline.handle.createWritable(); await w.write(blob); await w.close(); break; }
-          catch (e) { if (attempt < 2 && FILE_CHANGED.test(`${e.name} ${e.message}`)) { await sleep(400 * (attempt + 1)); continue; } throw e; }
+        try { await writeToHandle(offline.handle, blob); }
+        catch (e) {
+          if (e.name === 'AbortError') throw e;
+          if (!manual) { offline.writeFailed = true; offline.lastWriteError = e; return false; } // autosave: pause quietly, the status line says what to do
+          // 1) reconnect: choose the file again (fixes a stale connection, e.g. after the file was replaced or the page reloaded)
+          let h2 = null;
+          if (canFSA()) {
+            toast('DevHub couldn’t write to ' + m.fileName + '. Choose the file again to reconnect it.');
+            try { h2 = await window.showSaveFilePicker({ suggestedName: m.fileName, types: PICK_TYPES(m.format), startIn: offline.handle }); } catch (x) { if (x.name !== 'AbortError') h2 = null; }
+          }
+          let ok = false;
+          if (h2) { try { await writeToHandle(h2, blob); ok = true; offline.handle = h2; idb.set('offline-handle', h2); m.fileName = h2.name; } catch (e2) { e = e2; } }
+          if (!ok) { // 2) the file is locked by another program: hand over a downloaded copy instead
+            await saveBlob(blob, m.fileName);
+            offline.handle = null; idb.del('offline-handle'); offline.writeFailed = false;
+            toast(`Windows wouldn’t let DevHub write into ${m.fileName}${/InvalidState|NoModification|locked|state had changed/i.test(`${e.name} ${e.message}`) ? ' — it’s probably open in another program (or OneDrive is syncing it)' : ''}. An updated copy was downloaded instead: close the other program and replace the file with it. Later saves also download a copy; use Database → Reconnect file to save directly again.`);
+            await sleep(0);
+          }
         }
-        offline.needsPermission = false;
-      } else await saveBlob(blob, as ? m.fileName.replace(/\.[^.]+$/, '') + (m.adapter ? '-devhub' : '') + DevHubDB.ext(format) : m.fileName);
-      if (!as) { m.fileDirty = false; m.savedAt = new Date().toISOString(); offline.setMeta(m); }
+        offline.needsPermission = false; offline.writeFailed = false; offline.lastWriteError = null;
+      }
+      if (!as) {
+        await commit(); m.savedAt = new Date().toISOString();
+        m.fileDirty = (offline.rev || 0) !== rev; // edited again while saving → save once more
+        offline.setMeta(m);
+        if (m.fileDirty && offline.handle && !offline.writeFailed) { clearTimeout(offline.timer); offline.timer = setTimeout(() => saveOffline(), 700); }
+      }
       return true;
     } catch (e) { if (e.name !== 'AbortError') toast('Couldn’t save the database: ' + friendlySaveError(e)); return false; }
-    finally { offline.saving = false; offlineStatus(); }
+    finally { offline.saving = false; if (offline.meta && !session.user) renderNavUser(); offlineStatus(); }
   }
   function markOfflineDirty() {
-    const m = offline.meta; m.fileDirty = true; offline.setMeta(m);
-    if (offline.handle && !offline.needsPermission) { clearTimeout(offline.timer); offline.timer = setTimeout(() => saveOffline(), 700); }
+    const m = offline.meta; m.fileDirty = true; offline.rev = (offline.rev || 0) + 1; offline.setMeta(m);
+    if (offline.handle && !offline.needsPermission && !offline.writeFailed) { clearTimeout(offline.timer); offline.timer = setTimeout(() => saveOffline(), 700); }
     offlineStatus();
   }
   function activateOffline(meta, docs, handle) {
     if (session.user) { data.wipe(session.user.id); session.clear(); }
     data.wipe('offline'); data.ns = 'offline'; data.docs = docs; data.ver = {}; data.dirty = {}; data.persist();
-    offline.setMeta(meta); offline.handle = handle || null; offline.needsPermission = false;
+    offline.setMeta(meta); offline.handle = handle || null; offline.needsPermission = false; offline.writeFailed = false;
     handle ? idb.set('offline-handle', handle) : idb.del('offline-handle');
     renderNavUser(); offlineStatus();
   }
   async function closeOffline() {
     if (offline.meta?.fileDirty) {
-      if (confirm('Some changes aren’t in the database file yet. Save the file first?')) { if (!(await saveOffline())) return false; }
+      if (confirm('Some changes aren’t in the database file yet. Save the file first?')) { if (!(await saveOffline({ manual: true }))) return false; }
       else if (!confirm('Close without saving? Changes since your last save will be lost.')) return false;
     }
     clearTimeout(offline.timer); data.wipe('offline'); data.docs = {}; offline.setMeta(null); offline.handle = null; idb.del('offline-handle'); idb.del('offline-source'); renderNavUser();
@@ -311,7 +362,7 @@
     }
     return new Promise(resolve => { input.value = ''; input.onchange = () => resolve(input.files[0] ? { file: input.files[0], handle: null } : null); input.click(); });
   }
-  document.addEventListener('click', e => { if (e.target.closest('[data-save-db]')) { e.preventDefault(); saveOffline(); } });
+  document.addEventListener('click', e => { if (e.target.closest('[data-save-db]')) { e.preventDefault(); saveOffline({ manual: true }); } });
 
   // ---------- developer tools ----------
   const io = (el, { inLabel = 'Input', outLabel = 'Output', placeholder = '', actions, sample = '' }) => {
@@ -1261,7 +1312,7 @@
             <p>Your database is kept in this browser, so nothing is lost if you close the page. Save the file now to have a copy on your device, or start adding tasks and save later.</p>
             <div class="row"><button class="primary" id="stGo">Continue to tasks</button><button id="stDl">Save file now</button></div></div></div>`;
           $('#stGo').onclick = () => location.hash = next;
-          $('#stDl').onclick = () => saveOffline();
+          $('#stDl').onclick = () => saveOffline({ manual: true });
           $('#stGo').focus();
         } catch (x) { ferr.textContent = x.message; ferr.hidden = false; btn.disabled = false; btn.textContent = 'Create database'; }
       };
@@ -1281,7 +1332,7 @@
             <dt>Saving</dt><dd>${offline.handle ? 'Automatic — every change is written to the file' : 'Kept in this browser; press Save file to write a copy to your device'}</dd>
             <dt>Last saved</dt><dd>${m.savedAt ? new Date(m.savedAt).toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'short' }) : 'Not saved to a file yet'}</dd>
             <dt>Contents</dt><dd>${plural(tasks.length, 'task')} · ${plural((t.projects || []).filter(p => !p.deleted).length, 'project')} · ${plural(links.length, 'link')}</dd></dl>
-          <div class="row" style="margin-top:14px"><button class="primary" id="dbSave">${offline.handle ? 'Save now' : 'Save file'}</button>${A ? '<button id="dbRemap">Change field mapping</button><button id="dbConvert">Import into a DevHub database</button>' : ''}</div>
+          <div class="row" style="margin-top:14px"><button class="primary" id="dbSave">${offline.handle ? 'Save now' : 'Save file'}</button>${!offline.handle && canFSA() ? '<button id="dbReconnect" title="Choose your file so every change is saved straight into it">Reconnect file</button>' : ''}${A ? '<button id="dbRemap">Change field mapping</button><button id="dbConvert">Import into a DevHub database</button>' : ''}</div>
           ${A ? '<p class="hint" style="margin-top:10px">Changes are saved back into your file in its own layout — only the fields you change are written. Subtasks, timers and repeat rules your file has no place for are kept on this device. Tool store links aren’t stored in your file.</p>' : ''}
           ${offline.handle ? '' : '<p class="hint" style="margin-top:10px">Each save downloads the whole database. Your browser may add a number to the name (for example “my-tasks (1).json”) — open the newest one next time.</p>'}
         </section>
@@ -1294,7 +1345,12 @@
           <button id="dbOnline">Close and sign in</button></section>
       </div>`;
     offlineStatus();
-    $('#dbSave').onclick = () => saveOffline().then(ok => { if (ok) { toast('Database saved'); renderOfflineDb(); } });
+    $('#dbSave').onclick = () => saveOffline({ manual: true }).then(ok => { if (ok) { toast('Database saved'); renderOfflineDb(); } });
+    const rc = $('#dbReconnect'); if (rc) rc.onclick = async () => {
+      let h; try { h = await window.showSaveFilePicker({ suggestedName: m.fileName, types: PICK_TYPES(m.format) }); } catch (e) { if (e.name !== 'AbortError') toast(e.message); return; }
+      offline.handle = h; idb.set('offline-handle', h); m.fileName = h.name; offline.setMeta(m); offline.writeFailed = false;
+      if (await saveOffline({ manual: true })) { toast('Reconnected — changes now save into ' + h.name); renderOfflineDb(); }
+    };
     $('#dlJson').onclick = () => saveOffline({ as: 'json' });
     const remapAs = mode => async () => {
       if (m.fileDirty && !(await saveOffline())) return;
