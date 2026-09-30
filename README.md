@@ -56,9 +56,10 @@ The developer tools never need either; they always work without signing in.
 
 "Open database file" also accepts a task list you already have: a `.db`/`.sqlite` from another app, a `.json` or an `.xml`.
 
-1. **Map it once.** DevHub finds the table or list that holds your tasks and suggests which field is the title, status, priority, due date, project, notes and dates. For example, `description` becomes Notes and `due_date` becomes Due date. It also asks what your status and priority values mean, e.g. `Completed` = Done and `In Progress` = In progress. Fields DevHub has no place for (e.g. `rag`, `reminder`) are kept and editable in each task.
-2. **Migrate.** Your tasks are copied into **one** new DevHub database (SQLite or JSON). The original file is never changed or locked, and the mapping is remembered for next time.
-3. **From then on, there's one database.** DevHub saves automatically into the same place every time and never creates copies.
+1. **See what's inside.** DevHub shows every table or list in the file with its rows, before anything is changed. Files saved as UTF-16 (PowerShell, Notepad) and JSON Lines are read too. If a file can't be read, DevHub says exactly what it is: empty, encrypted SQLite, a Git LFS pointer, CSV, an Access or Python-shelve database, and so on.
+2. **Map it.** DevHub finds the table or list that holds your tasks and suggests which field is the title, status, priority, due date, project, notes and dates. For example, `description` becomes Notes and `due_date` becomes Due date. It also asks what your status and priority values mean, e.g. `Completed` = Done and `In Progress` = In progress. Fields DevHub has no place for (e.g. `rag`, `reminder`) are kept and editable in each task.
+3. **Migrate and save.** Your tasks are copied into **one** new DevHub database (SQLite or JSON). The original file is never changed or locked, and the mapping is remembered for next time.
+4. **From then on, there's one database.** DevHub saves automatically into the same place every time and never creates copies.
 
 **Moving between modes**
 - **Offline to online:** sign in, then use Account → Import backup with your `.json` or `.sqlite` file.

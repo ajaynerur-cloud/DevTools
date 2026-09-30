@@ -1364,30 +1364,47 @@
       const extra = c.columns.filter(x => !mappedCols.has(x.name)).map(x => x.name);
       const valueTable = (role, map, choices) => { const v = vals(m.roles[role]); if (!m.roles[role]) return ''; if (!v) return `<p class="hint">“${esc(m.roles[role])}” has too many different values to map one by one.</p>`;
         return `<div class="table-wrap mf-vals"><table><thead><tr><th>In your file</th><th>Tasks</th><th>In DevHub</th></tr></thead><tbody>${v.map(x => `<tr><td><code>${esc(x.s === '' ? '(empty)' : x.s)}</code></td><td>${x.n}</td><td><select data-vmap="${role}" data-v="${esc(x.s)}">${choices.map(([k, l]) => opt(k, l, String(map[x.s]) === String(k))).join('')}</select></td></tr>`).join('')}</tbody></table></div>`; };
-      view().innerHTML = `<h1>Set up your file</h1>
-        <p class="lede"><b>${esc(P.file.name)}</b> isn’t a DevHub database. Check how its fields and values map, then migrate it <b>once</b> into a DevHub database — ${canFSA() ? 'you choose the file, and DevHub saves into that same file from then on' : hasDeviceFs() ? 'saved on this device in Documents/DevHub and updated in place from then on' : 'saved in this browser from then on'}. ${esc(P.file.name)} itself isn’t changed.</p>
+      const shown = info.collections.find(x => x.id === P.view) || c;
+      const kindName = { sqlite: 'SQLite database', json: 'JSON file', xml: 'XML file' }[info.kind];
+      const where = canFSA() ? 'You’ll choose where to save it, and DevHub saves into that same file from then on.' : hasDeviceFs() ? 'It’s saved on this device in Documents/DevHub and updated in place from then on.' : 'It’s saved in this browser from then on (this browser can’t write into a file on your device) — use Download backup for a file.';
+      const roleSummary = A.ROLES.filter(([k]) => m.roles[k]).map(([k, l]) => `${esc(l)} ← <span class="mono">${esc(m.roles[k])}</span>`).join(' · ');
+      view().innerHTML = `<h1>${esc(P.file.name)}</h1>
+        <p class="lede">${kindName} · ${plural(info.collections.length, info.kind === 'sqlite' ? 'table' : 'list')} · ${fmtBytes(P.file.size)}. Look at what’s inside, then migrate it into a new DevHub database — the file you’ll work with from now on. ${esc(P.file.name)} itself isn’t changed.</p>
+        <section class="panel mf-view">
+          <h2><span class="mig-n">1</span> What’s in the file</h2>
+          <div class="seg mf-tabs" role="tablist">${info.collections.map(x => `<button type="button" role="tab" aria-selected="${x.id === shown.id}" data-show="${esc(x.id)}">${esc(x.label)} <span class="hint">${x.count.toLocaleString()}</span></button>`).join('')}</div>
+          ${shown.columns.length ? `<p class="hint">${shown.count > shown.rows.length ? `First ${shown.rows.length} of ${shown.count.toLocaleString()} rows` : plural(shown.count, 'row')} · ${plural(shown.columns.length, 'column')}</p>
+          <div class="table-wrap mf-grid"><table><thead><tr>${shown.columns.map(x => `<th>${esc(x.name)}${x.pk ? ' 🔑' : ''}</th>`).join('')}</tr></thead><tbody>${shown.rows.map(r => `<tr>${r.map(v => `<td title="${esc(v.length > 60 ? v : '')}">${esc(v.length > 60 ? v.slice(0, 60) + '…' : v)}</td>`).join('')}</tr>`).join('') || `<tr><td colspan="${shown.columns.length}" class="hint">No rows</td></tr>`}</tbody></table></div>` : '<p class="hint">This is empty.</p>'}
+        </section>
         <section class="panel mf">
-          <div class="opt-grid mf-imp">
-            <label>New database name<input id="mfName" value="${esc(P.impName)}" maxlength="60"></label>
-            <label>Format<select id="mfFmt">${opt('json', 'JSON — readable text', P.impFormat === 'json')}${opt('sqlite', 'SQLite — a real database', P.impFormat === 'sqlite')}</select></label>
-          </div>
+          <h2><span class="mig-n">2</span> Migrate to a new DevHub database</h2>
           <div class="opt-grid mf-top">
             <label>Tasks are in<select id="mfCol">${info.collections.map(x => opt(x.id, `${x.label} (${x.count} records)`, x.id === m.collection)).join('')}</select></label>
-            <label>Unique id<select id="mfKey">${opt('', info.kind === 'sqlite' ? '— row id —' : '— row position —', !m.key)}${c.columns.map(x => opt(x.name, x.name, x.name === m.key)).join('')}</select></label>
+            <label>New database name<input id="mfName" value="${esc(P.impName)}" maxlength="60"></label>
           </div>
-          <h2>Fields</h2>
+          <fieldset class="fmt mf-fmt"><legend>Save as</legend>
+            <label class="fmt-opt"><input type="radio" name="mfFmt" value="sqlite" ${P.impFormat === 'sqlite' ? 'checked' : ''}><span><b>SQLite database</b><small>A real database file. Open it with DB Browser for SQLite, sqlite3 or DBeaver too.</small></span></label>
+            <label class="fmt-opt"><input type="radio" name="mfFmt" value="json" ${P.impFormat === 'json' ? 'checked' : ''}><span><b>JSON</b><small>Readable text — easy to look inside or keep in Git.</small></span></label>
+          </fieldset>
+          <p class="hint">${where}</p>
+          <details class="mf-map" ${P.mapOpen ? 'open' : ''}><summary>How the fields map <span class="hint">— worked out automatically; open to check or change</span></summary>
+          <p class="hint mf-sum">${roleSummary || 'No fields matched yet — choose at least the title.'}${m.roles.status && vals(m.roles.status) ? ` · status: ${vals(m.roles.status).map(x => `${esc(x.s || '(empty)')} → ${esc(A.STATUS_LABEL[m.statusMap[x.s]] || 'To do')}`).join(', ')}` : ''}</p>
+          <div class="opt-grid mf-top"><label>Unique id<select id="mfKey">${opt('', info.kind === 'sqlite' ? '— row id —' : '— row position —', !m.key)}${c.columns.map(x => opt(x.name, x.name, x.name === m.key)).join('')}</select></label></div>
           <div class="table-wrap"><table class="mf-roles"><thead><tr><th>DevHub</th><th>Your field</th><th>Example</th></tr></thead><tbody>
             ${A.ROLES.map(([k, l]) => { const ex = (c.columns.find(x => x.name === m.roles[k]) || {}).sample || []; return `<tr><td><b>${esc(l)}</b>${k === 'title' ? ' <span class="hint">required</span>' : ''}</td><td><select data-role="${k}">${colOpts(m.roles[k])}</select></td><td class="hint">${esc(ex.slice(0, 2).join(' · ').slice(0, 80))}</td></tr>`; }).join('')}
           </tbody></table></div>
-          ${m.roles.status ? `<h2>Status values</h2><p class="hint">Which of your values mean to do, in progress and done.</p>${valueTable('status', m.statusMap, [['todo', A.STATUS_LABEL.todo], ['doing', A.STATUS_LABEL.doing], ['done', A.STATUS_LABEL.done]])}` : '<p class="hint">No status field chosen: every task starts as “To do”.</p>'}
-          ${m.roles.priority ? `<h2>Priority values</h2>${valueTable('priority', m.prioMap, [[1, 'Urgent'], [2, 'High'], [3, 'Medium'], [4, 'Low']])}` : ''}
-          <h2>Other fields</h2><p class="hint">${extra.length ? `<span class="mono">${esc(extra.join(', '))}</span> — kept in the DevHub database, and shown and editable in each task’s details.` : 'None — every field is mapped.'}</p>
+          ${m.roles.status ? `<h3>Status values</h3>${valueTable('status', m.statusMap, [['todo', A.STATUS_LABEL.todo], ['doing', A.STATUS_LABEL.doing], ['done', A.STATUS_LABEL.done]])}` : ''}
+          ${m.roles.priority ? `<h3>Priority values</h3>${valueTable('priority', m.prioMap, [[1, 'Urgent'], [2, 'High'], [3, 'Medium'], [4, 'Low']])}` : ''}
+          <p class="hint">${extra.length ? `Other fields (<span class="mono">${esc(extra.join(', '))}</span>) are kept, and editable in each task’s details.` : 'Every field is mapped.'}</p>
+          </details>
           <p class="form-err" id="mfErr" role="alert" hidden></p>
-          <div class="row action-bar"><button class="primary" id="mfGo">Migrate ${c.count} task${c.count === 1 ? '' : 's'}</button><button type="button" class="ghost" id="mfCancel">Cancel</button><span class="hint">After this, open the new DevHub database — not ${esc(P.file.name)}.</span></div>
+          <div class="row action-bar"><button class="primary" id="mfGo">Migrate ${c.count} task${c.count === 1 ? '' : 's'} and save</button><button type="button" class="ghost" id="mfCancel">Cancel</button></div>
         </section>`;
+      view().querySelectorAll('[data-show]').forEach(bt => bt.onclick = () => { P.view = bt.dataset.show; draw(); });
+      view().querySelectorAll('[name="mfFmt"]').forEach(r => r.onchange = () => { P.impFormat = r.value; });
+      const det = $('.mf-map'); det.ontoggle = () => { P.mapOpen = det.open; };
       const nm = $('#mfName'); if (nm) nm.oninput = () => { P.impName = nm.value; };
-      const fm = $('#mfFmt'); if (fm) fm.onchange = () => { P.impFormat = fm.value; };
-      $('#mfCol').onchange = e => { m = A.guess(info, e.target.value); draw(); };
+      $('#mfCol').onchange = e => { m = P.mapping = A.guess(info, e.target.value); P.view = e.target.value; draw(); };
       $('#mfKey').onchange = e => { m.key = e.target.value || null; draw(); };
       view().querySelectorAll('[data-role]').forEach(s => s.onchange = () => {
         const role = s.dataset.role, v = s.value || null;
@@ -1402,8 +1419,8 @@
       $('#mfCancel').onclick = () => { pendingCustom = null; location.hash = offline.meta ? 'account' : 'start?next=tasks'; };
       $('#mfGo').onclick = async () => {
         const err = $('#mfErr'); err.hidden = true;
-        if (!m.roles.title) { err.textContent = 'Choose which field holds the task title.'; err.hidden = false; return; }
-        const label = b0 => b0.textContent = `Migrate ${col().count} tasks`;
+        if (!m.roles.title) { P.mapOpen = true; draw(); const e2 = $('#mfErr'); e2.textContent = 'Choose which field holds the task title (under “How the fields map”).'; e2.hidden = false; return; }
+        const label = b0 => b0.textContent = `Migrate ${col().count} tasks and save`;
         if (!P.impName.trim()) { err.textContent = 'Give the new DevHub database a name.'; err.hidden = false; return; }
         const b = $('#mfGo'); b.disabled = true; b.textContent = 'Migrating…';
         try {

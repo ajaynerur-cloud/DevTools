@@ -45,29 +45,59 @@
   const STATUS_LABEL = { todo: 'To do', doing: 'In progress', done: 'Done' }, PRIO_LABEL = { 1: 'Urgent', 2: 'High', 3: 'Medium', 4: 'Low' };
 
   /* ---------- open ---------- */
-  async function kindOf(file) {
-    const head = new Uint8Array(await file.slice(0, 16).arrayBuffer());
-    if (String.fromCharCode(...head) === 'SQLite format 3\u0000') return 'sqlite';
-    const t = (await file.slice(0, 1024).text()).replace(/^﻿/, '').trimStart();
-    if (t.startsWith('<')) return 'xml';
-    if (/^[[{]/.test(t)) return 'json';
-    throw new Error(`${file.name} isn’t a SQLite database, JSON or XML file.`);
+  // Text in any common encoding (UTF-8, UTF-8 with BOM, UTF-16 LE/BE — e.g. files saved by PowerShell or Notepad)
+  async function readText(file) {
+    const u = new Uint8Array(await file.arrayBuffer());
+    if (u[0] === 0xFF && u[1] === 0xFE) return new TextDecoder('utf-16le').decode(u.subarray(2));
+    if (u[0] === 0xFE && u[1] === 0xFF) return new TextDecoder('utf-16be').decode(u.subarray(2));
+    if (u.length > 3 && u[1] === 0 && u[3] === 0 && u[0] && u[2]) return new TextDecoder('utf-16le').decode(u); // UTF-16 without BOM
+    return new TextDecoder('utf-8').decode(u).replace(/^﻿/, '');
   }
+  const hexOf = u => [...u].map(b => b.toString(16).padStart(2, '0')).join(' ');
+  const asciiOf = u => [...u].map(b => b >= 32 && b < 127 ? String.fromCharCode(b) : '·').join('');
+  // Work out what a file is; explain clearly when it isn't something DevHub can read
+  async function kindOf(file) {
+    if (!file.size) throw new Error(`${file.name} is empty (0 bytes). If it’s the database of another app, that app may keep its data somewhere else — look for a bigger .db/.sqlite file next to it.`);
+    const head = new Uint8Array(await file.slice(0, 64).arrayBuffer()), h16 = String.fromCharCode(...head.subarray(0, 16));
+    if (h16 === 'SQLite format 3\u0000') return 'sqlite';
+    const t = (await readText(file.slice(0, 4096))).trimStart();
+    if (t.startsWith('<')) return /^<!doctype html|^<html/i.test(t) ? bad('is a web page (HTML), not a database — it may have been saved from a browser by mistake') : 'xml';
+    if (/^[[{]/.test(t)) return 'json';
+    const why =
+      /^version https:\/\/git-lfs/.test(t) ? 'is a Git LFS pointer, not the real database — download the actual file (git lfs pull)' :
+      head[0] === 0x1f && head[1] === 0x8b ? 'is gzip-compressed — unzip it first' :
+      head[0] === 0x50 && head[1] === 0x4b ? 'is a ZIP/Office file (e.g. .xlsx or .zip) — extract the database from it first, or use Tools → Any format converter for spreadsheets' :
+      /Standard (Jet|ACE) DB/.test(asciiOf(head)) ? 'is a Microsoft Access database — export the table from Access as CSV/XML first' :
+      [0x13579ace, 0x13579acd, 0x13579acf].includes(new DataView(head.buffer).getUint32(0, false)) || [0xce9a5713, 0xcd9a5713, 0xcf9a5713].includes(new DataView(head.buffer).getUint32(0, false)) ? 'is a GDBM file (for example Python “shelve”), not SQLite — the other app needs to export it' :
+      new DataView(head.buffer).getUint32(12, false) === 0x00061561 || new DataView(head.buffer).getUint32(12, true) === 0x00061561 || new DataView(head.buffer).getUint32(12, false) === 0x00053162 ? 'is a Berkeley DB file (for example Python “shelve”), not SQLite — the other app needs to export it' :
+      /^SQLite format/.test(h16) ? 'is a SQLite file with an unsupported header' :
+      file.size % 512 === 0 && entropy(head) > 5 ? 'looks like an ENCRYPTED SQLite database (e.g. SQLCipher) — DevHub can’t open encrypted databases; the other app must export it unencrypted' :
+      /^[^\n]*[,;\t][^\n]*\n/.test(t) ? 'looks like CSV — convert it to JSON first with Tools → JSON ⇄ CSV, then open the JSON' :
+      null;
+    return bad(why || `isn’t a SQLite database, JSON or XML file. It starts with: ${asciiOf(head.subarray(0, 24))} (${hexOf(head.subarray(0, 16))})`);
+    function bad(msg) { throw new Error(`${file.name} (${file.size.toLocaleString()} bytes) ${msg}.`); }
+  }
+  function entropy(u) { const c = new Map(); for (const b of u) c.set(b, (c.get(b) || 0) + 1); let e = 0; for (const n of c.values()) { const p = n / u.length; e -= p * Math.log2(p); } return e; }
   async function open(file) {
     const kind = await kindOf(file);
     if (kind === 'sqlite') {
       const SQL = await DevHubDB.loadSql();
-      let db; try { db = new SQL.Database(new Uint8Array(await file.arrayBuffer())); } catch { throw new Error(`${file.name} is damaged or encrypted and can’t be opened.`); }
+      let db; try { db = new SQL.Database(new Uint8Array(await file.arrayBuffer())); db.exec('SELECT count(*) FROM sqlite_master'); } catch { throw new Error(`${file.name} is a SQLite file but it’s damaged or encrypted, so it can’t be read.`); }
       return { kind, db };
     }
-    const text = (await file.text()).replace(/^﻿/, '');
+    const text = await readText(file);
     if (kind === 'json') {
-      let tree; try { tree = JSON.parse(text); } catch (e) { throw new Error(`${file.name} isn’t valid JSON: ${e.message}`); }
+      let tree;
+      try { tree = JSON.parse(text); }
+      catch (e) { // JSON Lines: one record per line
+        const lines = text.split(/\r?\n/).filter(l => l.trim());
+        try { tree = lines.map(l => JSON.parse(l)); } catch { throw new Error(`${file.name} isn’t valid JSON: ${e.message}`); }
+      }
       const m = /\n([ \t]+)\S/.exec(text);
       return { kind, tree, indent: m ? (m[1][0] === '\t' ? '\t' : m[1].length) : text.trim().includes('\n') ? 2 : 0, nl: /\n\s*$/.test(text) };
     }
     await loadFxp();
-    const v = fxp.XMLValidator.validate(text); if (v !== true) throw new Error(`XML error on line ${v.err.line}: ${v.err.msg}`);
+    const v = fxp.XMLValidator.validate(text); if (v !== true) throw new Error(`${file.name}: XML error on line ${v.err.line}: ${v.err.msg}`);
     const m = /\n([ \t]+)</.exec(text);
     return { kind, nl: /\n\s*$/.test(text), tree: new fxp.XMLParser(XML_OPTS).parse(text), decl: (/^\s*(<\?xml[^>]*\?>)/.exec(text) || [])[1] || null, indent: m ? m[1] : '  ' };
   }
@@ -112,7 +142,9 @@
             const seen = new Map(); let many = false;
             for (const r of c.recs) { const v = r[col.name]; if (v instanceof Uint8Array || isObj(v) || Array.isArray(v)) { many = true; break; } const k = v == null ? '' : String(v); if (k.length > 60) { many = true; break; } const e = seen.get(k); e ? e.n++ : seen.set(k, { v: v ?? '', s: k, n: 1 }); if (seen.size > 30) { many = true; break; } }
             return { ...col, sample: c.recs.map(r => r[col.name]).filter(x => x != null && x !== '').slice(0, 3).map(x => typeof x === 'object' ? JSON.stringify(x) : String(x)), values: many ? null : [...seen.values()].sort((a, b) => b.n - a.n) };
-          }) }))
+          }),
+          // first rows, for showing the file's contents before migrating
+          rows: c.recs.slice(0, 200).map(r => c.columns.map(col => { const v = r[col.name]; return v == null ? '' : v instanceof Uint8Array ? `(${v.length} bytes)` : typeof v === 'object' ? JSON.stringify(v) : String(v); })) }))
       };
     } finally { if (st.db) st.db.close(); }
   }

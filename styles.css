@@ -560,3 +560,16 @@ select.mig-bad-sel { border-color: var(--danger); }
 .mig-dlg .mig-choice { grid-template-columns: 1fr; }
 .mig-dlg .mig-devhub > label { display: flex; flex-direction: column; }
 .mig-dlg .fmt-opt .chip { display: inline-block; width: auto; align-self: flex-start; margin: 2px 0 4px; font-size: .72rem; }
+.mf-view, .mf { max-width: 1100px; margin-bottom: 16px; }
+.mf-view h2, .mf > h2 { display: flex; align-items: center; gap: 8px; font-size: 1.05rem; margin: 0 0 10px; }
+.mf-tabs { display: flex; flex-wrap: wrap; gap: 4px; margin-bottom: 8px; }
+.mf-tabs button { padding: 5px 12px; font-size: .88rem; }
+.mf-tabs button[aria-selected="true"] { background: var(--accent); color: var(--accent-ink); border-color: var(--accent); }
+.mf-tabs button[aria-selected="true"] .hint { color: inherit; opacity: .8; }
+.mf-grid { max-height: 380px; }
+.mf-fmt { grid-template-columns: 1fr 1fr; }
+.mf-map { margin-top: 12px; border: 1px solid var(--line); border-radius: 10px; padding: 4px 14px 10px; }
+.mf-map > summary { cursor: pointer; font-weight: 600; padding: 8px 0; }
+.mf-map h3 { font-size: .95rem; margin: 16px 0 6px; }
+.mf-sum { margin: 0 0 8px; }
+@media (max-width: 800px) { .mf-fmt { grid-template-columns: 1fr; } }
