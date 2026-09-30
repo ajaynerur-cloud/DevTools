@@ -177,7 +177,7 @@
     active() { return !session.user && !!this.meta; },
     setMeta(m) { this.meta = m; m ? store.set('devhub:offline', m) : store.del('devhub:offline'); }
   };
-  const FILE_TYPES = [{ description: 'DevHub database', accept: { 'application/json': ['.json'], 'application/vnd.sqlite3': ['.sqlite', '.sqlite3', '.db'] } }];
+  const FILE_TYPES = [{ description: 'Task database (DevHub or your own)', accept: { 'application/json': ['.json'], 'application/vnd.sqlite3': ['.sqlite', '.sqlite3', '.db', '.db3'], 'application/xml': ['.xml'] } }];
   const slug = s => (s.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '') || 'devhub-tasks').slice(0, 40);
 
   function offlineStatus() {
@@ -192,17 +192,24 @@
   }
   async function saveOffline({ as } = {}) {
     const m = offline.meta; if (!m) return false;
+    if (offline.saving && !as) { clearTimeout(offline.timer); offline.timer = setTimeout(() => saveOffline(), 500); return false; }
     const format = as || m.format;
     offline.saving = true; offlineStatus();
     try {
-      const blob = await DevHubDB.encode(format, data.docs, m);
+      let blob;
+      if (m.adapter && !as) {
+        const src = await idb.get('offline-source');
+        if (!src) throw new Error('the original file isn’t in this browser any more — open it again from the Database page');
+        const res = await DevHubAdapter.write(src, data.docs, m.adapter.mapping);
+        blob = res.blob; await idb.set('offline-source', blob); data.persist();
+      } else blob = await DevHubDB.encode(format, data.docs, m);
       if (!as && offline.handle) {
         let perm = await offline.handle.queryPermission({ mode: 'readwrite' });
         if (perm !== 'granted') perm = await offline.handle.requestPermission({ mode: 'readwrite' }).catch(() => 'denied');
         if (perm !== 'granted') { offline.needsPermission = true; return false; }
         const w = await offline.handle.createWritable(); await w.write(blob); await w.close();
         offline.needsPermission = false;
-      } else await saveBlob(blob, as ? m.fileName.replace(/\.[^.]+$/, '') + DevHubDB.ext(format) : m.fileName);
+      } else await saveBlob(blob, as ? m.fileName.replace(/\.[^.]+$/, '') + (m.adapter ? '-devhub' : '') + DevHubDB.ext(format) : m.fileName);
       if (!as) { m.fileDirty = false; m.savedAt = new Date().toISOString(); offline.setMeta(m); }
       return true;
     } catch (e) { if (e.name !== 'AbortError') toast('Couldn’t save the database: ' + e.message); return false; }
@@ -225,11 +232,57 @@
       if (confirm('Some changes aren’t in the database file yet. Save the file first?')) { if (!(await saveOffline())) return false; }
       else if (!confirm('Close without saving? Changes since your last save will be lost.')) return false;
     }
-    clearTimeout(offline.timer); data.wipe('offline'); data.docs = {}; offline.setMeta(null); offline.handle = null; idb.del('offline-handle'); renderNavUser();
+    clearTimeout(offline.timer); data.wipe('offline'); data.docs = {}; offline.setMeta(null); offline.handle = null; idb.del('offline-handle'); idb.del('offline-source'); renderNavUser();
     return true;
   }
+  // ---------- your own file (any .db / .json / .xml) as the task list ----------
+  const maps = { all() { return store.get('devhub:maps', {}); }, save(m) { const a = this.all(); a[m.fingerprint] = m; store.set('devhub:maps', a); } };
+  let pendingCustom = null;
+  async function openCustomFile(file, handle, next, { remap } = {}) {
+    const info = await DevHubAdapter.inspect(file);
+    if (!info.collections.length) throw new Error(`No list of records was found in ${file.name}, so it can’t be used as a task list.`);
+    const saved = !remap && Object.values(maps.all()).find(m => info.collections.some(c => m.collection === c.id && DevHubAdapter.fingerprint(info, c.id) === m.fingerprint));
+    if (saved && saved.mode !== 'import') return activateCustom(file, handle, saved, next);
+    const mapping = (remap && offline.meta?.adapter?.mapping) || (saved ? JSON.parse(JSON.stringify(saved)) : DevHubAdapter.guess(info));
+    pendingCustom = { file, handle, info, next, mapping, mode: remap === 'import' ? 'import' : mapping.mode || 'adapt', impFormat: 'json', impName: file.name.replace(/\.[^.]+$/, '') };
+    location.hash = 'mapfile';
+  }
+  async function activateCustom(file, handle, mapping, next) {
+    const r = await DevHubAdapter.read(file, mapping), now = new Date().toISOString();
+    await idb.set('offline-source', file.slice(0, file.size, file.type));
+    const labels = DevHubAdapter.labels(mapping);
+    activateOffline({ id: uid(), name: file.name.replace(/\.[^.]+$/, ''), format: mapping.fingerprint.split('|')[0], fileName: file.name, createdAt: now, savedAt: now, fileDirty: false,
+      adapter: { mapping, labels, choices: r.choices, extraFields: r.extraFields } }, r.docs, handle);
+    const n = r.docs.tasks.tasks.length, done = r.docs.tasks.tasks.filter(t => t.status === 'done').length;
+    toast(`Opened ${file.name} · ${n} task${n === 1 ? '' : 's'}, ${done} done`);
+    location.hash = next || 'tasks';
+  }
+  // Copy your file's tasks into a NEW standard DevHub database (JSON or SQLite). The original file isn't changed.
+  async function importCustom(file, mapping, format, name, next) {
+    const r = await DevHubAdapter.read(file, mapping), docs = r.docs, now = new Date().toISOString();
+    for (const t of docs.tasks.tasks) { delete t._key; delete t._base; delete t._fbase; delete t._gone; if (t.fields && !Object.keys(t.fields).length) delete t.fields; }
+    try { docs.links = await fetch('seed/links.json').then(x => x.json()); } catch {}
+    if (format === 'sqlite') await DevHubDB.loadSql();
+    const meta = { id: uid(), name, format, fileName: slug(name) + DevHubDB.ext(format), createdAt: now, savedAt: null, fileDirty: true };
+    let handle = null;
+    if (canFSA()) {
+      try { handle = await window.showSaveFilePicker({ suggestedName: meta.fileName, types: [format === 'sqlite' ? { description: 'SQLite database', accept: { 'application/vnd.sqlite3': ['.sqlite', '.db'] } } : { description: 'JSON database', accept: { 'application/json': ['.json'] } }] }); meta.fileName = handle.name; }
+      catch (x) { if (x.name === 'AbortError') return false; handle = null; }
+    }
+    activateOffline(meta, docs, handle);
+    const n = docs.tasks.tasks.length, done = docs.tasks.tasks.filter(t => t.status === 'done').length;
+    if (handle) await saveOffline();
+    toast(`Imported ${n} task${n === 1 ? '' : 's'} (${done} done) into “${name}”${handle ? '' : ' — press Save file to keep a copy'}`);
+    location.hash = next || 'tasks';
+    return true;
+  }
+  const isDevHubError = e => /isn’t a DevHub database|isn’t valid JSON or SQLite/.test(e.message);
+
   async function openDbFile(file, handle, next) {
-    const r = await DevHubDB.decode(file), now = new Date().toISOString();
+    let r;
+    try { r = await DevHubDB.decode(file); }
+    catch (e) { if (isDevHubError(e)) return openCustomFile(file, handle, next); throw e; }
+    const now = new Date().toISOString();
     activateOffline({ id: uid(), name: r.name, format: r.format, fileName: file.name, createdAt: r.createdAt || now, savedAt: now, fileDirty: false }, r.docs, handle);
     const n = r.docs.tasks.tasks.filter(t => !t.deleted).length;
     toast(`Opened “${r.name}” · ${n} task${n === 1 ? '' : 's'}`);
@@ -1124,7 +1177,7 @@
   // ---------- start: choose online or offline ----------
   const ICON_CLOUD = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7 18h10a4 4 0 0 0 .6-7.96A6 6 0 0 0 6.2 9.1 4.5 4.5 0 0 0 7 18z" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg>';
   const ICON_DB = '<svg viewBox="0 0 24 24" aria-hidden="true"><ellipse cx="12" cy="5.5" rx="7" ry="2.8" fill="none" stroke="currentColor" stroke-width="1.8"/><path d="M5 5.5v13c0 1.5 3.1 2.8 7 2.8s7-1.3 7-2.8v-13M5 12c0 1.5 3.1 2.8 7 2.8s7-1.3 7-2.8" fill="none" stroke="currentColor" stroke-width="1.8"/></svg>';
-  const accept = coarse ? '' : 'accept=".json,.sqlite,.sqlite3,.db,application/json,application/vnd.sqlite3,application/x-sqlite3"';
+  const accept = coarse ? '' : 'accept=".json,.sqlite,.sqlite3,.db,.db3,.xml,application/json,application/xml,text/xml,application/vnd.sqlite3,application/x-sqlite3"';
 
   function renderStart() {
     const next = nextRoute(), qs = location.hash.includes('?') ? '?' + location.hash.split('?')[1] : '';
@@ -1141,7 +1194,7 @@
         </section>
         <section class="start-card">
           <div class="start-ico">${ICON_DB}</div><h2>Offline</h2>
-          <p>No account. Your tasks live in a database file on this device — JSON or SQLite.</p>
+          <p>No account. Your tasks live in a file on this device — a DevHub database, or <b>your own</b> .db, .json or .xml task file (work on it directly, or import it into DevHub).</p>
           <ul class="ticks"><li>Works without internet</li><li>You own the file — copy it, back it up, open it in other tools</li><li class="minus">No automatic sync; move the file yourself</li></ul>
           <div class="start-actions"><button class="primary" id="stNew">Create new database</button><button id="stOpen">Open database file</button></div>
           <input type="file" id="stFile" hidden ${accept}>
@@ -1203,17 +1256,20 @@
   const plural = (n, w) => `${n} ${w}${n === 1 ? '' : 's'}`;
   function renderOfflineDb() {
     const m = offline.meta, t = data.get('tasks') || {}, tasks = (t.tasks || []).filter(x => !x.deleted), links = (data.get('links') || []).filter(x => !x.deleted);
+    const A = m.adapter, R = A && A.mapping.roles, roleName = Object.fromEntries(DevHubAdapter.ROLES.map(([k, l]) => [k, l]));
     view().innerHTML = `${syncLine()}<h1>Offline database</h1><p class="lede">Your tasks and links are stored in a file on this device. No account needed.</p>
       <div class="acct-grid">
         <section class="panel"><h2>${esc(m.name)}</h2>
-          <dl class="kv2"><dt>Format</dt><dd>${m.format === 'sqlite' ? 'SQLite' : 'JSON'}</dd><dt>File</dt><dd class="mono">${esc(m.fileName)}</dd>
+          <dl class="kv2"><dt>Format</dt><dd>${A ? `Your own ${m.format === 'sqlite' ? 'SQLite' : m.format.toUpperCase()} file · tasks from <b>${esc(A.mapping.collection.replace(/^t:|^p:/, '').replace(/[[\]"]/g, '').replace(/,/g, ' › '))}</b>` : m.format === 'sqlite' ? 'SQLite' : 'JSON'}</dd><dt>File</dt><dd class="mono">${esc(m.fileName)}</dd>
+            ${A ? `<dt>Fields</dt><dd>${Object.entries(R).filter(([, v]) => v).map(([k, v]) => `${esc(roleName[k])} ← <span class="mono">${esc(v)}</span>`).join(' · ')}${A.extraFields.length ? ` · also shown: <span class="mono">${esc(A.extraFields.join(', '))}</span>` : ''}</dd>` : ''}
             <dt>Saving</dt><dd>${offline.handle ? 'Automatic — every change is written to the file' : 'Kept in this browser; press Save file to write a copy to your device'}</dd>
             <dt>Last saved</dt><dd>${m.savedAt ? new Date(m.savedAt).toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'short' }) : 'Not saved to a file yet'}</dd>
             <dt>Contents</dt><dd>${plural(tasks.length, 'task')} · ${plural((t.projects || []).filter(p => !p.deleted).length, 'project')} · ${plural(links.length, 'link')}</dd></dl>
-          <div class="row" style="margin-top:14px"><button class="primary" id="dbSave">${offline.handle ? 'Save now' : 'Save file'}</button></div>
+          <div class="row" style="margin-top:14px"><button class="primary" id="dbSave">${offline.handle ? 'Save now' : 'Save file'}</button>${A ? '<button id="dbRemap">Change field mapping</button><button id="dbConvert">Import into a DevHub database</button>' : ''}</div>
+          ${A ? '<p class="hint" style="margin-top:10px">Changes are saved back into your file in its own layout — only the fields you change are written. Subtasks, timers and repeat rules your file has no place for are kept on this device. Tool store links aren’t stored in your file.</p>' : ''}
           ${offline.handle ? '' : '<p class="hint" style="margin-top:10px">Each save downloads the whole database. Your browser may add a number to the name (for example “my-tasks (1).json”) — open the newest one next time.</p>'}
         </section>
-        <section class="panel"><h2>Download a copy</h2><p class="hint">Both formats hold exactly the same data, so you can convert any time.</p>
+        <section class="panel"><h2>Download a copy</h2><p class="hint">${A ? 'Save a copy as a DevHub database (all DevHub features, stored in the file).' : 'Both formats hold exactly the same data, so you can convert any time.'}</p>
           <div class="row"><button id="dlJson">Download as JSON</button><button id="dlSqlite">Download as SQLite</button></div>
           <p class="hint" style="margin-top:12px">Want to move this data online? Sign in, then use Account → Import backup with one of these files.</p></section>
         <section class="panel"><h2>Switch database</h2>
@@ -1224,19 +1280,99 @@
     offlineStatus();
     $('#dbSave').onclick = () => saveOffline().then(ok => { if (ok) { toast('Database saved'); renderOfflineDb(); } });
     $('#dlJson').onclick = () => saveOffline({ as: 'json' });
+    const remapAs = mode => async () => {
+      if (m.fileDirty && !(await saveOffline())) return;
+      const src = await idb.get('offline-source'); if (!src) return toast('Open the file again to change its mapping');
+      openCustomFile(new File([src], m.fileName, { type: src.type }), offline.handle, 'tasks', { remap: mode }).catch(e => toast(e.message));
+    };
+    const rm = $('#dbRemap'); if (rm) rm.onclick = remapAs(true);
+    const cv = $('#dbConvert'); if (cv) cv.onclick = remapAs('import');
     $('#dlSqlite').onclick = () => saveOffline({ as: 'sqlite' });
     $('#dbOpen').onclick = async () => {
       let r; try { r = await pickDbFile($('#dbFile')); } catch (e) { return toast(e.message); }
       if (!r) return;
-      try { await DevHubDB.decode(r.file); } catch (e) { return toast(e.message); }
+      try { await DevHubDB.decode(r.file); } catch (e) { if (!isDevHubError(e)) return toast(e.message); }
       if (await closeOffline()) openDbFile(r.file, r.handle, 'tasks').catch(e => toast(e.message));
     };
     $('#dbNew').onclick = async () => { if (await closeOffline()) { location.hash = 'start?next=tasks'; setTimeout(() => $('#stNew')?.click(), 50); } };
     $('#dbOnline').onclick = async () => { if (await closeOffline()) location.hash = 'login?next=tasks'; };
   }
 
+  // ---------- mapping screen for your own file ----------
+  function renderMapFile() {
+    const P = pendingCustom;
+    if (!P) { location.replace(offline.meta ? '#tasks' : '#start?next=tasks'); return; }
+    const A = DevHubAdapter, info = P.info;
+    let m = P.mapping;
+    const col = () => info.collections.find(c => c.id === m.collection);
+    const opt = (v, l, sel) => `<option value="${esc(v)}" ${sel ? 'selected' : ''}>${esc(l)}</option>`;
+    function draw() {
+      const c = col(), colOpts = sel => opt('', '— not in my file —', !sel) + c.columns.map(x => opt(x.name, x.name, x.name === sel)).join('');
+      const vals = n => (c.columns.find(x => x.name === n) || {}).values;
+      const mappedCols = new Set([m.key, ...Object.values(m.roles)].filter(Boolean));
+      const extra = c.columns.filter(x => !mappedCols.has(x.name)).map(x => x.name);
+      const valueTable = (role, map, choices) => { const v = vals(m.roles[role]); if (!m.roles[role]) return ''; if (!v) return `<p class="hint">“${esc(m.roles[role])}” has too many different values to map one by one.</p>`;
+        return `<div class="table-wrap mf-vals"><table><thead><tr><th>In your file</th><th>Tasks</th><th>In DevHub</th></tr></thead><tbody>${v.map(x => `<tr><td><code>${esc(x.s === '' ? '(empty)' : x.s)}</code></td><td>${x.n}</td><td><select data-vmap="${role}" data-v="${esc(x.s)}">${choices.map(([k, l]) => opt(k, l, String(map[x.s]) === String(k))).join('')}</select></td></tr>`).join('')}</tbody></table></div>`; };
+      view().innerHTML = `<h1>Set up your file</h1>
+        <p class="lede"><b>${esc(P.file.name)}</b> isn’t a DevHub database — that’s fine. Choose how to use it, then tell DevHub which of your fields mean what.</p>
+        <section class="panel mf">
+          <fieldset class="fmt mf-mode"><legend>How do you want to use this file?</legend>
+            <label class="fmt-opt"><input type="radio" name="mfMode" value="adapt" ${P.mode !== 'import' ? 'checked' : ''}><span><b>Work on my file directly</b><small>The tracker adapts to your fields and your own words, and saves changes back into ${esc(P.file.name)} in its own layout.</small></span></label>
+            <label class="fmt-opt"><input type="radio" name="mfMode" value="import" ${P.mode === 'import' ? 'checked' : ''}><span><b>Import into a DevHub database</b><small>Copies the tasks into a new standard DevHub file, with every DevHub feature stored in the file. ${esc(P.file.name)} isn’t changed.</small></span></label>
+          </fieldset>
+          <div class="opt-grid mf-imp" ${P.mode === 'import' ? '' : 'hidden'}>
+            <label>New database name<input id="mfName" value="${esc(P.impName)}" maxlength="60"></label>
+            <label>Format<select id="mfFmt">${opt('json', 'JSON — readable text', P.impFormat === 'json')}${opt('sqlite', 'SQLite — a real database', P.impFormat === 'sqlite')}</select></label>
+          </div>
+          <div class="opt-grid mf-top">
+            <label>Tasks are in<select id="mfCol">${info.collections.map(x => opt(x.id, `${x.label} (${x.count} records)`, x.id === m.collection)).join('')}</select></label>
+            <label>Unique id<select id="mfKey">${opt('', info.kind === 'sqlite' ? '— row id —' : '— row position —', !m.key)}${c.columns.map(x => opt(x.name, x.name, x.name === m.key)).join('')}</select></label>
+          </div>
+          <h2>Fields</h2>
+          <div class="table-wrap"><table class="mf-roles"><thead><tr><th>DevHub</th><th>Your field</th><th>Example</th></tr></thead><tbody>
+            ${A.ROLES.map(([k, l]) => { const ex = (c.columns.find(x => x.name === m.roles[k]) || {}).sample || []; return `<tr><td><b>${esc(l)}</b>${k === 'title' ? ' <span class="hint">required</span>' : ''}</td><td><select data-role="${k}">${colOpts(m.roles[k])}</select></td><td class="hint">${esc(ex.slice(0, 2).join(' · ').slice(0, 80))}</td></tr>`; }).join('')}
+          </tbody></table></div>
+          ${m.roles.status ? `<h2>Status values</h2><p class="hint">Which of your values mean to do, in progress and done.${P.mode === 'import' ? '' : ' DevHub’s board columns will use your own words.'}</p>${valueTable('status', m.statusMap, [['todo', A.STATUS_LABEL.todo], ['doing', A.STATUS_LABEL.doing], ['done', A.STATUS_LABEL.done]])}` : '<p class="hint">No status field chosen: every task starts as “To do”, and status is kept on this device only.</p>'}
+          ${m.roles.priority ? `<h2>Priority values</h2>${valueTable('priority', m.prioMap, [[1, 'Urgent'], [2, 'High'], [3, 'Medium'], [4, 'Low']])}` : ''}
+          <h2>Other fields</h2><p class="hint">${extra.length ? `<span class="mono">${esc(extra.join(', '))}</span> — shown and editable in each task’s details${P.mode === 'import' ? ', and kept in the DevHub database' : ', and saved back to your file'}.` : 'None — every field is mapped.'}</p>
+          <p class="form-err" id="mfErr" role="alert" hidden></p>
+          <div class="row action-bar"><button class="primary" id="mfGo">${P.mode === 'import' ? 'Import' : 'Open'} ${c.count} task${c.count === 1 ? '' : 's'}</button><button type="button" class="ghost" id="mfCancel">Cancel</button><span class="hint">${P.mode === 'import' ? 'The mapping is remembered on this device, so the next import is quicker.' : 'Remembered on this device: next time this file opens straight to your tasks.'}</span></div>
+        </section>`;
+      view().querySelectorAll('[name="mfMode"]').forEach(r => r.onchange = () => { P.mode = r.value; draw(); });
+      const nm = $('#mfName'); if (nm) nm.oninput = () => { P.impName = nm.value; };
+      const fm = $('#mfFmt'); if (fm) fm.onchange = () => { P.impFormat = fm.value; };
+      $('#mfCol').onchange = e => { m = A.guess(info, e.target.value); draw(); };
+      $('#mfKey').onchange = e => { m.key = e.target.value || null; draw(); };
+      view().querySelectorAll('[data-role]').forEach(s => s.onchange = () => {
+        const role = s.dataset.role, v = s.value || null;
+        for (const [k, x] of Object.entries(m.roles)) if (x && x === v && k !== role) m.roles[k] = null; // one field per role
+        m.roles[role] = v;
+        if (role === 'status') m.statusMap = v ? A.guessStatusMap(vals(v)) : {};
+        if (role === 'priority') m.prioMap = v ? A.guessPrioMap(vals(v)) : {};
+        if (m.formats) delete m.formats[role];
+        m.formats ||= {}; draw();
+      });
+      view().querySelectorAll('[data-vmap]').forEach(s => s.onchange = () => { (s.dataset.vmap === 'status' ? m.statusMap : m.prioMap)[s.dataset.v] = s.dataset.vmap === 'priority' ? +s.value : s.value; });
+      $('#mfCancel').onclick = () => { pendingCustom = null; location.hash = offline.meta ? 'account' : 'start?next=tasks'; };
+      $('#mfGo').onclick = async () => {
+        const err = $('#mfErr'); err.hidden = true;
+        if (!m.roles.title) { err.textContent = 'Choose which field holds the task title.'; err.hidden = false; return; }
+        const imp = P.mode === 'import', label = b0 => b0.textContent = `${imp ? 'Import' : 'Open'} ${col().count} tasks`;
+        if (imp && !P.impName.trim()) { err.textContent = 'Give the new DevHub database a name.'; err.hidden = false; return; }
+        const b = $('#mfGo'); b.disabled = true; b.textContent = imp ? 'Importing…' : 'Opening…';
+        try {
+          m.formats ||= {}; A.finish(info, m); m.mode = P.mode; maps.save(m);
+          if (offline.meta && !(await closeOffline())) { b.disabled = false; label(b); return; }
+          if (imp) { if (!(await importCustom(P.file, m, P.impFormat, P.impName.trim(), P.next))) { b.disabled = false; label(b); return; } pendingCustom = null; return; }
+          pendingCustom = null; await activateCustom(P.file, P.handle, m, P.next);
+        } catch (e) { err.textContent = e.message; err.hidden = false; b.disabled = false; b.textContent = 'Try again'; }
+      };
+    }
+    draw();
+  }
+
   // ---------- router ----------
-  const routes = { tools: sub => renderTools(sub), links: renderLinks, account: () => offline.active() ? renderOfflineDb() : renderAccount(), login: renderLogin, register: renderRegister, start: renderStart };
+  const routes = { tools: sub => renderTools(sub), links: renderLinks, account: () => offline.active() ? renderOfflineDb() : renderAccount(), login: renderLogin, register: renderRegister, start: renderStart, mapfile: renderMapFile };
   const PRIVATE = new Set(['tasks', 'links', 'account']);
   function render() {
     let [route, sub] = (location.hash.slice(1).split('?')[0] || 'tools').split('/');
@@ -1253,7 +1389,9 @@
   data.listeners.add(() => { const r = document.body.dataset.route; if ((r === 'tasks' || r === 'links') && !document.querySelector('dialog[open]')) render(); });
 
   // Shared with tasks.js
-  window.DH = { $, esc, toast, uid, dayKey, addDays, store, data, session, api, routes, render, copy, saveBlob, view, syncLine };
+  // What the task tracker needs to adapt to your own file (null for DevHub databases and online accounts)
+  const custom = () => offline.active() && offline.meta.adapter ? offline.meta.adapter : null;
+  window.DH = { $, esc, toast, uid, dayKey, addDays, store, data, session, api, routes, render, copy, saveBlob, view, syncLine, custom };
 
   window.addEventListener('DOMContentLoaded', () => {
     if (session.user && session.token) { data.ns = session.user.id; data.load(); }

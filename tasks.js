@@ -10,6 +10,11 @@
 
   const PRIO = { 1: 'Urgent', 2: 'High', 3: 'Medium', 4: 'Low' };
   const STATUS = { todo: 'To do', doing: 'In progress', done: 'Done' };
+  // Your own file (offline): use its words for status and priority, and show its extra fields
+  const DEF_STATUS = { ...STATUS }, DEF_PRIO = { ...PRIO };
+  const custom = () => window.DH.custom && window.DH.custom();
+  function applyLabels() { const c = custom(); Object.assign(STATUS, DEF_STATUS, c ? c.labels.status : {}); Object.assign(PRIO, DEF_PRIO, c ? c.labels.priority : {}); }
+  const extraChips = t => { const c = custom(); if (!c || !t.fields) return []; return Object.keys(c.choices).slice(0, 2).filter(k => t.fields[k] != null && t.fields[k] !== '').map(k => `<span class="chip xf" title="${esc(k)}">${esc(k)}: ${esc(t.fields[k])}</span>`); };
   const REPEAT = { '': 'Does not repeat', daily: 'Every day', weekdays: 'Every weekday', weekly: 'Every week', monthly: 'Every month' };
   const COLORS = ['#3346D3', '#1F8A5B', '#C23B3B', '#B7791F', '#7C3AED', '#0E7490', '#DB2777', '#4B5563'];
   const VIEWS = [['today', 'Today'], ['upcoming', 'Upcoming'], ['board', 'Board'], ['all', 'All tasks'], ['insights', 'Insights']];
@@ -154,6 +159,7 @@
     return [
       t.due || t.status !== 'done' ? `<span class="chip due ${t.status === 'done' ? '' : due.cls}">${esc(due.text)}</span>` : '',
       p ? `<span class="chip proj"><i style="background:${esc(p.color)}"></i>${esc(p.name)}</span>` : '',
+      ...extraChips(t),
       ...t.tags.map(g => `<span class="chip tag">#${esc(g)}</span>`),
       t.subtasks.length ? `<span class="chip">${subDone}/${t.subtasks.length} subtasks</span>` : '',
       t.estimate || t.spent ? `<span class="chip">${t.spent ? fmtDur(t.spent) + (t.estimate ? ' / ' : '') : ''}${t.estimate ? fmtEst(t.estimate) : ''}</span>` : '',
@@ -267,6 +273,7 @@
   }
 
   function renderTasks() {
+    applyLabels();
     const v = view();
     v.innerHTML = `${syncLine()}<div class="tk">
       <div id="tkHead"></div>
@@ -357,7 +364,9 @@
 
   /* ---------------- task drawer ---------------- */
   function openTask(id) {
+    applyLabels();
     const dlg = $('#tkDrawer'), d = doc(), t = find(d, id); if (!t) return;
+    const cx = custom() || { choices: {} }, xf = custom() ? cx.extraFields : Object.keys(t.fields || {}); // imported files keep their extra fields too
     const projects = d.projects.filter(p => !p.deleted);
     dlg.innerHTML = `<form method="dialog" class="dr">
       <header class="dr-top"><div class="seg" role="radiogroup" aria-label="Status">${Object.entries(STATUS).map(([k, v]) => `<button type="button" role="radio" aria-checked="${t.status === k}" data-status="${k}">${v}</button>`).join('')}</div><button class="ghost dr-x" value="close" aria-label="Close">✕</button></header>
@@ -371,6 +380,8 @@
         <label>Tags<input name="tags" value="${esc(t.tags.join(', '))}" placeholder="bug, frontend" autocapitalize="off"></label>
       </div>
       <label class="dr-label">Notes<textarea name="notes" rows="4" placeholder="Details, links, acceptance criteria…">${esc(t.notes)}</textarea></label>
+      ${xf.length ? `<section class="dr-xf"><h3>More fields <span class="hint">${custom() ? `from ${esc(window.DH.store.get('devhub:offline', {}).fileName || 'your file')}` : 'imported'}</span></h3><div class="dr-grid">${xf.map(k => { const v = t.fields?.[k] ?? '', ch = cx.choices[k];
+        return `<label>${esc(k)}${ch ? `<select data-xf="${esc(k)}"><option value=""></option>${[...new Set([...ch, ...(v === '' ? [] : [String(v)])])].map(o => `<option ${String(v) === o ? 'selected' : ''}>${esc(o)}</option>`).join('')}<option value="__other">Other…</option></select>` : `<input data-xf="${esc(k)}" value="${esc(v)}">`}</label>`; }).join('')}</div></section>` : ''}
       <section class="dr-sub"><h3>Subtasks <span class="hint" data-subcount></span></h3><ul data-subs></ul>
         <div class="dr-subadd"><input data-newsub placeholder="Add a subtask and press Enter" aria-label="New subtask"><button type="button" data-addsub>Add</button></div></section>
       <section class="dr-time"><div><h3>Time tracked</h3><p class="dr-spent" data-spent>${t.timerStart ? fmtClock(spentNow(t)) : fmtDur(spentNow(t))}${t.estimate ? ` of ${fmtEst(t.estimate)} estimated` : ''}</p></div>
@@ -385,6 +396,9 @@
     title.addEventListener('input', () => { grow(); patch(id, { title: title.value.replace(/\n/g, ' ').trim() || 'Untitled' }); });
     title.addEventListener('keydown', e => { if (e.key === 'Enter') e.preventDefault(); });
     f.due.onchange = () => patch(id, { due: f.due.value || null });
+    dlg.querySelectorAll('[data-xf]').forEach(el => el.onchange = () => { const x = find(doc(), id), k = el.dataset.xf, old = x.fields?.[k];
+      if (el.value === '__other') { const nv = prompt(`New value for ${k}`); if (!nv?.trim()) { el.value = old ?? ''; return; } el.add(new Option(nv.trim(), nv.trim()), el.options.length - 1); el.value = nv.trim(); const c = custom(); if (c && c.choices[k] && !c.choices[k].includes(nv.trim())) c.choices[k].push(nv.trim()); }
+      const v = typeof old === 'number' && el.value !== '' && !isNaN(+el.value) ? +el.value : el.value; patch(id, { fields: { ...(x.fields || {}), [k]: v } }); });
     f.priority.onchange = () => patch(id, { priority: +f.priority.value });
     f.repeat.onchange = () => patch(id, { repeat: f.repeat.value || null });
     f.estimate.onchange = () => patch(id, { estimate: f.estimate.value ? Math.max(0, Math.round(+f.estimate.value)) : null });

@@ -41,11 +41,42 @@ The developer tools never need either; they always work without signing in.
 - **Create new database:** pick a name and a format.
   - **JSON** is readable text you can keep in Git.
   - **SQLite** is a real database you can query with DB Browser for SQLite, `sqlite3` or DBeaver. It has tables `tasks`, `projects`, `links`, `settings` and `meta`, plus an `open_tasks` view.
-- **Open database file:** choose a `.json`, `.sqlite` or `.db` file from your computer, phone or tablet.
+- **Open database file:** choose a `.json`, `.sqlite`, `.db` or `.xml` file from your computer, phone or tablet: a DevHub database, or your own task file (see below).
 - **How saving works:**
   - **Chrome or Edge on a computer:** you pick where the file lives, and every change is saved into it automatically.
   - **Phones, tablets, Firefox, Safari and the Android app:** your database is kept in the browser while you work, so nothing is lost on reload. Press **Save file** to write a copy to Downloads or Files (in the Android app, it opens the share sheet). The status line shows whether the file is up to date.
 - **The Database page** (bottom tab on phones, your name chip on desktop) shows file details. You can download the data as JSON or SQLite to convert between them, switch files, or close the database and sign in instead.
+
+### Use your own task file (offline)
+
+"Open database file" also accepts **any** task list you already have: a `.db`/`.sqlite` from another app, a `.json` or an `.xml`. It doesn't need to be a DevHub database.
+
+When you open one, choose **how** to use it. Both options share the same field and value mapping:
+
+| | Work on my file directly | Import into a DevHub database |
+|---|---|---|
+| What happens | The tracker adapts to your file, and changes are saved back into it | Tasks are copied into a new standard DevHub `.json` or `.sqlite` |
+| Your original file | Updated in its own layout | Not changed |
+| Labels | Your own words (e.g. "Completed") | DevHub's (To do · In progress · Done) |
+| Extra fields (e.g. `rag`) | Saved in your file | Kept in the DevHub database |
+| Subtasks, timers, repeat | Kept on this device | Stored in the file |
+| Next time | Opens straight to your tasks | Asks again, with your mapping prefilled |
+
+An own-file database can also be converted later: Database → **Import into a DevHub database**.
+
+1. **Set up your file** (first time only). DevHub finds the table or list that holds your tasks and suggests which of your fields is the title, status, priority, due date, project, notes, tags and dates. For example, `description` becomes Notes, `due_date` becomes Due date, and `created` becomes Created. It also asks what your status and priority values mean, for example `Completed` = Done and `In Progress` = In progress. You can change any of these.
+2. **The whole tracker works on it:** Today, Upcoming, Board, All tasks, Insights, timers and quick-add.
+   - Board columns and priorities use your file's own words (e.g. "Not Started · In Progress · Completed").
+   - Project names become projects.
+   - Fields DevHub has no place for (e.g. `rag`, `reminder`) show as chips and can be edited under **More fields** in each task.
+3. **Saving writes back into your file, in its own layout:**
+   - Only the fields you changed are written. Everything else stays exactly as it was, including other tables, views and indexes.
+   - Values follow the file's style: `Completed` / `true` / `1`, date formats like `2026-09-30T08:10:30` or `30/09/2026`, and the file's letter case.
+   - New tasks get the next id, and deleted tasks are removed.
+   - On Chrome/Edge desktop, saving goes straight into the file. Elsewhere, **Save file** downloads the updated copy.
+4. **Remembered on this device.** The mapping is saved for files with the same layout, so the next time you open the file it goes straight to your tasks. To change it, use Database → **Change field mapping**. Subtasks, timers and repeat rules your file has no column for are also kept on this device.
+
+To move a file like this fully into DevHub's own format, use Database → Download as JSON/SQLite. You can also use the **Data migrator** tool.
 
 **Moving between modes**
 - **Offline to online:** sign in, then use Account → Import backup with your `.json` or `.sqlite` file.
@@ -113,7 +144,7 @@ DevHub uses **two GitHub repositories**. All code goes in the first one, and the
 .github/workflows/android.yml   builds the Android APK
 .github/workflows/pages.yml     optional GitHub Pages deploy
 icons/  vendor/  seed/          icons, bundled libraries, default links
-index.html  styles.css  config.js  app.js  tasks.js  worker.js  migrate.js  sw.js  manifest.webmanifest
+index.html  styles.css  config.js  offline-db.js  adapter.js  app.js  tasks.js  worker.js  migrate.js  sw.js  manifest.webmanifest
 server.js                       the server Render runs
 render.yaml                     tells Render how to run it
 package.json  capacitor.config.json   used by the APK build

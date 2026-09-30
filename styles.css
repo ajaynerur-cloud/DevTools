@@ -530,3 +530,24 @@ main:focus, main:focus-visible { outline: none; }
 .mig-vtable input, .mig-fields td input[data-custom] { margin-top: 4px; padding: 4px 8px; font-size: .85rem; min-height: 0; }
 select.mig-bad-sel { border-color: var(--danger); }
 .mig-sample summary { cursor: pointer; font-size: .9rem; color: var(--accent); padding: 6px 0; }
+
+/* ================= Your own file as task list ================= */
+.mf { max-width: 980px; }
+.mf h2 { font-size: 1.02rem; margin: 22px 0 6px; }
+.mf-top { padding-bottom: 0; }
+.mf-top > label { display: flex; flex-direction: column; }
+.mf-roles td, .mf-vals td { white-space: normal !important; overflow: visible !important; }
+.mf-roles select, .mf-vals select { min-height: 0; padding: 5px 8px; min-width: 180px; width: 100%; }
+.mf-roles td.hint { max-width: 280px; overflow-wrap: anywhere; }
+.mf-vals { max-width: 620px; }
+.table-wrap.mf-vals, .mf .table-wrap { max-height: none; }
+.chip.xf { background: color-mix(in srgb, var(--mark) 22%, transparent); }
+.dr-xf h3 { font-size: .95rem; margin: 16px 0 6px; }
+.dr-xf .dr-grid { margin-top: 0; }
+@media (max-width: 800px) {
+  .mf-roles th:nth-child(3), .mf-roles td:nth-child(3) { display: none; }
+  .mf-roles select, .mf-vals select { min-width: 0; }
+}
+.mf-mode { margin: 0 0 6px; }
+.mf-imp { margin-top: 4px; }
+.mf-imp > label { display: flex; flex-direction: column; }
