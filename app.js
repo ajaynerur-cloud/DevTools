@@ -526,6 +526,38 @@
   const MIG_MODES = { upsert: 'Update matching records, add the rest', 'insert-new': 'Add only records that aren’t there yet', append: 'Add every record', replace: 'Replace everything in the target collection' };
   const migNorm = s => String(s).replace(/^[@#]/, '').toLowerCase().replace(/[^a-z0-9]/g, '');
   const migSing = s => migNorm(s).replace(/(ies)$/, 'y').replace(/(ses|xes)$/, s => s.slice(0, -2)).replace(/s$/, '');
+  // Field names that usually mean the same thing
+  const FIELD_SYN = [
+    ['notes', 'note', 'description', 'desc', 'details', 'body', 'comment', 'comments', 'remarks'],
+    ['due', 'duedate', 'deadline', 'dueon', 'dueby', 'duedt', 'targetdate', 'enddate'],
+    ['createdat', 'created', 'createdon', 'creationdate', 'datecreated', 'createtime', 'createddate'],
+    ['updatedat', 'updated', 'modified', 'lastmodified', 'modifiedat', 'updatetime', 'modifiedon', 'updatedon', 'lastupdated'],
+    ['completedat', 'completedon', 'donedate', 'finishedat', 'closedat', 'completiondate', 'dateclosed'],
+    ['title', 'name', 'subject', 'summary', 'task', 'taskname'],
+    ['project', 'projectid', 'projectname'],
+    ['tags', 'labels', 'categories', 'keywords'],
+    ['priority', 'prio', 'importance', 'severity'],
+    ['status', 'state', 'stage'],
+    ['estimate', 'estimatemin', 'estimateminutes', 'effort'],
+    ['url', 'link', 'href', 'website']
+  ];
+  // Values that usually mean the same thing (matched against a target choice's value or label)
+  const VALUE_SYN = [
+    ['done', 'completed', 'complete', 'closed', 'finished', 'resolved', 'fixed', 'shipped', 'delivered', 'yes', 'true'],
+    ['doing', 'inprogress', 'started', 'active', 'ongoing', 'wip', 'working', 'inreview', 'review', 'underway'],
+    ['todo', 'notstarted', 'open', 'new', 'pending', 'backlog', 'planned', 'tobedone', 'notdone', 'no', 'false'],
+    ['urgent', 'critical', 'highest', 'blocker', 'p0', 'veryhigh'],
+    ['high', 'important', 'p1', 'major'],
+    ['medium', 'med', 'normal', 'moderate', 'default', 'p2', 'average'],
+    ['low', 'lowest', 'minor', 'trivial', 'p3', 'p4']
+  ];
+  const synMatch = (groups, a, b) => { a = migNorm(a); b = migNorm(b); return a === b || groups.some(g => g.includes(a) && g.includes(b)); };
+  const choicesOf = col => col ? col.choices ? col.choices.map(([v, l]) => ({ v, l })) : col.values ? col.values.map(x => ({ v: x.v, l: x.v })) : null : null;
+  function autoValue(src, choices) {
+    if (!choices) return undefined;
+    const hit = choices.find(c => migNorm(c.v) === migNorm(src) || migNorm(c.l) === migNorm(src)) || choices.find(c => synMatch(VALUE_SYN, src, c.v) || synMatch(VALUE_SYN, src, c.l));
+    return hit ? hit.v : undefined;
+  }
 
   function migratorTool() {
     return el => {
@@ -551,7 +583,7 @@
             const r = await runJob({ kind: 'inspect', source: f.blob, name: f.name }, progressUI($('[data-prog]', el)));
             info[side] = { ...r.info, file: f };
             const i = info[side];
-            $(`[data-info="${side}"]`, el).textContent = `${MIG_KIND[i.kind]} · ${i.collections.length ? i.collections.map(c => `${c.label} (${c.count.toLocaleString()})`).join(', ') : 'empty — new collections will be created'}`;
+            $(`[data-info="${side}"]`, el).textContent = `${i.profile === 'devhub' ? 'DevHub database' : MIG_KIND[i.kind]}${i.profile === 'devhub' ? ` (${MIG_KIND[i.kind]})` : ''} · ${i.collections.length ? i.collections.map(c => `${c.label} (${c.count.toLocaleString()})`).join(', ') : 'empty — new collections will be created'}`;
           }
           renderMap();
         } catch (e) { mapEl.hidden = false; mapEl.innerHTML = `<div class="out err">${esc(e.message)}</div>`; }
@@ -564,7 +596,6 @@
       el.querySelectorAll('[data-new]').forEach(b => b.onclick = () => {
         const k = b.dataset.new, name = 'migrated.' + (k === 'sqlite' ? 'db' : k);
         dstSrc.clear(); pick('dst')({ blob: new Blob([], { type: 'application/octet-stream' }), name, size: 0 });
-        $('[data-info="dst"]', el).textContent = `New empty ${MIG_KIND[k]} (${name})`;
       });
 
       function renderMap() {
@@ -572,13 +603,14 @@
         if (!S.collections.length) { mapEl.hidden = false; mapEl.innerHTML = `<div class="out err">No tables or lists of records were found in ${esc(S.name)}.</div>`; return; }
         const noun = D.kind === 'sqlite' ? 'table' : 'collection', fnoun = D.kind === 'sqlite' ? 'column' : D.kind === 'xml' ? 'element' : 'field';
         const bestDst = sc => {
-          const hit = D.collections.find(c => migNorm(c.name) === migNorm(sc.name)) || D.collections.find(c => migSing(c.name) === migSing(sc.name));
+          const hit = D.collections.find(c => migNorm(c.name) === migNorm(sc.name) && c.devhub) || D.collections.find(c => migNorm(c.name) === migNorm(sc.name)) || D.collections.find(c => migSing(c.name) === migSing(sc.name));
           if (hit) return hit.id;
           if (S.collections.length === 1 && D.collections.length === 1) return D.collections[0].id;
           return D.rootArray && D.collections.length ? D.collections[0].id : 'new';
         };
         mapEl.hidden = false;
-        mapEl.innerHTML = `<h3 class="mig-h"><span class="mig-n">3</span> Map ${S.collections.length === 1 ? 'the data' : 'each source ' + (S.kind === 'sqlite' ? 'table' : 'collection')}</h3>
+        mapEl.innerHTML = `<h3 class="mig-h"><span class="mig-n">3</span> Map ${S.collections.length === 1 ? 'the data' : 'each source ' + (S.kind === 'sqlite' ? 'table' : 'collection')} <span class="hint">— check the fields and values, then preview</span></h3>
+          ${D.profile === 'devhub' ? '<p class="hint mig-dh">The target is a <b>DevHub database</b>: its task fields and allowed values (status To do / In progress / Done, priority Urgent–Low) are listed even when it’s empty. Project names become DevHub projects, and dates are converted.</p>' : ''}
           <div class="row mig-global"><label class="check-line"><input type="checkbox" data-addnew checked> Add ${fnoun}s the target doesn’t have yet</label>
           ${D.kind === 'json' ? '<label class="check-line"><input type="checkbox" data-parsejson checked> Turn JSON text (e.g. from SQLite) into real objects and arrays</label>' : ''}
           ${S.kind === 'xml' ? '<label class="check-line"><input type="checkbox" data-infer checked> Detect numbers and true/false in XML values</label>' : ''}</div>
@@ -591,17 +623,22 @@
               <label data-k>Match source field<select data-skey>${sc.columns.map(c => `<option>${esc(c.name)}</option>`).join('')}</select></label>
               <label data-k>…to target ${fnoun}<select data-dkey></select></label>
             </div>
-            <details class="mig-fields"><summary></summary><div class="table-wrap"><table><thead><tr><th>Source field</th><th>→ Target ${fnoun}</th></tr></thead><tbody></tbody></table></div></details>
+            <details class="mig-fields" open><summary></summary><p class="hint mig-warn" data-warn hidden></p><div class="table-wrap"><table><thead><tr><th>Source field</th><th>→ Target ${fnoun}</th><th>Values</th></tr></thead><tbody></tbody></table></div></details>
+            <details class="mig-sample"><summary>Sample: first ${Math.min(3, sc.sample.length)} records after mapping</summary><div class="table-wrap" data-sample></div></details>
           </div>`).join('')}
-          <div class="row action-bar"><button class="primary" data-go>Migrate into ${esc(D.name)}</button></div>`;
+          <div class="row action-bar"><button class="primary" data-go>Preview migration</button><span class="hint">Nothing is written until you create the file.</span></div>`;
+
         mapEl.querySelectorAll('.mig-col').forEach(box => {
           const sc = S.collections[+box.dataset.i], dsel = $('[data-dst]', box);
           dsel.value = bestDst(sc); if (!dsel.value) dsel.selectedIndex = 0;
+          const target = () => D.collections.find(c => c.id === dsel.value) || null;
           const upd = () => {
-            const dc = D.collections.find(c => c.id === dsel.value), isNew = !dc, addNew = $('[data-addnew]', mapEl).checked;
+            const dc = target(), isNew = !dc, addNew = $('[data-addnew]', mapEl).checked;
             $('[data-nn]', box).hidden = !isNew;
             const tcols = dc ? dc.columns : [];
-            // key defaults
+            const known = tcols.filter(t => t.known), matchIn = (list, name) => list.find(t => migNorm(t.name) === migNorm(name)) || list.find(t => synMatch(FIELD_SYN, name, t.name));
+            const matchCol = name => (known.length && matchIn(known, name)) || matchIn(tcols, name); // prefer the target's real (DevHub) fields over stray ones
+            // key
             const dkey = $('[data-dkey]', box), skey = $('[data-skey]', box);
             const keyCols = isNew ? sc.columns.map(c => c.name) : tcols.map(c => c.name);
             dkey.innerHTML = keyCols.map(c => `<option>${esc(c)}</option>`).join('');
@@ -610,77 +647,142 @@
             if (tk) { pairD = tk; pairS = sc.columns.find(c => migNorm(c.name) === migNorm(tk))?.name || (isNew ? tk : sk); }
             else if (sk) { pairS = sk; pairD = keyCols.find(c => migNorm(c) === migNorm(sk)) || null; }
             if (pairS && pairD) { skey.value = pairS; dkey.value = pairD; }
-            const hasKey = !!(pairS && pairD && (isNew || tcols.length));
-            $('[data-mode]', box).value = isNew || !dc.count ? (hasKey ? 'upsert' : 'append') : hasKey ? 'upsert' : 'append';
-            // field mapping rows
+            $('[data-mode]', box).value = pairS && pairD ? 'upsert' : 'append';
+            // fields: each target used once by default
+            const used = new Set();
             const tb = $('tbody', box);
-            tb.innerHTML = sc.columns.map(c => {
-              const m = tcols.find(t => migNorm(t.name) === migNorm(c.name));
-              const opt = `<option value="__new">+ New ${fnoun} “${esc(c.name.replace(/^[@#]/, ''))}”</option><option value="__skip">Skip</option>${tcols.map(t => `<option value="${esc(t.name)}">${esc(t.name)}${t.type ? ` · ${esc(t.type.toLowerCase())}` : ''}</option>`).join('')}`;
+            tb.innerHTML = sc.columns.map((c, ci) => {
+              let m = matchCol(c.name); if (m && used.has(m.name)) m = null; if (m) used.add(m.name);
               const v = m ? m.name : isNew || addNew ? '__new' : '__skip';
-              return `<tr data-from="${esc(c.name)}"><td>${esc(c.name)}${c.type ? ` <span class="hint">${esc(c.type.toLowerCase())}</span>` : ''}</td><td><select aria-label="Target for ${esc(c.name)}">${opt}</select></td></tr>`.replace(`value="${esc(v)}"`, `value="${esc(v)}" selected`);
+              const opts = `<option value="__new">+ New ${fnoun} “${esc(c.name.replace(/^[@#]/, ''))}”</option><option value="__custom">Custom name…</option><option value="__skip">Skip</option>${tcols.length ? `<optgroup label="Target ${fnoun}s">${tcols.map(t => `<option value="${esc(t.name)}" ${t.name === v ? 'selected' : ''}>${esc(t.name)}${t.hint ? ` — ${esc(t.hint)}` : t.type ? ` · ${esc(String(t.type).toLowerCase())}` : ''}</option>`).join('')}</optgroup>` : ''}`;
+              return `<tr data-ci="${ci}" data-from="${esc(c.name)}"><td>${esc(c.name)}${c.type ? ` <span class="hint">${esc(String(c.type).toLowerCase())}</span>` : ''}</td>
+                <td><select data-to aria-label="Target for ${esc(c.name)}">${opts.replace(`value="${v}"`, `value="${v}" selected`)}</select><input data-custom placeholder="Target ${fnoun} name" hidden></td>
+                <td>${c.values ? `<button type="button" class="ghost mig-vbtn" data-vtoggle></button>` : '<span class="hint">—</span>'}</td></tr>
+                ${c.values ? `<tr class="mig-vrow" data-vrow="${ci}" hidden><td colspan="3"><div class="mig-vals"></div></td></tr>` : ''}`;
             }).join('');
-            tb.querySelectorAll('select').forEach(s => s.onchange = sum);
-            modeUI(); sum();
+            tb.querySelectorAll('tr[data-ci]').forEach(tr => {
+              const sel = $('[data-to]', tr), inp = $('[data-custom]', tr);
+              sel.onchange = () => { inp.hidden = sel.value !== '__custom'; if (!inp.hidden) inp.focus(); buildValues(tr, true); refresh(); };
+              inp.oninput = refresh;
+              const vt = $('[data-vtoggle]', tr); if (vt) vt.onclick = () => { const row = $(`[data-vrow="${tr.dataset.ci}"]`, box); row.hidden = !row.hidden; };
+              buildValues(tr, true);
+            });
+            modeUI(); refresh();
           };
+          // value mapping editor for one field
+          function buildValues(tr, reset) {
+            const c = sc.columns[+tr.dataset.ci]; if (!c.values) return;
+            const tname = $('[data-to]', tr).value, tcol = (target()?.columns || []).find(t => t.name === tname);
+            const choices = choicesOf(tcol), strict = !!(tcol && tcol.choices);
+            const wrap = $(`[data-vrow="${tr.dataset.ci}"] .mig-vals`, box);
+            wrap.innerHTML = `<p class="hint">${strict ? `Target only accepts: ${tcol.choices.map(([v, l]) => `${esc(l)}`).join(', ')}.` : choices ? 'Values already in the target are listed; pick one or keep the source value.' : 'Change a value or keep it as it is.'}</p>
+              <table class="mig-vtable"><tbody>${c.values.map((x, vi) => { const auto = reset ? autoValue(x.v, choices) : undefined;
+                return `<tr data-v="${esc(x.v)}"><td><code>${esc(x.v === '' ? '(empty)' : x.v)}</code> <span class="hint">×${x.n}</span></td><td>→</td>
+                <td><select data-vm><option value="__keep">Keep “${esc(x.v)}”</option>${choices ? choices.map(ch => `<option value="${esc(JSON.stringify(ch.v))}" ${auto !== undefined && ch.v === auto ? 'selected' : ''}>${esc(ch.l)}${ch.l !== String(ch.v) ? ` (${esc(ch.v)})` : ''}</option>`).join('') : ''}<option value="__custom">Other…</option></select><input data-vc placeholder="New value" hidden></td></tr>`; }).join('')}</tbody></table>`;
+            wrap.dataset.strict = strict ? '1' : '';
+            wrap.querySelectorAll('[data-vm]').forEach(s => s.onchange = () => { const i = s.nextElementSibling; i.hidden = s.value !== '__custom'; if (!i.hidden) i.focus(); refresh(); });
+            wrap.querySelectorAll('[data-vc]').forEach(i => i.oninput = refresh);
+          }
           const modeUI = () => { const m = $('[data-mode]', box).value; box.querySelectorAll('[data-k]').forEach(n => n.hidden = !(m === 'upsert' || m === 'insert-new')); };
-          const sum = () => {
-            const v = [...box.querySelectorAll('tbody select')].map(s => s.value);
-            const nNew = v.filter(x => x === '__new').length, nSkip = v.filter(x => x === '__skip').length, nMap = v.length - nNew - nSkip;
-            $('summary', box).textContent = `Fields: ${nMap} matched · ${nNew} new · ${nSkip} skipped — change`;
-          };
-          box.upd = upd;
+          // summary, warnings and the live sample
+          function refresh() {
+            const plan = collect(box);
+            const nNew = plan.cols.filter(x => x.kind === 'new' || x.kind === 'custom').length, nSkip = plan.cols.filter(x => !x.to).length, nMap = plan.cols.length - nNew - nSkip;
+            $('.mig-fields > summary', box).textContent = `Fields: ${nMap} matched · ${nNew} new · ${nSkip} skipped`;
+            const warn = [];
+            box.querySelectorAll('tr[data-ci]').forEach(tr => {
+              const vt = $('[data-vtoggle]', tr); if (!vt) return;
+              const wrap = $(`[data-vrow="${tr.dataset.ci}"] .mig-vals`, box), sels = [...wrap.querySelectorAll('[data-vm]')];
+              const changed = sels.filter(s => s.value !== '__keep').length, strict = wrap.dataset.strict && $('[data-to]', tr).value !== '__skip';
+              const bad = strict ? sels.filter(s => s.value === '__keep' || s.value === '__custom') : [];
+              sels.forEach(s => s.classList.toggle('mig-bad-sel', bad.includes(s)));
+              vt.textContent = `${sels.length} value${sels.length === 1 ? '' : 's'}${changed ? ` · ${changed} mapped` : ''}${bad.length ? ` · ${bad.length} to fix` : ''}`;
+              vt.classList.toggle('mig-bad', !!bad.length);
+              if (bad.length) warn.push(`${tr.dataset.from}: ${bad.map(s => `“${s.closest('tr').dataset.v}”`).join(', ')} ${bad.length === 1 ? 'isn’t an allowed value' : 'aren’t allowed values'} in the target — map ${bad.length === 1 ? 'it' : 'them'}, or DevHub will use its default.`);
+            });
+            const w = $('[data-warn]', box); w.hidden = !warn.length; w.textContent = warn.join(' ');
+            const cols = plan.cols.filter(x => x.to), rows = sc.sample.slice(0, 3);
+            $('[data-sample]', box).innerHTML = cols.length ? `<table><thead><tr>${cols.map(x => `<th>${esc(x.to)}</th>`).join('')}</tr></thead><tbody>${rows.map(r => `<tr>${cols.map(x => { let v = r[x.from]; if (x.values && Object.prototype.hasOwnProperty.call(x.values, v)) v = String(x.values[v]); return `<td>${esc(v.length > 60 ? v.slice(0, 60) + '…' : v)}</td>`; }).join('')}</tr>`).join('')}</tbody></table>` : '<p class="hint">No fields selected.</p>';
+          }
+          box.upd = upd; box.refresh = refresh;
           dsel.onchange = upd; $('[data-mode]', box).onchange = modeUI;
           $('[data-inc]', box).onchange = e => box.classList.toggle('off', !e.target.checked);
           box.classList.toggle('off', !sc.count);
           upd();
         });
         $('[data-addnew]', mapEl).onchange = () => mapEl.querySelectorAll('.mig-col').forEach(b => b.upd());
-        $('[data-go]', mapEl).onclick = run;
+        $('[data-go]', mapEl).onclick = () => run(true);
       }
 
-      async function run() {
-        const S = info.src, D = info.dst;
-        const plan = [...mapEl.querySelectorAll('.mig-col')].filter(b => $('[data-inc]', b).checked).map(b => {
-          const sc = S.collections[+b.dataset.i], dst = $('[data-dst]', b).value, mode = $('[data-mode]', b).value;
-          const cols = [...b.querySelectorAll('tbody tr')].map(tr => { const v = $('select', tr).value, from = tr.dataset.from;
-            return { from, to: v === '__skip' ? null : v === '__new' ? (D.kind === 'xml' ? from : from.replace(/^[@#]/, '')) : v }; });
-          const skey = $('[data-skey]', b).value; let dkey = $('[data-dkey]', b).value;
-          if (dst === 'new') dkey = cols.find(c => c.from === dkey)?.to || dkey;
-          return { src: sc.id, dst, newName: $('[data-newname]', b).value, mode, srcKey: skey, dstKey: dkey, cols, label: sc.label };
+      function collect(b) {
+        const S = info.src, D = info.dst, sc = S.collections[+b.dataset.i];
+        const dst = $('[data-dst]', b).value, mode = $('[data-mode]', b).value;
+        const cols = [...b.querySelectorAll('tbody tr[data-ci]')].map(tr => {
+          const v = $('[data-to]', tr).value, from = tr.dataset.from;
+          const to = v === '__skip' ? null : v === '__new' ? (D.kind === 'xml' ? from : from.replace(/^[@#]/, '')) : v === '__custom' ? ($('[data-custom]', tr).value.trim() || null) : v;
+          const out = { from, to, kind: v === '__new' ? 'new' : v === '__custom' ? 'custom' : v === '__skip' ? 'skip' : 'map' };
+          const vrow = $(`[data-vrow="${tr.dataset.ci}"]`, b);
+          if (vrow) { const values = {}; let any = false;
+            vrow.querySelectorAll('tr[data-v]').forEach(r => { const s = $('[data-vm]', r); if (s.value === '__keep') return;
+              values[r.dataset.v] = s.value === '__custom' ? $('[data-vc]', r).value : JSON.parse(s.value); any = true; });
+            if (any) out.values = values; }
+          return out;
         });
+        const skey = $('[data-skey]', b).value; let dkey = $('[data-dkey]', b).value;
+        if (dst === 'new') dkey = cols.find(c => c.from === dkey)?.to || dkey;
+        return { src: sc.id, dst, newName: $('[data-newname]', b).value, mode, srcKey: skey, dstKey: dkey, cols, label: sc.label };
+      }
+
+      let lastPlan = null;
+      async function run(dryRun) {
+        const plan = [...mapEl.querySelectorAll('.mig-col')].filter(b => $('[data-inc]', b).checked).map(collect);
         if (!plan.length) return toast('Tick at least one source collection to migrate');
         const bad = plan.find(p => (p.mode === 'upsert' || p.mode === 'insert-new') && !p.cols.some(c => c.from === p.srcKey && c.to));
         if (bad && bad.dst === 'new') return toast(`${bad.label}: the match field “${bad.srcKey}” is set to Skip`);
-        if (plan.some(p => p.mode === 'replace') && !confirm('“Replace everything” removes the existing records in those target collections before adding the new ones. Continue?')) return;
+        const noName = plan.find(p => p.cols.some(c => c.kind === 'custom' && !c.to)); if (noName) return toast(`${noName.label}: type a name for each “Custom name” field`);
+        if (!dryRun && plan.some(p => p.mode === 'replace') && !confirm('“Replace everything” removes the existing records in those target collections before adding the new ones. Continue?')) return;
         const opts = { parseJson: $('[data-parsejson]', mapEl)?.checked, inferTypes: $('[data-infer]', mapEl)?.checked };
         const go = $('[data-go]', mapEl); go.disabled = true; resEl.hidden = true;
         try {
-          const r = await runJob({ kind: 'migrate', source: files.src.blob, sourceName: files.src.name, target: files.dst.blob, targetName: files.dst.name, plan, opts }, progressUI($('[data-prog]', el)));
-          showResult(r);
+          const r = await runJob({ kind: 'migrate', dryRun, source: files.src.blob, sourceName: files.src.name, target: files.dst.blob, targetName: files.dst.name, plan, opts }, progressUI($('[data-prog]', el)));
+          lastPlan = { plan, opts };
+          dryRun ? showPreview(r) : showResult(r);
         } catch (e) { resEl.hidden = false; resEl.innerHTML = `<div class="out err">${esc(e.message)}</div><p class="hint">Nothing was changed — your files are untouched.</p>`; }
         $('[data-prog]', el).hidden = true; go.disabled = false;
       }
-
-      function showResult(r) {
-        const name = files.dst.name, tot = k => r.report.reduce((a, x) => a + x[k], 0);
-        resEl.hidden = false;
-        resEl.innerHTML = `<div class="result-head"><div><b>${esc(name)}</b> <span class="hint">updated</span>
-            <div class="hint">${tot('inserted').toLocaleString()} added · ${tot('updated').toLocaleString()} updated · ${tot('skipped').toLocaleString()} skipped${tot('failed') ? ` · <b class="mig-bad">${tot('failed').toLocaleString()} failed</b>` : ''} · ${fmtBytes(files.dst.size)} → ${fmtBytes(r.blob.size)} · ${(r.ms / 1000).toFixed(1)} s</div></div>
-          <div class="row"><button class="primary" data-dl>Download</button>${canShareFiles() ? '<button data-share>Share</button>' : ''}<button data-chain title="Keep working on the result, e.g. to migrate another source into it">Use as target</button></div></div>
-          <p class="hint">Download saves the updated copy as <b>${esc(name)}</b> — replace your original with it. Your original file was not changed.</p>
-          <div class="table-wrap mig-report"><table><thead><tr><th>Source</th><th>Target</th><th>Added</th><th>Updated</th><th>Skipped</th><th>Failed</th><th>Notes</th></tr></thead><tbody>
-          ${r.report.map(x => `<tr><td>${esc(x.src)}</td><td>${esc(x.dst)}</td><td>${x.inserted.toLocaleString()}</td><td>${x.updated.toLocaleString()}</td><td>${x.skipped.toLocaleString()}</td><td>${x.failed.toLocaleString()}</td><td>${esc([x.created ? 'new' : '', x.cleared ? 'replaced existing' : '', x.newColumns.length ? 'new fields: ' + x.newColumns.join(', ') : ''].filter(Boolean).join(' · '))}</td></tr>`).join('')}
+      const reportTable = r => `<div class="table-wrap mig-report"><table><thead><tr><th>Source</th><th>Target</th><th>Add</th><th>Update</th><th>Skip</th><th>Fail</th><th>Notes</th></tr></thead><tbody>
+          ${r.report.map(x => `<tr><td>${esc(x.src)}</td><td>${esc(x.dst)}</td><td>${x.inserted.toLocaleString()}</td><td>${x.updated.toLocaleString()}</td><td>${x.skipped.toLocaleString()}</td><td>${x.failed.toLocaleString()}</td><td>${esc([x.created ? 'new' : '', x.cleared ? 'replaces existing' : '', x.newColumns.length ? 'new fields: ' + x.newColumns.join(', ') : '', x.projectsCreated ? `${x.projectsCreated} new project${x.projectsCreated === 1 ? '' : 's'}` : ''].filter(Boolean).join(' · '))}</td></tr>`).join('')}
           </tbody></table></div>
+          ${r.report.filter(x => x.renamed).map(x => `<p class="hint">${esc(x.renamed)}</p>`).join('')}
           ${r.report.filter(x => x.errors.length).map(x => `<div class="out err">${esc(x.src)}:\n${esc(x.errors.join('\n'))}${x.failed > x.errors.length ? `\n…and ${(x.failed - x.errors.length).toLocaleString()} more` : ''}</div>`).join('')}
-          ${r.notes.map(n => `<p class="hint">${esc(n)}</p>`).join('')}
-          ${r.previews.map(p => `<p class="hint">Preview: <b>${esc(p.label)}</b> — last ${Math.min(50, p.count)} of ${p.count.toLocaleString()} records after the migration</p>
+          ${(r.notes || []).map(n => `<p class="hint">${esc(n)}</p>`).join('')}`;
+      const tot = (r, k) => r.report.reduce((a, x) => a + x[k], 0);
+      function showPreview(r) {
+        resEl.hidden = false;
+        resEl.innerHTML = `<div class="result-head"><div><b>Preview</b> <span class="hint">— nothing written yet</span>
+            <div class="hint">${tot(r, 'inserted').toLocaleString()} to add · ${tot(r, 'updated').toLocaleString()} to update · ${tot(r, 'skipped').toLocaleString()} to skip${tot(r, 'failed') ? ` · <b class="mig-bad">${tot(r, 'failed').toLocaleString()} would fail</b>` : ''}</div></div>
+          <div class="row"><button class="primary" data-create>Create ${esc(files.dst.name)}</button><button data-back>Change mapping</button></div></div>
+          ${reportTable(r)}
+          ${r.report.map(x => { const cols = [...new Set(x.samples.flatMap(s => Object.keys(s.rec)))]; return x.samples.length ? `<p class="hint">How <b>${esc(x.src)}</b> will be written into <b>${esc(x.dst)}</b> (first ${x.samples.length} of ${(x.inserted + x.updated).toLocaleString()})</p>
+            <div class="table-wrap"><table><thead><tr><th></th>${cols.map(c => `<th>${esc(c)}</th>`).join('')}</tr></thead><tbody>${x.samples.map(s => `<tr><td><span class="chip">${s.action === 'add' ? 'add' : 'update'}</span></td>${cols.map(c => { const v = s.rec[c] ?? ''; return `<td>${esc(v.length > 80 ? v.slice(0, 80) + '…' : v)}</td>`; }).join('')}</tr>`).join('')}</tbody></table></div>` : ''; }).join('')}`;
+        $('[data-create]', resEl).onclick = () => run(false);
+        $('[data-back]', resEl).onclick = () => mapEl.scrollIntoView({ behavior: 'smooth', block: 'start' });
+        resEl.scrollIntoView({ behavior: 'smooth', block: 'start' });
+      }
+      function showResult(r) {
+        const name = files.dst.name;
+        resEl.hidden = false;
+        resEl.innerHTML = `<div class="result-head"><div><b>${esc(name)}</b> <span class="hint">created</span>
+            <div class="hint">${tot(r, 'inserted').toLocaleString()} added · ${tot(r, 'updated').toLocaleString()} updated · ${tot(r, 'skipped').toLocaleString()} skipped${tot(r, 'failed') ? ` · <b class="mig-bad">${tot(r, 'failed').toLocaleString()} failed</b>` : ''} · ${fmtBytes(files.dst.size)} → ${fmtBytes(r.blob.size)} · ${(r.ms / 1000).toFixed(1)} s</div></div>
+          <div class="row"><button class="primary" data-dl>Download</button>${canShareFiles() ? '<button data-share>Share</button>' : ''}<button data-chain title="Keep working on the result, e.g. to migrate another source into it">Use as target</button></div></div>
+          <p class="hint">Download saves the updated copy as <b>${esc(name)}</b> — replace your original with it. Your original file was not changed.${r.profile === 'devhub' ? ' Open it in DevHub with Tasks → Open database file.' : ''}</p>
+          ${reportTable(r)}
+          ${r.previews.map(p => `<p class="hint">Result: <b>${esc(p.label)}</b> — last ${Math.min(50, p.count)} of ${p.count.toLocaleString()} records</p>
             <div class="table-wrap"><table><thead><tr>${p.columns.map(c => `<th>${esc(c)}</th>`).join('')}</tr></thead><tbody>${p.rows.map(row => `<tr>${row.map(v => `<td>${esc(v.length > 120 ? v.slice(0, 120) + '…' : v)}</td>`).join('')}</tr>`).join('')}</tbody></table></div>`).join('')}`;
         $('[data-dl]', resEl).onclick = () => saveBlob(r.blob, name).catch(e => toast(e.message));
         const sh = $('[data-share]', resEl); if (sh) sh.onclick = () => shareBlob(r.blob, name);
         $('[data-chain]', resEl).onclick = () => {
           dstSrc.clear(); files.dst = { blob: r.blob, name, size: r.blob.size }; info.dst = null;
-          $('[data-info="dst"]', el).textContent = `Using the migrated ${name} (${fmtBytes(r.blob.size)}) — choose another source to add more.`;
           toast('The result is now the target'); inspectAll();
         };
       }
@@ -689,7 +791,7 @@
 
   const FILE_TOOLS = [
     ...Object.entries(FMT).map(([k, f]) => ({ id: 'fmt-' + k, group: 'Formatters', name: `${f.name} formatter`, desc: `Pretty-print${f.minify ? ' or minify' : ''} ${f.name}${k === 'js' ? ' and TypeScript/JSX' : k === 'css' ? ', SCSS and Less' : ''}. Open a file from your device or paste text.${k === 'yaml' ? ' Comments are not kept.' : ''}`, render: formatterTool(k) })),
-    { id: 'migrate', group: 'Converters', name: 'Data migrator (DB / JSON / XML)', desc: 'Move records from a .db/.sqlite, .json or .xml file into an existing .db/.sqlite, .json or .xml file — any combination. Map tables and fields, update matching records by key or add new ones, then download the updated file.', render: migratorTool() },
+    { id: 'migrate', group: 'Converters', name: 'Data migrator (DB / JSON / XML)', desc: 'Move records from a .db/.sqlite, .json or .xml file into an existing .db/.sqlite, .json or .xml file — any combination. Map tables, fields and values (e.g. “Completed” → Done), preview the result, then create the updated file.', render: migratorTool() },
     { id: 'conv-any', group: 'Converters', name: 'Any format converter', desc: 'Convert between JSON, NDJSON, CSV, TSV, Excel, XML and YAML. Also exports SQL inserts and Markdown tables.', render: converterTool({}) },
     { id: 'conv-json-csv', group: 'Converters', name: 'JSON ⇄ CSV', desc: 'Nested objects become dot.columns; the reverse rebuilds them.', render: converterTool({ from: ['json', 'ndjson', 'csv', 'tsv'], to: ['csv', 'tsv', 'json', 'ndjson'] }) },
     { id: 'conv-json-xlsx', group: 'Converters', name: 'JSON ⇄ Excel', desc: 'Export JSON to a filtered .xlsx sheet, or read any sheet back to JSON.', render: converterTool({ from: ['json', 'ndjson', 'xlsx'], to: ['xlsx', 'json', 'ndjson'] }) },

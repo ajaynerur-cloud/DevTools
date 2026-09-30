@@ -59,7 +59,7 @@ function findCollections(tree, kind) {
   const out = [];
   const walk = (v, path, d) => {
     if (d > 10 || v === null || typeof v !== 'object') return;
-    if (Array.isArray(v)) { if (v.some(isObj)) out.push(path); return; } // don't descend into records
+    if (Array.isArray(v)) { if (!v.length || v.some(isObj)) out.push(path); return; } // empty lists count too; don't descend into records
     for (const [k, x] of Object.entries(v)) if (!k.startsWith('@') && k !== '#text') walk(x, [...path, k], d + 1);
   };
   walk(tree, [], 0);
@@ -91,7 +91,10 @@ async function openStore(blob, name) {
       const cols = q(`PRAGMA table_info(${qid(t)})`).map(([, n, type, notnull, dflt, pk]) => ({ name: n, type: type || '', pk: +pk, notnull: !!notnull, dflt }));
       return { id: 't:' + t, name: t, label: t, table: t, columns: cols, count: q(`SELECT COUNT(*) FROM ${qid(t)}`)[0][0] };
     });
-    return { kind, name, db, collections };
+    const st = { kind, name, db, collections };
+    try { const m = Object.fromEntries(q('SELECT key, value FROM meta')); if (m.type === 'devhub-database') st.profile = 'devhub'; } catch {}
+    applyProfile(st);
+    return st;
   }
   const text = blob.size ? (await blob.text()).replace(/^﻿/, '') : '';
   let tree, decl = null, indent = 2;
@@ -113,7 +116,92 @@ async function openStore(blob, name) {
     const v = getAt(tree, p), recs = Array.isArray(v) ? v : [v];
     return { id: 'p:' + JSON.stringify(p), name: p[p.length - 1] || 'records', label: pathLabel(p), path: p, columns: colTypesOf(recs), count: recs.filter(isObj).length };
   });
-  return { kind, name, tree, decl, indent, collections, rootArray: Array.isArray(tree) };
+  const st = { kind, name, tree, decl, indent, collections, rootArray: Array.isArray(tree) };
+  if (kind === 'json' && isObj(tree) && (tree.app === 'devhub' || tree.type === 'devhub-database')) {
+    st.profile = 'devhub';
+    // older/odd DevHub files: make sure tasks is { tasks: [], projects: [], settings }
+    if (!isObj(tree.tasks)) { const list = Array.isArray(tree.tasks) ? tree.tasks.filter(x => isObj(x) && !('tasks' in x && 'projects' in x)) : []; tree.tasks = { tasks: list, projects: [], settings: { dailyGoal: 5 } }; }
+    if (!Array.isArray(tree.tasks.tasks)) tree.tasks.tasks = [];
+    if (!Array.isArray(tree.tasks.projects)) tree.tasks.projects = [];
+    if (!Array.isArray(tree.links)) tree.links = [];
+    st.collections = findCollections(tree, kind).map(p => { const v = getAt(tree, p), recs = Array.isArray(v) ? v : [v];
+      return { id: 'p:' + JSON.stringify(p), name: p[p.length - 1] || 'records', label: pathLabel(p), path: p, columns: colTypesOf(recs), count: recs.filter(isObj).length }; });
+  }
+  applyProfile(st);
+  return st;
+}
+
+/* ---------- DevHub database profile: known fields and allowed values, even when the target is empty ---------- */
+const DH_STATUS = [['todo', 'To do'], ['doing', 'In progress'], ['done', 'Done']];
+const DH_PRIO = [[1, 'Urgent'], [2, 'High'], [3, 'Medium'], [4, 'Low']];
+const DH_TASK = [['id', 'string'], ['title', 'string'], ['notes', 'string'], ['due', 'string', 'date YYYY-MM-DD'], ['priority', 'number', null, DH_PRIO], ['status', 'string', null, DH_STATUS],
+  ['project', 'string', 'project name — linked to a DevHub project automatically'], ['tags', 'array', 'list, or text separated by commas'], ['estimate', 'number', 'minutes'], ['spent', 'number', 'seconds'],
+  ['repeat', 'string'], ['createdAt', 'string'], ['updatedAt', 'string'], ['completedAt', 'string']];
+const DH_LINK = [['id', 'string'], ['name', 'string'], ['url', 'string'], ['category', 'string'], ['notes', 'string']];
+const DH_PROJECT = [['id', 'string'], ['name', 'string'], ['color', 'string']];
+const DH_SQL = { project_id: 'project', created_at: 'createdAt', updated_at: 'updatedAt', completed_at: 'completedAt', timer_start: 'timerStart' };
+function applyProfile(st) {
+  if (st.profile !== 'devhub') return;
+  for (const c of st.collections) {
+    const which = st.kind === 'sqlite' ? c.table : c.path.join('.');
+    const spec = { tasks: DH_TASK, 'tasks.tasks': DH_TASK, links: DH_LINK, projects: DH_PROJECT, 'tasks.projects': DH_PROJECT }[which];
+    if (!spec) continue;
+    c.devhub = which.endsWith('projects') ? 'projects' : which.endsWith('links') ? 'links' : 'tasks';
+    if (st.kind === 'sqlite') {
+      for (const col of c.columns) { col.known = true; const f = spec.find(x => x[0] === (DH_SQL[col.name] || col.name)); if (f) { if (f[2]) col.hint = f[2]; if (f[3]) col.choices = f[3]; } }
+      if (c.devhub === 'tasks') { const pc = c.columns.find(x => x.name === 'project_id'); if (pc) pc.hint = 'project name — linked to a DevHub project automatically'; }
+    } else {
+      const have = new Map(c.columns.map(x => [x.name, x]));
+      c.columns = spec.map(([n, t, hint, choices]) => ({ ...(have.get(n) || {}), name: n, type: t, known: true, ...(hint ? { hint } : {}), ...(choices ? { choices } : {}) }))
+        .concat(c.columns.filter(x => !spec.some(f => f[0] === x.name)));
+    }
+  }
+}
+const devhubUid = () => (self.crypto && crypto.randomUUID ? crypto.randomUUID() : Date.now().toString(36) + Math.random().toString(36).slice(2));
+const PROJECT_COLORS = ['#3346D3', '#1F8A5B', '#D97706', '#C23B3B', '#7C3AED', '#0E7490', '#BE185D', '#4D7C0F'];
+const isoDay = v => { if (v == null || v === '') return null; const s = String(v).trim(); if (/^\d{4}-\d{2}-\d{2}/.test(s)) return s.slice(0, 10); const d = new Date(s); return isNaN(d) ? s : d.toISOString().slice(0, 10); };
+const isoTime = v => { if (v == null || v === '') return null; const s = String(v).trim(); const d = new Date(/^\d+$/.test(s) ? +s * (s.length <= 10 ? 1000 : 1) : s); return isNaN(d) ? s : d.toISOString(); };
+// Make a record look like what DevHub's task tracker writes. `o` uses logical DevHub names. insert=true fills defaults.
+function devhubTask(o, insert, projectId, existing) {
+  if ('status' in o) { const v = String(o.status ?? '').toLowerCase(); o.status = ['todo', 'doing', 'done'].includes(v) ? v : 'todo'; }
+  if ('priority' in o) { const n = +o.priority; o.priority = [1, 2, 3, 4].includes(n) ? n : 3; }
+  if ('due' in o) o.due = isoDay(o.due);
+  for (const k of ['createdAt', 'updatedAt', 'completedAt']) if (k in o) o[k] = isoTime(o[k]);
+  if ('tags' in o && !Array.isArray(o.tags)) { const v = o.tags; o.tags = v == null || v === '' ? [] : typeof v === 'string' ? (v.trim().startsWith('[') ? (() => { try { return JSON.parse(v); } catch { return v.split(','); } })() : v.split(/[,;]/)).map(x => String(x).trim().replace(/^#/, '')).filter(Boolean) : [String(v)]; }
+  if ('estimate' in o && o.estimate !== null) o.estimate = Number.isFinite(+o.estimate) ? Math.round(+o.estimate) : null;
+  if ('project' in o) o.project = o.project == null || o.project === '' ? null : projectId(String(o.project));
+  if ('id' in o && o.id != null) o.id = String(o.id);
+  if (insert) {
+    const now = new Date().toISOString();
+    if (o.id == null || o.id === '') o.id = devhubUid();
+    if (!o.title) o.title = 'Untitled';
+    o.status ??= 'todo'; o.priority ??= 3; o.notes ??= ''; o.due ??= null; o.project ??= null; o.tags ??= []; o.estimate ??= null; o.spent ??= 0; o.subtasks ??= []; o.repeat ??= null;
+    o.createdAt ??= now; o.updatedAt ??= o.createdAt;
+  }
+  if (o.status === 'done' && !o.completedAt && !(existing && existing.completedAt)) o.completedAt = o.updatedAt || (existing && existing.updatedAt) || o.createdAt || new Date().toISOString();
+  if (o.status && o.status !== 'done' && 'status' in o) o.completedAt = null;
+  if (!insert && !('updatedAt' in o)) o.updatedAt = new Date().toISOString();
+  return o;
+}
+// Returns fn(name) → project id, creating DevHub projects for names it hasn't seen.
+function projectResolver(T) {
+  let list, add;
+  if (T.kind === 'sqlite') {
+    const r = T.db.exec('SELECT id, name, deleted FROM projects')[0];
+    list = r ? r.values.map(([id, name, del]) => ({ id, name, deleted: !!del })) : [];
+    add = p => T.db.run('INSERT INTO projects (id, name, color, deleted, updated_at) VALUES (?, ?, ?, 0, ?)', [p.id, p.name, p.color, p.updatedAt]);
+  } else { list = T.tree.tasks.projects; add = p => list.push(p); }
+  const byId = new Map(list.map(p => [String(p.id), p])), byName = new Map(list.filter(p => !p.deleted).map(p => [String(p.name).trim().toLowerCase(), p]));
+  let created = 0;
+  const fn = name => {
+    if (byId.has(name)) return byId.get(name).id;
+    const k = name.trim().toLowerCase(); if (byName.has(k)) return byName.get(k).id;
+    const p = { id: devhubUid(), name: name.trim(), color: PROJECT_COLORS[(list.length + created) % PROJECT_COLORS.length], updatedAt: new Date().toISOString() };
+    add(p); if (T.kind === 'sqlite') list.push(p); byName.set(k, p); byId.set(p.id, p); created++;
+    return p.id;
+  };
+  fn.created = () => created;
+  return fn;
 }
 
 function records(store, c) {
@@ -140,8 +228,20 @@ async function inspect(job) {
   try {
     const info = {
       kind: s.kind, name: s.name, rootArray: !!s.rootArray,
-      collections: s.collections.map(c => ({ id: c.id, name: c.name, label: c.label, count: c.count, key: guessKey(c),
-        columns: c.columns.map(x => ({ name: x.name, type: x.type, pk: !!x.pk })) }))
+      profile: s.profile || null,
+      collections: s.collections.map(c => {
+        const recs = records(s, c);
+        const cols = c.columns.map(x => {
+          const out = { name: x.name, type: x.type, pk: !!x.pk, known: !!x.known, hint: x.hint || null, choices: x.choices || null };
+          const seen = new Map(); let many = false;
+          for (const r of recs) { const v = r[x.name]; if (v == null || v instanceof Uint8Array || typeof v === 'object') continue; const k = String(v); if (k.length > 80) { many = true; break; } seen.set(k, (seen.get(k) || 0) + 1); if (seen.size > 40) { many = true; break; } }
+          if (!many && seen.size) out.values = [...seen].sort((a, b) => b[1] - a[1]).map(([v, n]) => ({ v, n }));
+          return out;
+        });
+        const show = v => v == null ? '' : v instanceof Uint8Array ? `(${v.length} bytes)` : typeof v === 'object' ? JSON.stringify(v) : String(v);
+        return { id: c.id, name: c.name, label: c.label, count: c.count, key: c.devhub === 'tasks' ? 'id' : guessKey(c), devhub: c.devhub || null, columns: cols,
+          sample: recs.slice(0, 5).map(r => Object.fromEntries(c.columns.map(x => [x.name, show(r[x.name])]))) };
+      })
     };
     progress('Done', 100);
     return { type: 'done', info };
@@ -180,6 +280,9 @@ function toTree(v, ttype, targetKind, srcKind, opts) {
 }
 
 /* ---------- apply one collection plan to the target ---------- */
+const mapValue = (x, v) => x.values && v != null && Object.prototype.hasOwnProperty.call(x.values, String(v)) ? x.values[String(v)] : v;
+const showCell = v => v == null ? '' : v instanceof Uint8Array ? `(${v.length} bytes)` : typeof v === 'object' ? JSON.stringify(v) : String(v);
+const keepSample = (rep, o, isNew) => { if (rep.samples.length < 20) rep.samples.push({ action: isNew ? 'add' : 'update', rec: Object.fromEntries(Object.entries(o).map(([k, v]) => [k, showCell(v)])) }); };
 function sqliteApply(T, step, recs, rep, srcKind) {
   const db = T.db;
   let c = step.dst === 'new' ? null : T.collections.find(x => x.id === step.dst);
@@ -217,27 +320,34 @@ function sqliteApply(T, step, recs, rep, srcKind) {
   const stmts = new Map();
   const prep = sql => { let s = stmts.get(sql); if (!s) { s = db.prepare(sql); stmts.set(sql, s); } return s; };
   const total = recs.length;
+  const dh = T.profile === 'devhub' && c.devhub === 'tasks' ? projectResolver(T) : null;
+  const physical = new Set(c.columns.map(x => x.name));
+  const toLogical = o => Object.fromEntries(Object.entries(o).map(([k, v]) => [DH_SQL[k] || k, v]));
+  const fromLogical = o => { const inv = Object.fromEntries(Object.entries(DH_SQL).map(([a, b]) => [b, a])); const out = {}; for (const [k, v] of Object.entries(o)) { const n = inv[k] || k; if (physical.has(n)) out[n] = v; } return out; };
   recs.forEach((r, i) => {
-    const vals = [];
-    for (const x of cols) { const v = toSqlite(r[x.from], declOf(x.to)); if (v !== undefined) vals.push([x.to, v]); }
     try {
       const ks = useKey ? keyStr(r[skey]) : null;
       const hit = ks != null && byKey ? byKey.get(ks) : undefined;
+      if (hit !== undefined && step.mode === 'insert-new') { rep.skipped++; return; }
+      let o = {};
+      for (const x of cols) { const v = mapValue(x, r[x.from]); if (v !== undefined) o[x.to] = v; }
+      if (dh) { o = fromLogical(devhubTask(toLogical(o), hit === undefined, dh)); if (hit === undefined && o.id != null && byKey) { /* keep key map in sync */ } }
+      const vals = Object.entries(o).map(([k, v]) => [k, toSqlite(v, declOf(k))]).filter(([, v]) => v !== undefined);
       if (hit !== undefined) {
-        if (step.mode === 'insert-new') { rep.skipped++; return; }
         const set = vals.filter(([k]) => k !== dkey || !useRowid);
         if (!set.length) { rep.skipped++; return; }
         prep(`UPDATE ${qid(c.table)} SET ${set.map(([k]) => qid(k) + ' = ?').join(', ')} WHERE ${useRowid ? 'rowid' : qid(dkey)} = ?`).run([...set.map(x => x[1]), hit]);
-        rep.updated++;
+        rep.updated++; keepSample(rep, o, false);
       } else {
         if (!vals.length) { rep.skipped++; return; }
         prep(`INSERT INTO ${qid(c.table)} (${vals.map(([k]) => qid(k)).join(', ')}) VALUES (${vals.map(() => '?').join(', ')})`).run(vals.map(x => x[1]));
-        rep.inserted++;
+        rep.inserted++; keepSample(rep, o, true);
         if (byKey && ks != null) byKey.set(ks, useRowid ? db.exec('SELECT last_insert_rowid()')[0].values[0][0] : ks);
       }
     } catch (e) { rep.failed++; if (rep.errors.length < 5) rep.errors.push(`Record ${i + 1}: ${e.message}${/UNIQUE|PRIMARY KEY/.test(e.message) ? ' — it already exists; choose “Update matching records” to update it instead' : ''}`); }
     if (i % 2000 === 0) progress(`${rep.src}: ${i.toLocaleString()} of ${total.toLocaleString()}`, i / total * 100);
   });
+  if (dh) rep.projectsCreated = dh.created();
   stmts.forEach(s => s.free());
   return c;
 }
@@ -262,13 +372,18 @@ function treeApply(T, step, recs, rep, srcKind, opts) {
       if (!c) c = { id: 'p:' + JSON.stringify([nm]), name: nm, label: nm, path: [nm], columns: [], count: 0 };
     }
     if (!T.collections.includes(c)) { T.collections.push(c); rep.created = true; }
-    const key = c.path[c.path.length - 1];
-    if (!Array.isArray(parent[key])) parent[key] = parent[key] == null || parent[key] === '' ? [] : [parent[key]];
+    let key = c.path[c.path.length - 1];
+    if (parent[key] != null && parent[key] !== '' && !Array.isArray(parent[key])) {
+      let n = 2; while (parent[key + '_' + n] != null) n++;
+      const was = key; key = key + '_' + n; c.path = [...c.path.slice(0, -1), key]; c.name = key; c.label = pathLabel(c.path); c.id = 'p:' + JSON.stringify(c.path);
+      rep.renamed = `“${was}” already exists in the target and isn’t a list, so the records were put in “${key}”.`;
+    }
+    if (!Array.isArray(parent[key])) parent[key] = [];
     arr = parent[key];
   } else {
     const parent = c.path.length ? getAt(T.tree, c.path.slice(0, -1)) : null;
     if (!c.path.length) arr = T.tree;
-    else { const k = c.path[c.path.length - 1]; if (!Array.isArray(parent[k])) parent[k] = parent[k] == null || parent[k] === '' ? [] : [parent[k]]; arr = parent[k]; }
+    else { const k = c.path[c.path.length - 1]; if (!Array.isArray(parent[k])) parent[k] = parent[k] == null || parent[k] === '' ? [] : isObj(parent[k]) && T.kind === 'xml' ? [parent[k]] : (() => { throw new Error(`“${c.label}” in the target isn’t a list of records.`); })(); arr = parent[k]; }
   }
   rep.dst = c.label;
   const types = new Map(c.columns.map(x => [x.name, x.type]));
@@ -278,20 +393,22 @@ function treeApply(T, step, recs, rep, srcKind, opts) {
   const byKey = new Map();
   if (useKey) arr.forEach((o, i) => { if (isObj(o)) { const ks = keyStr(o[step.dstKey]); if (ks != null && !byKey.has(ks)) byKey.set(ks, i); } });
   const total = recs.length;
+  const dh = T.profile === 'devhub' && c.devhub === 'tasks' ? projectResolver(T) : null;
   recs.forEach((r, i) => {
-    const o = {};
-    for (const x of cols) { const v = toTree(r[x.from], types.get(x.to), T.kind, srcKind, opts); if (v !== undefined) o[x.to] = v; }
     const ks = useKey ? keyStr(r[step.srcKey]) : null, hit = ks != null ? byKey.get(ks) : undefined;
-    if (hit !== undefined) {
-      if (step.mode === 'insert-new') { rep.skipped++; return; }
-      Object.assign(arr[hit], o); rep.updated++;
-    } else {
+    if (hit !== undefined && step.mode === 'insert-new') { rep.skipped++; return; }
+    let o = {};
+    for (const x of cols) { const v = toTree(mapValue(x, r[x.from]), types.get(x.to), T.kind, srcKind, opts); if (v !== undefined) o[x.to] = v; }
+    if (dh) o = devhubTask(o, hit === undefined, dh, hit !== undefined ? arr[hit] : null);
+    if (hit !== undefined) { Object.assign(arr[hit], o); rep.updated++; keepSample(rep, o, false); }
+    else {
       if (!Object.keys(o).length) { rep.skipped++; return; }
-      arr.push(o); rep.inserted++;
+      arr.push(o); rep.inserted++; keepSample(rep, o, true);
       if (ks != null) byKey.set(ks, arr.length - 1);
     }
     if (i % 5000 === 0) progress(`${rep.src}: ${i.toLocaleString()} of ${total.toLocaleString()}`, i / total * 100);
   });
+  if (dh) rep.projectsCreated = dh.created();
   return c;
 }
 
@@ -315,10 +432,15 @@ async function migrate(job) {
       if (!sc) throw new Error(`Source collection ${step.src} not found — re-open the source file.`);
       if ((step.mode === 'upsert' || step.mode === 'insert-new') && (!step.srcKey || !step.dstKey)) throw new Error(`${sc.label}: choose which field to match records on, or switch the mode to “Add every record”.`);
       const recs = records(S, sc);
-      const rep = { src: sc.label, dst: '', inserted: 0, updated: 0, skipped: 0, failed: 0, errors: [], newColumns: [], created: false, cleared: false, mode: step.mode };
+      const rep = { src: sc.label, dst: '', inserted: 0, updated: 0, skipped: 0, failed: 0, errors: [], newColumns: [], created: false, cleared: false, mode: step.mode, samples: [] };
       progress(`Migrating ${sc.label} (${recs.length.toLocaleString()} records)…`, 30);
       const c = T.kind === 'sqlite' ? sqliteApply(T, { ...step, srcName: sc.name }, recs, rep, S.kind) : treeApply(T, { ...step, srcName: sc.name }, recs, rep, S.kind, opts);
       report.push(rep); if (!touched.includes(c)) touched.push(c);
+    }
+    if (job.dryRun) {
+      if (T.kind === 'sqlite') T.db.run('ROLLBACK');
+      progress('Done', 100);
+      return { type: 'done', dryRun: true, report, notes, targetKind: T.kind, sourceKind: S.kind, profile: T.profile || null, ms: Math.round(performance.now() - t0) };
     }
     if (T.kind === 'sqlite') T.db.run('COMMIT');
     progress('Writing target file…', 90);
@@ -332,7 +454,7 @@ async function migrate(job) {
     }
     const previews = touched.map(c => preview(T, c));
     progress('Done', 100);
-    return { type: 'done', blob, report, previews, notes, targetKind: T.kind, sourceKind: S.kind, ms: Math.round(performance.now() - t0) };
+    return { type: 'done', blob, report, previews, notes, profile: T.profile || null, targetKind: T.kind, sourceKind: S.kind, ms: Math.round(performance.now() - t0) };
   } catch (e) {
     if (T.kind === 'sqlite') { try { T.db.run('ROLLBACK'); } catch {} }
     throw e;

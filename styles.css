@@ -512,10 +512,21 @@ main:focus, main:focus-visible { outline: none; }
 .mig-opts { padding-bottom: 4px; }
 .mig-opts > label { display: flex; flex-direction: column; }
 .mig-fields summary { cursor: pointer; font-weight: 500; color: var(--accent); padding: 6px 0; font-size: .9rem; }
-.mig-fields .table-wrap { max-height: 360px; }
+.mig-fields .table-wrap { max-height: none; }
 .mig-fields td select { min-height: 0; padding: 4px 8px; font-size: .85rem; width: 100%; min-width: 180px; }
 .mig-fields .table-wrap td { overflow: visible; max-width: none; }
 .mig-report { margin: 8px 0 12px; max-height: none; }
 .mig-bad { color: var(--danger); }
 [data-result] .out.err { white-space: pre-wrap; margin: 8px 0; }
 @media (max-width: 800px) { .mig-grid { grid-template-columns: 1fr; } }
+.mig-dh { margin: 0 0 8px; max-width: 80ch; }
+.mig-warn { color: var(--danger); margin: 4px 0 8px; }
+.mig-vbtn { padding: 2px 8px; font-size: .8rem; min-height: 0 !important; white-space: nowrap; }
+.mig-vbtn.mig-bad { border-color: var(--danger); }
+.mig-vrow > td { background: var(--paper) !important; white-space: normal !important; }
+.mig-vals .hint { margin: 2px 0 6px; white-space: normal; }
+.mig-vtable td { border: 0 !important; padding: 3px 6px !important; background: transparent !important; }
+.mig-vtable select { min-width: 160px; }
+.mig-vtable input, .mig-fields td input[data-custom] { margin-top: 4px; padding: 4px 8px; font-size: .85rem; min-height: 0; }
+select.mig-bad-sel { border-color: var(--danger); }
+.mig-sample summary { cursor: pointer; font-size: .9rem; color: var(--accent); padding: 6px 0; }

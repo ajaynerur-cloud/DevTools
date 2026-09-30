@@ -69,8 +69,12 @@ Tools → Converters → **Data migrator** moves records from one file into anot
    - **Add every record**
    - **Replace everything in the target collection**
 
-   Fields are matched by name (`created_at` = `createdAt`, `@id` = `id`). Unmatched fields can be added as new columns/fields, mapped by hand, or skipped.
-4. **Download** the updated target (same file name). **Use as target** lets you merge another source into the result.
+   Fields are matched by name and common synonyms (`created_at` = `createdAt`, `description` → `notes`, `due_date` → `due`, `@id` = `id`). Any field can be mapped by hand, given a custom name, added as new, or skipped.
+4. **Map values:** fields with up to 40 distinct values get a value editor, e.g. `Completed` → Done, `In Progress` → In progress, `Medium` → 3. Values are matched automatically when the target has fixed choices or existing values, and anything the target won't accept is flagged in red. Each card shows a sample of records after mapping.
+5. **Preview migration** does a dry run: counts, notes and the first 20 records exactly as they'll be written. Nothing is created until you press **Create**.
+6. **Download** the updated target (same file name). **Use as target** lets you merge another source into the result.
+
+**DevHub databases as targets.** When the target is a DevHub database (JSON or SQLite, even an empty one), the migrator knows DevHub's task fields and allowed values: status `todo/doing/done` and priority `1–4`. Project names become DevHub projects (created and linked by id), dates are converted to ISO, `completedAt` is filled in for done tasks, tags become lists, and missing defaults are added. The result opens with Tasks → Open database file, with statuses intact.
 
 What's kept: in SQLite targets, the other tables, views, indexes, triggers, defaults and constraints are untouched (new columns are added with `ALTER TABLE`); only the mapped columns of matching rows are updated. In JSON targets, everything outside the migrated arrays is kept, and so is the indentation. Values are converted to the target's types (e.g. SQLite `0/1` → JSON `true/false`, JSON text in a SQLite cell → real arrays/objects, XML text → numbers). Leading zeros in XML (`01234`) are kept. Rows that break a constraint are skipped and listed in the report; nothing else is lost. XML targets are re-indented, and their comments aren't kept.
 
