@@ -573,3 +573,6 @@ select.mig-bad-sel { border-color: var(--danger); }
 .mf-map h3 { font-size: .95rem; margin: 16px 0 6px; }
 .mf-sum { margin: 0 0 8px; }
 @media (max-width: 800px) { .mf-fmt { grid-template-columns: 1fr; } }
+.mig-dlg h3 { font-size: .98rem; margin: 18px 0 4px; }
+.bk-auto { margin-top: 10px; }
+.bk-auto .hint { margin: 4px 0 0; }

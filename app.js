@@ -135,7 +135,7 @@
         }
       }
       data.persist();
-      setStatus(`Saved ${stamp()}`, 'ok');
+      setStatus(`Saved ${stamp()}`, 'ok'); autoBackup.schedule();
     } catch (e) { setStatus(e.offline ? 'Offline — changes saved on this device' : 'Not saved — ' + e.message, e.offline ? '' : 'err'); }
     finally { pushing = false; }
   }
@@ -144,7 +144,7 @@
   function startSession(token, user, remember) {
     if (offline.meta) { clearTimeout(offline.timer); data.wipe('offline'); offline.setMeta(null); offline.handle = null; idb.del('offline-handle'); }
     session.save(token, user, remember);
-    data.ns = user.id; data.load(); renderNavUser(); pull();
+    data.ns = user.id; data.load(); renderNavUser(); pull(); autoBackup.load();
   }
   function sessionExpired() {
     const had = session.user; session.clear(); renderNavUser();
@@ -245,7 +245,7 @@
       if (offline.saving) return false;
     }
     const tg = target(), rev = offline.rev || 0;
-    if (!as && tg === 'browser') { data.persist(); m.fileDirty = false; m.savedAt = new Date().toISOString(); offline.setMeta(m); offlineStatus(); return true; } // already stored in the browser
+    if (!as && tg === 'browser') { data.persist(); m.fileDirty = false; m.savedAt = new Date().toISOString(); offline.setMeta(m); offlineStatus(); cloud.schedule(); return true; } // already stored in the browser
     offline.saving = true; offlineStatus();
     try {
       const blob = await DevHubDB.encode(as || m.format, data.docs, m);
@@ -271,6 +271,7 @@
       m.fileDirty = (offline.rev || 0) !== rev; // edited again while saving → save once more
       offline.setMeta(m);
       if (m.fileDirty) { clearTimeout(offline.timer); offline.timer = setTimeout(() => saveOffline(), 700); }
+      cloud.schedule();
       return true;
     } catch (e) { if (e.name !== 'AbortError') toast('Couldn’t save the database: ' + friendlySaveError(e)); return false; }
     finally { offline.saving = false; offlineStatus(); }
@@ -306,15 +307,197 @@
   }
   const savedWhereMsg = m => { const tg = target(); return tg === 'file' ? `DevHub saves into ${m.fileName} from now on` : tg === 'device' ? `saved on this device as ${whereSaved(m, tg)}` : 'saved in this browser — use Database → Download backup to keep a file'; };
 
+  // ---------- offline database → a safe copy in an online account (you stay offline) ----------
+  const cloud = {
+    timer: null, busy: false, lastPush: 0,
+    link() { return offline.meta && offline.meta.cloud || null; },
+    save(c) { const m = offline.meta; if (!m) return; m.cloud = c; offline.setMeta(m); },
+    async call(path, { method = 'GET', body, token } = {}) {
+      let r; const t = token || this.link()?.token;
+      try { r = await fetch(API + '/api' + path, { method, headers: { 'Content-Type': 'application/json', ...(t ? { Authorization: 'Bearer ' + t } : {}) }, body: body === undefined ? undefined : JSON.stringify(body), cache: 'no-store' }); }
+      catch { const e = new Error('Can’t reach the server — the online copy will be updated when you’re back online.'); e.offline = true; throw e; }
+      let j = {}; try { j = await r.json(); } catch {}
+      if (!r.ok) { const e = new Error(j.error || `Request failed (${r.status})`); e.status = r.status; e.body = j; if (r.status === 401 && this.link()) this.save({ ...this.link(), expired: true }); throw e; }
+      return j;
+    },
+    // update the online copy soon after changes (never more than about once a minute — the server limits saves per hour)
+    schedule() { const c = this.link(); if (!c || !c.auto || c.expired) return; clearTimeout(this.timer); this.timer = setTimeout(() => this.push(), Math.max(15000, 60000 - (Date.now() - this.lastPush))); },
+    // mode 'merge' (default): the account keeps its other tasks; newest edit of each task wins. 'replace': account = this database.
+    async push({ manual, mode = 'merge' } = {}) {
+      const c = this.link(); if (!c || this.busy) return false;
+      if (c.expired) { if (manual) toast('Sign in again to update the online copy (Database page).'); return false; }
+      this.busy = true;
+      try {
+        const sigs = { ...(c.sigs || {}) };
+        for (const name of DOCS) {
+          const local = data.docs[name]; if (local == null) continue;
+          const sig = String(JSON.stringify(local).length) + ':' + hashStr(JSON.stringify(local));
+          if (mode !== 'replace' && !manual && sigs[name] === sig) continue; // unchanged since the last copy
+          for (let attempt = 0; attempt < 3; attempt++) {
+            const cur = await this.call('/data/' + name);
+            const body = mode === 'replace' ? local : mergeDoc(name, local, cur.data);
+            try { await this.call('/data/' + name, { method: 'PUT', body: { data: body, baseVersion: cur.version || 0 } }); break; }
+            catch (e) { if (e.status !== 409 || attempt === 2) throw e; }
+          }
+          sigs[name] = sig;
+        }
+        this.lastPush = Date.now();
+        this.save({ ...this.link(), sigs, lastAt: new Date().toISOString(), error: null });
+        if (manual) toast(`Online copy updated in ${c.user.username}’s account`);
+        return true;
+      } catch (e) {
+        this.save({ ...this.link(), error: e.message });
+        if (manual) toast('Online copy not updated: ' + e.message); else if (e.offline) this.schedule();
+        return false;
+      } finally { this.busy = false; if (document.body.dataset.route === 'account' && offline.active()) renderOfflineDb(); }
+    }
+  };
+  const hashStr = str => { let h = 2166136261; for (let i = 0; i < str.length; i++) { h ^= str.charCodeAt(i); h = Math.imul(h, 16777619); } return (h >>> 0).toString(36); };
+
+  // sign in / create an account for the online copy, without leaving offline mode
+  function cloudDialog(kind = 'login') {
+    let dlg = $('#cloudDlg'); if (!dlg) { dlg = document.createElement('dialog'); dlg.id = 'cloudDlg'; dlg.className = 'tk-dialog mig-dlg'; document.body.appendChild(dlg); }
+    const reg = kind === 'register', m = offline.meta;
+    dlg.innerHTML = `<form novalidate>
+      <header class="dr-top"><h2>${reg ? 'Create an account for the online copy' : 'Sign in to keep an online copy'}</h2><button type="button" class="ghost dr-x" data-x aria-label="Close">✕</button></header>
+      <p class="hint">A copy of <b>${esc(m.name)}</b> is kept in this account. You stay offline — ${esc(m.fileName)} is still the database you work in.</p>
+      ${reg ? `<label for="cN">Your name</label><input id="cN" name="name" autocomplete="name">
+        <label for="cU">Username</label><input id="cU" name="username" autocomplete="username" autocapitalize="off">
+        <label for="cE">Email <span class="opt">(optional)</span></label><input id="cE" name="email" type="email" autocomplete="email">
+        <label for="cP">Password</label><input id="cP" name="password" type="password" autocomplete="new-password" minlength="8">
+        ${serverConfig.registration === 'code' ? '<label for="cC">Invite code</label><input id="cC" name="code" autocomplete="off">' : ''}`
+      : `<label for="cL">Username or email</label><input id="cL" name="login" autocomplete="username" autocapitalize="off">
+        <label for="cP">Password</label><input id="cP" name="password" type="password" autocomplete="current-password">`}
+      <p class="form-err" role="alert" hidden></p>
+      <div class="row action-bar"><button class="primary">${reg ? 'Create account' : 'Sign in'}</button>${serverConfig.registration !== 'closed' ? `<button type="button" class="ghost" data-switch>${reg ? 'I already have an account' : 'Create an account instead'}</button>` : ''}</div></form>`;
+    const f = $('form', dlg), err = $('.form-err', f);
+    $('[data-x]', dlg).onclick = () => dlg.close();
+    const sw = $('[data-switch]', dlg); if (sw) sw.onclick = () => cloudDialog(reg ? 'login' : 'register');
+    f.onsubmit = async e => {
+      e.preventDefault(); err.hidden = true; fieldErrors(f);
+      const btn = $('button.primary', f); btn.disabled = true;
+      try {
+        const body = reg ? { name: f.name.value, username: f.username.value, email: f.email.value, password: f.password.value, code: f.code?.value } : { login: f.login.value, password: f.password.value };
+        const r = await cloud.call(reg ? '/auth/register' : '/auth/login', { method: 'POST', body, token: '' });
+        const existing = await cloud.call('/data/tasks', { token: r.token });
+        const n = (existing.data?.tasks || []).filter(t => !t.deleted).length;
+        dlg.close();
+        cloud.save({ token: r.token, user: r.user, auto: true, lastAt: null, sigs: {} });
+        let mode = 'replace';
+        if (n) mode = confirm(`${r.user.username}’s account already has ${plural(n, 'task')}.\n\nOK = add this database’s tasks to them (nothing in the account is removed)\nCancel = replace the account’s tasks with this database`) ? 'merge' : 'replace';
+        if (await cloud.push({ manual: true, mode })) toast(`Online copy saved in ${r.user.username}’s account — it’s updated automatically after changes`);
+        renderOfflineDb();
+      } catch (x) { fieldErrors(f, x.body?.fields); err.textContent = x.message; err.hidden = false; btn.disabled = false; }
+    };
+    if (!dlg.open) dlg.showModal();
+    setTimeout(() => $('input', f)?.focus(), 30);
+  }
+
+  // ---------- online accounts: backups you keep, and importing any task file ----------
+  const bkName = () => `devhub-${slug(session.user.username)}-backup`;
+  const autoBackup = {
+    handle: null, timer: null, busy: false,
+    key() { return 'online-backup:' + session.user.id; },
+    get device() { return !!session.user && store.get('devhub:bk-device:' + session.user.id, false); },
+    set device(v) { store.set('devhub:bk-device:' + session.user.id, !!v); },
+    get last() { return session.user ? store.get('devhub:bk-last:' + session.user.id, null) : null; },
+    on() { return !!(this.handle || (hasDeviceFs() && this.device)); },
+    async load() { if (!session.user) return; this.handle = (await idb.get(this.key())) || null; },
+    schedule() { if (!session.user || !this.on()) return; clearTimeout(this.timer); this.timer = setTimeout(() => this.run(), 3000); },
+    // writes the ONE backup file again (replaced in place, never a new copy)
+    async run(manual) {
+      if (!session.user || this.busy) return false; this.busy = true;
+      try {
+        const blob = await DevHubDB.encode('sqlite', data.docs, { name: `${session.user.name || session.user.username}'s tasks` });
+        if (this.handle) {
+          let perm = await this.handle.queryPermission({ mode: 'readwrite' });
+          if (perm !== 'granted' && manual) perm = await this.handle.requestPermission({ mode: 'readwrite' }).catch(() => 'denied');
+          if (perm !== 'granted') return false;
+          await writeToHandle(this.handle, blob);
+        } else if (hasDeviceFs() && this.device) await writeDevice(blob, this.dev ||= { fileName: bkName() + '.sqlite' });
+        else return false;
+        store.set('devhub:bk-last:' + session.user.id, { at: new Date().toISOString(), where: this.handle ? this.handle.name : whereSaved(this.dev, 'device') });
+        return true;
+      } catch (e) { if (manual) toast('Backup not written: ' + friendlySaveError(e)); return false; }
+      finally { this.busy = false; }
+    }
+  };
+  const cleanImported = docs => { for (const t of docs.tasks.tasks) { delete t._key; delete t._base; delete t._fbase; delete t._gone; if (t.fields && !Object.keys(t.fields).length) delete t.fields; } return docs; };
+  // Put imported tasks into the signed-in account. merge = keep what's there and add/update (newest edit of each task wins)
+  async function importIntoAccount(incoming, mode, label) {
+    const cur = data.get('tasks') || { tasks: [], projects: [], settings: { dailyGoal: 5 } };
+    const inT = incoming.tasks || { tasks: [], projects: [] };
+    if (mode === 'replace') {
+      await saveBlob(await DevHubDB.encode('sqlite', data.docs, { name: 'before import' }), `${bkName()}-before-import-${dayKey(new Date())}.sqlite`); // safety copy first
+      data.set('tasks', { ...cur, ...inT, settings: { ...(cur.settings || {}), ...(inT.settings || {}) } });
+      if (Array.isArray(incoming.links) && incoming.links.length) data.set('links', incoming.links);
+    } else {
+      // same project name → same project
+      const byName = new Map((cur.projects || []).filter(p => !p.deleted).map(p => [String(p.name).trim().toLowerCase(), p.id])), remap = new Map(), newProjects = [];
+      for (const p of inT.projects || []) { const id = byName.get(String(p.name).trim().toLowerCase()); if (id && id !== p.id) remap.set(p.id, id); else newProjects.push(p); }
+      const tasks = (inT.tasks || []).map(t => remap.has(t.project) ? { ...t, project: remap.get(t.project) } : t);
+      data.set('tasks', { ...cur, tasks: mergeById(tasks, cur.tasks || []), projects: mergeById(newProjects, cur.projects || []) });
+      if (Array.isArray(incoming.links) && incoming.links.length) data.set('links', mergeById(incoming.links, data.get('links') || []));
+    }
+    data.changed();
+    const n = (inT.tasks || []).filter(t => !t.deleted).length;
+    toast(`${mode === 'replace' ? 'Replaced your tasks with' : 'Added'} ${n} task${n === 1 ? '' : 's'} from ${label}${mode === 'replace' ? ' — your previous tasks were downloaded as a backup first' : ''}. Syncing…`);
+  }
+  // Import any file into the account: DevHub files directly, anything else via the contents/mapping screen
+  async function importFileOnline(file) {
+    file = await snapshot(file);
+    let r;
+    try { r = await DevHubDB.decode(file); }
+    catch (e) { if (isDevHubError(e)) { await openCustomFile(file, 'tasks', { online: true }); return; } throw e; }
+    const n = r.docs.tasks.tasks.filter(t => !t.deleted).length, cur = (data.get('tasks')?.tasks || []).filter(t => !t.deleted).length;
+    showBackupDialog({ file, r, n, cur });
+  }
+  function showBackupDialog(pending) {
+    if (!session.user) return;
+    let dlg = $('#bkDlg'); if (!dlg) { dlg = document.createElement('dialog'); dlg.id = 'bkDlg'; dlg.className = 'tk-dialog mig-dlg'; document.body.appendChild(dlg); }
+    const last = autoBackup.last, tasks = (data.get('tasks')?.tasks || []).filter(t => !t.deleted).length;
+    const autoUI = canFSA() ? `<label class="check-line"><input type="checkbox" data-auto ${autoBackup.handle ? 'checked' : ''}> Keep one backup file up to date automatically${autoBackup.handle ? ` — <span class="mono">${esc(autoBackup.handle.name)}</span>` : ''}</label>`
+      : hasDeviceFs() ? `<label class="check-line"><input type="checkbox" data-auto ${autoBackup.device ? 'checked' : ''}> Keep one backup file up to date automatically — <span class="mono">Documents/DevHub/${esc(bkName())}.sqlite</span></label>`
+      : '<p class="hint">This browser can’t keep a file updated automatically — download a backup from time to time.</p>';
+    dlg.innerHTML = pending ? `<form method="dialog">
+        <header class="dr-top"><h2>Import ${esc(pending.file.name)}</h2><button class="ghost dr-x" value="cancel" aria-label="Close">✕</button></header>
+        <p>DevHub database <b>“${esc(pending.r.name)}”</b> · ${plural(pending.n, 'task')} · ${plural(pending.r.docs.tasks.projects.filter(p => !p.deleted).length, 'project')} · ${plural(pending.r.docs.links.length, 'link')}</p>
+        <fieldset class="fmt mig-choice">
+          <label class="fmt-opt"><input type="radio" name="mode" value="merge" checked><span><b>Add to my tasks</b><small>Keeps your ${plural(pending.cur, 'task')} and adds these. A task that’s in both keeps its most recent edit.</small></span></label>
+          <label class="fmt-opt"><input type="radio" name="mode" value="replace"><span><b>Replace my tasks</b><small>Your account will contain only this file’s tasks. Your current tasks are downloaded as a backup first.</small></span></label>
+        </fieldset>
+        <div class="row action-bar"><button class="primary" value="go">Import</button><button class="ghost" value="cancel">Cancel</button></div></form>`
+      : `<form method="dialog">
+        <header class="dr-top"><h2>Backup &amp; import</h2><button class="ghost dr-x" value="cancel" aria-label="Close">✕</button></header>
+        <h3>Back up your tasks</h3>
+        <p class="hint">Your ${plural(tasks, 'task')} are stored in your account and synced. A backup file is an extra copy you keep — open it with “Use offline” on any device, or import it here.</p>
+        <div class="row"><button type="button" class="primary" data-bk="sqlite">Download backup (SQLite)</button><button type="button" data-bk="json">Download backup (JSON)</button></div>
+        <div class="bk-auto">${autoUI}${last ? `<p class="hint">Last automatic backup: ${new Date(last.at).toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'short' })} · <span class="mono">${esc(last.where)}</span></p>` : ''}</div>
+        <h3>Import tasks from a file</h3>
+        <p class="hint">A DevHub backup, or any .db / .json / .xml task file — you’ll see what’s in it before anything changes.</p>
+        <div class="row"><label class="btn">Choose file…<input type="file" data-imp hidden ${accept}></label></div>
+      </form>`;
+    dlg.querySelectorAll('[data-bk]').forEach(b => b.onclick = async () => { try { await saveBlob(await DevHubDB.encode(b.dataset.bk, data.docs, { name: `${session.user.name || session.user.username}'s tasks` }), `${bkName()}-${dayKey(new Date())}${DevHubDB.ext(b.dataset.bk)}`); } catch (e) { toast(e.message); } });
+    const au = $('[data-auto]', dlg); if (au) au.onchange = async () => {
+      if (!au.checked) { autoBackup.handle = null; idb.del(autoBackup.key()); autoBackup.device = false; toast('Automatic backup turned off'); return showBackupDialog(); }
+      if (canFSA()) { try { autoBackup.handle = await window.showSaveFilePicker({ suggestedName: bkName() + '.sqlite', types: PICK_TYPES('sqlite') }); idb.set(autoBackup.key(), autoBackup.handle); } catch { au.checked = false; return; } }
+      else autoBackup.device = true;
+      if (await autoBackup.run(true)) toast('Backup saved — it’s updated automatically after every sync'); showBackupDialog();
+    };
+    const im = $('[data-imp]', dlg); if (im) im.onchange = () => { const f = im.files[0]; if (!f) return; dlg.close(); importFileOnline(f).catch(e => toast(e.message)); };
+    dlg.onclose = () => { if (pending && dlg.returnValue === 'go') importIntoAccount(pending.r.docs, $('form', dlg).mode.value, pending.file.name).catch(e => toast(e.message)); };
+    dlg.returnValue = ''; if (!dlg.open) dlg.showModal();
+  }
+
   // ---------- an existing file that isn't a DevHub database: map its fields once, then migrate ----------
   const maps = { all() { return store.get('devhub:maps', {}); }, save(m) { const a = this.all(); a[m.fingerprint] = m; store.set('devhub:maps', a); } };
   let pendingCustom = null;
-  async function openCustomFile(file, next) {
+  async function openCustomFile(file, next, { online } = {}) {
     file = await snapshot(file);
     const info = await DevHubAdapter.inspect(file);
     if (!info.collections.length) throw new Error(`No list of records was found in ${file.name}, so it can’t be migrated as tasks.`);
     const saved = Object.values(maps.all()).find(m => info.collections.some(c => m.collection === c.id && DevHubAdapter.fingerprint(info, c.id) === m.fingerprint));
-    pendingCustom = { file, info, next, mapping: saved ? JSON.parse(JSON.stringify(saved)) : DevHubAdapter.guess(info), impFormat: 'sqlite', impName: file.name.replace(/\.[^.]+$/, '') };
+    pendingCustom = { file, info, next, online: !!online, impMode: 'merge', mapping: saved ? JSON.parse(JSON.stringify(saved)) : DevHubAdapter.guess(info), impFormat: 'sqlite', impName: file.name.replace(/\.[^.]+$/, '') };
     location.hash = 'mapfile';
   }
   // Migrate: copy the tasks into ONE new DevHub database. The original file isn't changed.
@@ -1200,8 +1383,8 @@
           <button class="primary">Change password</button></form></section>
         <section class="panel"><h2>Sync and data</h2>
           <p class="hint" id="acctSync">${data.hasUnsynced() ? 'Some changes are waiting to sync.' : 'Everything is synced.'}</p>
-          <div class="row"><button id="syncNow">Sync now</button><button id="ex">Export JSON</button><button id="exq">Export SQLite</button><label class="btn" style="margin:0">Import backup<input type="file" id="im" ${accept} hidden></label></div>
-          <p class="hint" style="margin-top:10px">Exports are offline databases too — open one with “Use offline” on any device. Import accepts JSON or SQLite files.</p></section>
+          <div class="row"><button id="syncNow">Sync now</button><button id="bkOpen" class="primary">Backup &amp; import…</button><button id="ex">Export JSON</button><button id="exq">Export SQLite</button></div>
+          <p class="hint" style="margin-top:10px">Backups are offline databases too — open one with “Use offline” on any device. Import accepts DevHub backups and any .db / .json / .xml task file.</p></section>
         <section class="panel"><h2>Sessions</h2>
           <div class="row"><button id="so">Sign out</button><button id="soa">Sign out on all devices</button></div>
           <h2 style="margin-top:22px">Delete account</h2><p class="hint">Permanently deletes your account and all your tasks and links.</p>
@@ -1220,11 +1403,7 @@
     const dbMeta = { name: `${u.name || u.username}'s tasks` };
     $('#ex').onclick = async () => saveBlob(await DevHubDB.encode('json', data.docs, dbMeta), `devhub-${u.username}-${dayKey(new Date())}.json`);
     $('#exq').onclick = async () => { try { saveBlob(await DevHubDB.encode('sqlite', data.docs, dbMeta), `devhub-${u.username}-${dayKey(new Date())}.sqlite`); } catch (x) { toast(x.message); } };
-    $('#im').onchange = async e => { const file = e.target.files[0]; if (!file) return;
-      try { const r = await DevHubDB.decode(file);
-        if (!confirm(`Replace your current tasks and links with “${r.name}”?`)) return;
-        data.set('tasks', r.docs.tasks); data.set('links', r.docs.links); data.set('prefs', r.docs.prefs); data.changed(); toast('Imported ' + r.name);
-      } catch (x) { toast(x.message); } e.target.value = ''; };
+    $('#bkOpen').onclick = () => showBackupDialog();
     $('#so').onclick = signOut;
     $('#soa').onclick = async () => { if (!confirm('Sign out on every device, including this one?')) return; try { await push(); await api('/auth/logout-all', { method: 'POST' }); } catch (x) { return toast(x.message); } const id = session.user.id; data.wipe(id); session.clear(); renderNavUser(); location.hash = 'login'; toast('Signed out on all devices'); };
     $('#del').onclick = async () => { const pw = prompt('This permanently deletes your account and data. Enter your password to confirm:'); if (!pw) return;
@@ -1321,9 +1500,19 @@
             <dt>Contents</dt><dd>${plural(tasks.length, 'task')} · ${plural((t.projects || []).filter(p => !p.deleted).length, 'project')} · ${plural(links.length, 'link')}</dd></dl>
           <div class="row" style="margin-top:14px">${tg !== 'browser' ? '<button class="primary" id="dbSave">Save now</button>' : ''}${tg === 'browser' && canFSA() ? '<button class="primary" id="dbReconnect" title="Choose a file on this computer; every change is then saved into it">Save into a file on this computer…</button>' : ''}</div>
         </section>
+        <section class="panel cloud-panel"><h2>Online copy <span class="hint">for safe keeping</span></h2>
+          ${(() => { const c = m.cloud; if (!c) return `<p class="hint">Keep a copy of this database in a DevHub account, so it’s safe even if this device or file is lost — and you can reach it from any device by signing in. You stay offline: this database is still the one you work in.</p>
+            <div class="row"><button class="primary" id="clIn">Sign in…</button>${serverConfig.registration !== 'closed' ? '<button id="clReg">Create account…</button>' : ''}</div>`;
+            return `<dl class="kv2"><dt>Account</dt><dd><b>${esc(c.user.name || c.user.username)}</b> <span class="hint">@${esc(c.user.username)}</span></dd>
+              <dt>Last copied</dt><dd>${c.lastAt ? new Date(c.lastAt).toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'short' }) : 'Not yet'}${c.error ? ` <span class="mig-bad">· ${esc(c.error)}</span>` : ''}</dd></dl>
+              ${c.expired ? '<p class="form-err">The sign-in for the online copy has ended. Sign in again to keep it updated.</p><div class="row"><button class="primary" id="clIn">Sign in again…</button><button class="ghost" id="clOff">Stop online copy</button></div>'
+              : `<label class="check-line"><input type="checkbox" id="clAuto" ${c.auto ? 'checked' : ''}> Update the online copy automatically after changes</label>
+              <div class="row" style="margin-top:10px"><button class="primary" id="clNow">Update now</button><button class="ghost" id="clOff">Stop online copy</button></div>
+              <p class="hint" style="margin-top:8px">The account keeps any tasks it already had; deleting a task here deletes it there too. To work online instead, use “Close and sign in” below.</p>`}`; })()}
+        </section>
         <section class="panel"><h2>Download backup</h2><p class="hint">A one-off copy, only when you ask for it. Both formats hold the same data${tg === 'browser' ? ' — keep one somewhere safe, because clearing this browser’s data removes the database' : ''}.</p>
           <div class="row"><button id="dlSqlite">Backup as SQLite</button><button id="dlJson">Backup as JSON</button></div>
-          <p class="hint" style="margin-top:12px">Want to move this data online? Sign in, then use Account → Import backup with one of these files.</p></section>
+          <p class="hint" style="margin-top:12px">For a copy that’s kept up to date without files, use <b>Online copy</b>.</p></section>
         <section class="panel"><h2>Switch database</h2>
           <p class="hint">Open a DevHub database, or an existing .db / .json / .xml task file to migrate it.</p>
           <div class="row"><button id="dbOpen">Open another file</button><button id="dbNew">Create new database</button></div><input type="file" id="dbFile" hidden ${accept}>
@@ -1339,6 +1528,11 @@
     };
     $('#dlJson').onclick = () => saveOffline({ as: 'json' });
     $('#dlSqlite').onclick = () => saveOffline({ as: 'sqlite' });
+    const ci = $('#clIn'); if (ci) ci.onclick = () => cloudDialog('login');
+    const cr = $('#clReg'); if (cr) cr.onclick = () => cloudDialog('register');
+    const cn = $('#clNow'); if (cn) cn.onclick = async () => { cn.disabled = true; await cloud.push({ manual: true }); };
+    const ca = $('#clAuto'); if (ca) ca.onchange = () => { cloud.save({ ...cloud.link(), auto: ca.checked }); if (ca.checked) cloud.schedule(); toast(ca.checked ? 'The online copy updates automatically' : 'Automatic updates off — use Update now'); };
+    const co = $('#clOff'); if (co) co.onclick = () => { if (!confirm('Stop keeping an online copy? The copy already in the account stays there.')) return; cloud.save(null); toast('Online copy stopped — the account still has the last copy'); renderOfflineDb(); };
     $('#dbOpen').onclick = async () => {
       let r; try { r = await pickDbFile($('#dbFile')); } catch (e) { return toast(e.message); }
       if (!r) return;
@@ -1352,7 +1546,7 @@
   // ---------- migrate an existing file: map fields and values once ----------
   function renderMapFile() {
     const P = pendingCustom;
-    if (!P) { location.replace(offline.meta ? '#tasks' : '#start?next=tasks'); return; }
+    if (!P || (P.online && !session.user)) { location.replace(session.user || offline.meta ? '#tasks' : '#start?next=tasks'); return; }
     const A = DevHubAdapter, info = P.info;
     let m = P.mapping;
     const col = () => info.collections.find(c => c.id === m.collection);
@@ -1369,7 +1563,7 @@
       const where = canFSA() ? 'You’ll choose where to save it, and DevHub saves into that same file from then on.' : hasDeviceFs() ? 'It’s saved on this device in Documents/DevHub and updated in place from then on.' : 'It’s saved in this browser from then on (this browser can’t write into a file on your device) — use Download backup for a file.';
       const roleSummary = A.ROLES.filter(([k]) => m.roles[k]).map(([k, l]) => `${esc(l)} ← <span class="mono">${esc(m.roles[k])}</span>`).join(' · ');
       view().innerHTML = `<h1>${esc(P.file.name)}</h1>
-        <p class="lede">${kindName} · ${plural(info.collections.length, info.kind === 'sqlite' ? 'table' : 'list')} · ${fmtBytes(P.file.size)}. Look at what’s inside, then migrate it into a new DevHub database — the file you’ll work with from now on. ${esc(P.file.name)} itself isn’t changed.</p>
+        <p class="lede">${kindName} · ${plural(info.collections.length, info.kind === 'sqlite' ? 'table' : 'list')} · ${fmtBytes(P.file.size)}. ${P.online ? 'Look at what’s inside, then import its tasks into your account.' : 'Look at what’s inside, then migrate it into a new DevHub database — the file you’ll work with from now on.'} ${esc(P.file.name)} itself isn’t changed.</p>
         <section class="panel mf-view">
           <h2><span class="mig-n">1</span> What’s in the file</h2>
           <div class="seg mf-tabs" role="tablist">${info.collections.map(x => `<button type="button" role="tab" aria-selected="${x.id === shown.id}" data-show="${esc(x.id)}">${esc(x.label)} <span class="hint">${x.count.toLocaleString()}</span></button>`).join('')}</div>
@@ -1377,16 +1571,20 @@
           <div class="table-wrap mf-grid"><table><thead><tr>${shown.columns.map(x => `<th>${esc(x.name)}${x.pk ? ' 🔑' : ''}</th>`).join('')}</tr></thead><tbody>${shown.rows.map(r => `<tr>${r.map(v => `<td title="${esc(v.length > 60 ? v : '')}">${esc(v.length > 60 ? v.slice(0, 60) + '…' : v)}</td>`).join('')}</tr>`).join('') || `<tr><td colspan="${shown.columns.length}" class="hint">No rows</td></tr>`}</tbody></table></div>` : '<p class="hint">This is empty.</p>'}
         </section>
         <section class="panel mf">
-          <h2><span class="mig-n">2</span> Migrate to a new DevHub database</h2>
+          <h2><span class="mig-n">2</span> ${P.online ? 'Import into your account' : 'Migrate to a new DevHub database'}</h2>
           <div class="opt-grid mf-top">
             <label>Tasks are in<select id="mfCol">${info.collections.map(x => opt(x.id, `${x.label} (${x.count} records)`, x.id === m.collection)).join('')}</select></label>
-            <label>New database name<input id="mfName" value="${esc(P.impName)}" maxlength="60"></label>
+            ${P.online ? '' : `<label>New database name<input id="mfName" value="${esc(P.impName)}" maxlength="60"></label>`}
           </div>
-          <fieldset class="fmt mf-fmt"><legend>Save as</legend>
+          ${P.online ? `<fieldset class="fmt mf-fmt"><legend>How</legend>
+            <label class="fmt-opt"><input type="radio" name="mfImp" value="merge" ${P.impMode === 'merge' ? 'checked' : ''}><span><b>Add to my tasks</b><small>Keeps your current tasks and adds these. Importing the same file again updates them instead of duplicating.</small></span></label>
+            <label class="fmt-opt"><input type="radio" name="mfImp" value="replace" ${P.impMode === 'replace' ? 'checked' : ''}><span><b>Replace my tasks</b><small>Your account will contain only these tasks. Your current tasks are downloaded as a backup first.</small></span></label>
+          </fieldset>` : ''}
+          <fieldset class="fmt mf-fmt" ${P.online ? 'hidden' : ''}><legend>Save as</legend>
             <label class="fmt-opt"><input type="radio" name="mfFmt" value="sqlite" ${P.impFormat === 'sqlite' ? 'checked' : ''}><span><b>SQLite database</b><small>A real database file. Open it with DB Browser for SQLite, sqlite3 or DBeaver too.</small></span></label>
             <label class="fmt-opt"><input type="radio" name="mfFmt" value="json" ${P.impFormat === 'json' ? 'checked' : ''}><span><b>JSON</b><small>Readable text — easy to look inside or keep in Git.</small></span></label>
           </fieldset>
-          <p class="hint">${where}</p>
+          ${P.online ? '' : `<p class="hint">${where}</p>`}
           <details class="mf-map" ${P.mapOpen ? 'open' : ''}><summary>How the fields map <span class="hint">— worked out automatically; open to check or change</span></summary>
           <p class="hint mf-sum">${roleSummary || 'No fields matched yet — choose at least the title.'}${m.roles.status && vals(m.roles.status) ? ` · status: ${vals(m.roles.status).map(x => `${esc(x.s || '(empty)')} → ${esc(A.STATUS_LABEL[m.statusMap[x.s]] || 'To do')}`).join(', ')}` : ''}</p>
           <div class="opt-grid mf-top"><label>Unique id<select id="mfKey">${opt('', info.kind === 'sqlite' ? '— row id —' : '— row position —', !m.key)}${c.columns.map(x => opt(x.name, x.name, x.name === m.key)).join('')}</select></label></div>
@@ -1398,10 +1596,11 @@
           <p class="hint">${extra.length ? `Other fields (<span class="mono">${esc(extra.join(', '))}</span>) are kept, and editable in each task’s details.` : 'Every field is mapped.'}</p>
           </details>
           <p class="form-err" id="mfErr" role="alert" hidden></p>
-          <div class="row action-bar"><button class="primary" id="mfGo">Migrate ${c.count} task${c.count === 1 ? '' : 's'} and save</button><button type="button" class="ghost" id="mfCancel">Cancel</button></div>
+          <div class="row action-bar"><button class="primary" id="mfGo">${P.online ? `Import ${c.count} task${c.count === 1 ? '' : 's'}` : `Migrate ${c.count} task${c.count === 1 ? '' : 's'} and save`}</button><button type="button" class="ghost" id="mfCancel">Cancel</button></div>
         </section>`;
       view().querySelectorAll('[data-show]').forEach(bt => bt.onclick = () => { P.view = bt.dataset.show; draw(); });
       view().querySelectorAll('[name="mfFmt"]').forEach(r => r.onchange = () => { P.impFormat = r.value; });
+      view().querySelectorAll('[name="mfImp"]').forEach(r => r.onchange = () => { P.impMode = r.value; });
       const det = $('.mf-map'); det.ontoggle = () => { P.mapOpen = det.open; };
       const nm = $('#mfName'); if (nm) nm.oninput = () => { P.impName = nm.value; };
       $('#mfCol').onchange = e => { m = P.mapping = A.guess(info, e.target.value); P.view = e.target.value; draw(); };
@@ -1416,11 +1615,19 @@
         m.formats ||= {}; draw();
       });
       view().querySelectorAll('[data-vmap]').forEach(s => s.onchange = () => { (s.dataset.vmap === 'status' ? m.statusMap : m.prioMap)[s.dataset.v] = s.dataset.vmap === 'priority' ? +s.value : s.value; });
-      $('#mfCancel').onclick = () => { pendingCustom = null; location.hash = offline.meta ? 'account' : 'start?next=tasks'; };
+      $('#mfCancel').onclick = () => { const on = P.online; pendingCustom = null; location.hash = on ? 'tasks' : offline.meta ? 'account' : 'start?next=tasks'; };
       $('#mfGo').onclick = async () => {
         const err = $('#mfErr'); err.hidden = true;
         if (!m.roles.title) { P.mapOpen = true; draw(); const e2 = $('#mfErr'); e2.textContent = 'Choose which field holds the task title (under “How the fields map”).'; e2.hidden = false; return; }
         const label = b0 => b0.textContent = `Migrate ${col().count} tasks and save`;
+        if (P.online) {
+          const b = $('#mfGo'); b.disabled = true; b.textContent = 'Importing…';
+          try { m.formats ||= {}; A.finish(info, m); maps.save(m);
+            const r = await DevHubAdapter.read(P.file, m); await importIntoAccount(cleanImported(r.docs), P.impMode, P.file.name);
+            pendingCustom = null; location.hash = 'tasks'; }
+          catch (e) { err.textContent = e.message; err.hidden = false; b.disabled = false; b.textContent = 'Try again'; }
+          return;
+        }
         if (!P.impName.trim()) { err.textContent = 'Give the new DevHub database a name.'; err.hidden = false; return; }
         const b = $('#mfGo'); b.disabled = true; b.textContent = 'Migrating…';
         try {
@@ -1454,10 +1661,10 @@
   // Shared with tasks.js
   // What the task tracker needs to adapt to your own file (null for DevHub databases and online accounts)
   const custom = () => null; // (the tracker always uses DevHub's own format now; migrated extra fields still show per task)
-  window.DH = { $, esc, toast, uid, dayKey, addDays, store, data, session, api, routes, render, copy, saveBlob, view, syncLine, custom };
+  window.DH = { $, esc, toast, uid, dayKey, addDays, store, data, session, api, routes, render, copy, saveBlob, view, syncLine, custom, backup: () => showBackupDialog() };
 
   window.addEventListener('DOMContentLoaded', () => {
-    if (session.user && session.token) { data.ns = session.user.id; data.load(); }
+    if (session.user && session.token) { data.ns = session.user.id; data.load(); autoBackup.load(); }
     else {
       session.clear();
       if (offline.meta) {

@@ -94,6 +94,25 @@ What's kept: in SQLite targets, the other tables, views, indexes, triggers, defa
 
 Everything runs in the browser's background worker (`migrate.js` + the bundled sql.js), so no data is uploaded.
 
+## Online copy of an offline database
+
+On the offline **Database** page, **Online copy** keeps a copy of your offline database (JSON or SQLite) in a DevHub account for safe keeping. You stay offline, and your file is still the database you work in.
+
+- **Sign in… / Create account…** right on the page. This doesn't close your database or switch to online mode.
+- If the account already has tasks, you choose to **add** this database's tasks (nothing in the account is removed) or **replace** the account's tasks.
+- The copy is **updated automatically** about a minute after changes (the server allows a limited number of saves per hour), or immediately with **Update now**. Tasks are merged by their newest edit: the account keeps anything else it has, and deleting a task offline deletes it in the copy too.
+- **Stop online copy** stops the updates; the last copy stays in the account. Sign in on any device to see it.
+
+## Backup & import (signed-in accounts)
+
+In the Tasks view (or Account → Backup & import):
+
+- **Download backup:** a SQLite or JSON copy of your tasks, projects and links. It's also an offline database, so you can open it with "Use offline" on any device.
+- **Keep one backup file up to date automatically:** on Chrome/Edge, pick a file once. In the Android app, the file is `Documents/DevHub/devhub-<you>-backup.sqlite`. The same file is rewritten after every sync; it's never a new copy.
+- **Import tasks from a file:** a DevHub backup, or any `.db` / `.json` / `.xml` task file. For other files, you see the contents and the field mapping first, as with offline migration. Then choose one of:
+  - **Add to my tasks:** keeps what you have. Tasks in both keep their newest edit, and importing the same file again updates the tasks instead of duplicating them.
+  - **Replace my tasks:** your current tasks are downloaded as a backup first.
+
 ## Task tracker
 
 - **Quick add with smart parsing:** for example, `Fix login bug #backend @web !high tomorrow 45m every weekday`. This one line sets tags, a project, the priority, the due date, an estimate and a repeat rule.

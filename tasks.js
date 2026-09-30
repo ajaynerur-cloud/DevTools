@@ -287,7 +287,7 @@
           <input type="search" id="tkSearch" placeholder="Search tasks" aria-label="Search tasks" value="${esc(ui.q)}">
           <select id="tkProject" aria-label="Filter by project"></select>
           <select id="tkPrio" aria-label="Filter by priority"><option value="">Any priority</option>${[1, 2, 3, 4].map(p => `<option value="${p}" ${+ui.prio === p ? 'selected' : ''}>${PRIO[p]}</option>`).join('')}</select>
-          <button type="button" id="tkProjects">Projects</button>
+          <button type="button" id="tkProjects">Projects</button>${session.user ? '<button type="button" id="tkBackup" title="Download a backup, keep a backup file updated, or import tasks from a file">Backup &amp; import</button>' : ''}
         </div>
       </div>
       <div id="tkBody" class="tk-body"></div>
@@ -322,6 +322,7 @@
     $('#tkProject').onchange = e => { ui.project = e.target.value; draw(); };
     $('#tkPrio').onchange = e => { ui.prio = e.target.value; draw(); };
     $('#tkProjects').onclick = openProjects;
+    const bk = $('#tkBackup'); if (bk) bk.onclick = () => window.DH.backup();
 
     const body = $('#tkBody');
     body.addEventListener('click', e => {
