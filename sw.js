@@ -1,7 +1,7 @@
 // DevHub service worker: offline app shell, never caches GitHub API calls.
-const CACHE = 'devhub-v14';
+const CACHE = 'devhub-v17';
 const SHELL = ['./', 'index.html', 'styles.css', 'app.js', 'manifest.webmanifest',
-  'favicon.ico', 'icons/icon.svg', 'icons/favicon-32.png', 'icons/apple-touch-icon.png', 'icons/icon-192.png', 'icons/icon-512.png', 'icons/icon-maskable-192.png', 'icons/icon-maskable-512.png', 'seed/links.json', 'config.js', 'tasks.js', 'offline-db.js', 'adapter.js', 'worker.js', 'migrate.js', 'vendor/sql-wasm.js', 'vendor/sql-wasm.wasm',
+  'favicon.ico', 'icons/icon.svg', 'icons/favicon-32.png', 'icons/apple-touch-icon.png', 'icons/icon-192.png', 'icons/icon-512.png', 'icons/icon-maskable-192.png', 'icons/icon-maskable-512.png', 'seed/links.json', 'config.js', 'tasks.js', 'notify.js', 'biolock.js', 'offline-db.js', 'adapter.js', 'worker.js', 'migrate.js', 'vendor/sql-wasm.js', 'vendor/sql-wasm.wasm',
   'vendor/papaparse.min.js', 'vendor/xlsx.full.min.js', 'vendor/fxp.min.js', 'vendor/js-yaml.min.js', 'vendor/beautifier.min.js', 'vendor/sql-formatter.min.js'];
 
 self.addEventListener('install', e => {
@@ -22,5 +22,16 @@ self.addEventListener('fetch', e => {
       return res;
     }).catch(() => cached || (e.request.mode === 'navigate' ? cache.match('index.html') : Response.error()));
     return cached || network;
+  }));
+});
+
+// Tapping a notification: focus DevHub if it is open (and open the task), otherwise open it.
+self.addEventListener('notificationclick', e => {
+  e.notification.close();
+  const taskId = e.notification.data && e.notification.data.taskId;
+  e.waitUntil(self.clients.matchAll({ type: 'window', includeUncontrolled: true }).then(list => {
+    const open = list.find(c => new URL(c.url).origin === location.origin);
+    if (open) { open.postMessage({ type: 'notify-open', taskId }); return open.focus(); }
+    return self.clients.openWindow('./#tasks' + (taskId ? '?open=' + encodeURIComponent(taskId) : ''));
   }));
 });

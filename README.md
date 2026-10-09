@@ -117,16 +117,36 @@ In the Tasks view (or Account → Backup & import):
 
 - **Quick add with smart parsing:** for example, `Fix login bug #backend @web !high tomorrow 45m every weekday`. This one line sets tags, a project, the priority, the due date, an estimate and a repeat rule.
 - **Views:**
-  - Today: overdue tasks (with "Move all to today"), today's tasks with planned time, and a collapsible "Completed today".
-  - Upcoming: the next 14 days, "Later" and "No date".
+  - Week (default): a strip of the seven days with a dot for open tasks (red when a past day still has some, green when everything is done). Tap a day to see its tasks, a progress bar and planned time; use the arrows to change week and *Today* to jump back. On today you also get "Overdue" (with "Move all to today"), a collapsed "Completed" list and "No date" for tasks without a date. New tasks go to the selected day.
   - Board: kanban columns. Drag and drop with a mouse; on touch, use the ← → buttons.
-  - All tasks: filter by status and sort.
+  - All: filter by status and sort.
   - Insights: tasks done over 14 days, week-over-week change, on-time rate, focus time, streak, priority mix and project progress.
-- **Task details:** status, priority (Urgent/High/Medium/Low), due date, project, repeat, estimate, tags, notes, subtasks and a start/stop timer. Only one timer runs at a time.
+- **Task details:** status (To do, In progress, In review, Blocked, On hold, Done), due date, reminder and priority up front; project, repeat, estimate and tags under *More details*; then notes, subtasks and a start/stop timer. Only one timer runs at a time. On phones the editor opens as a bottom sheet.
+- **Quiet task rows:** a title and one line of detail (due date when it isn't implied by the list, status, reminder time, project). Only urgent and high priority show colour. Search, filters, Projects, Reminders and Backup sit behind small buttons.
 - **Recurring tasks:** completing one schedules the next occurrence.
 - **Projects:** each has a colour, and you can create one inline with `@name`.
-- **Header stats:** daily goal ring, streak, focus time today and overdue count.
-- **Other:** undo after deleting, and keyboard shortcuts: `N` new task, `/` search, `1`–`5` switch view.
+- **Header:** a one-line summary with your daily goal (tap to change it), streak and overdue count.
+- **Other:** undo after deleting, and keyboard shortcuts: `N` new task, `/` search, `1`–`4` switch view.
+
+## Notifications and reminders
+
+Open **Reminders** in the task view (or set **Remind me** on a task) to get notifications on desktop and Android.
+
+- **Task reminders:** pick a date and time under *Remind me* in a task. Repeating tasks move their reminder with the due date.
+- **Daily summary:** tasks due today and overdue ones, at a time you choose (default 09:00).
+- **Desktop and browsers:** DevHub asks for permission when you click *Turn on* (or when you first set a reminder). Reminders fire while DevHub is open in a tab or installed as an app; a browser cannot wake a closed page. If you blocked notifications, click the lock icon beside the address bar and set Notifications to Allow. On iPhone/iPad, add DevHub to the Home Screen first.
+- **Android app:** reminders are scheduled with Android's alarm manager, so they arrive with the app closed and after a reboot. The app **requires** the notification permission (Android 13+) and *Alarms & reminders* (Android 12+): a blocking screen stays up until both are on. The CI workflow declares these permissions in the manifest.
+- Notification settings are per device and are not synced. The reminder time itself is stored on the task and syncs.
+
+## Fingerprint unlock (Android app)
+
+Opt-in. After you sign in with your password the app offers *Unlock with your fingerprint?*; you can also switch it on or off under **Account → Fingerprint unlock**.
+
+- **Remembered:** your sign-in token is stored in Android's hardware-backed Keystore, protected by your fingerprint, and is removed from the app's normal storage. It survives app restarts until you sign out, turn it off, or the session ends.
+- **Opens from the phone first:** the lock screen needs no network. A fingerprint opens your tasks from the copy saved on the phone, and only then does the app contact the server: it pings the server to wake it (Render's free plan sleeps), shows "Waking the server…", then syncs. Unlocking never calls the login endpoint, and the app no longer calls the server just to start, so a sleeping server stays asleep until you are in.
+- **Locks again:** after 1 minute away by default (choose immediately, 5 minutes, or only on restart). Nothing syncs while locked; reminders still fire.
+- **Fallback:** if the fingerprint can't be used (fingerprints changed, new phone), the lock screen offers **Use password instead**. Signing out removes the Keystore copy.
+- The phone needs a fingerprint enrolled in Android Settings. Face unlock also works where Android allows it.
 
 ## Setup: two repositories
 

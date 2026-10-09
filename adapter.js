@@ -283,7 +283,7 @@
   function fileValues(t, m, projects) {
     const r = m.roles, out = {};
     if (r.title) out.title = t.title;
-    if (r.status) out.status = m.statusOut[t.status];
+    if (r.status) out.status = m.statusOut[t.status] ?? m.statusOut[{ review: 'doing', blocked: 'doing', hold: 'doing' }[t.status]]; // extra DevHub statuses fall back to 'in progress' in files that only know three
     if (r.priority) out.priority = m.prioOut[t.priority];
     if (r.due) out.due = toFileDate(t.due, m.formats.due);
     if (r.project) { const p = projects.find(x => x.id === t.project && !x.deleted); out.project = p ? p.name : ''; }

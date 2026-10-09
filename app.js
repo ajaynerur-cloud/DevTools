@@ -42,10 +42,14 @@
       this.token = token; this.user = user;
       try { const s = remember ? localStorage : sessionStorage; s.setItem('devhub:token', token); s.setItem('devhub:user', JSON.stringify(user)); (remember ? sessionStorage : localStorage).removeItem('devhub:token'); } catch {}
     },
-    setUser(user) { this.user = user; try { (localStorage.getItem('devhub:token') ? localStorage : sessionStorage).setItem('devhub:user', JSON.stringify(user)); } catch {} },
-    clear() { this.token = null; this.user = null; try { ['devhub:token', 'devhub:user'].forEach(k => { localStorage.removeItem(k); sessionStorage.removeItem(k); }); } catch {} }
+    setUser(user) { this.user = user; try { (localStorage.getItem('devhub:token') || localStorage.getItem('devhub:bio') ? localStorage : sessionStorage).setItem('devhub:user', JSON.stringify(user)); } catch {} },
+    clear() { this.token = null; this.user = null; try { ['devhub:token', 'devhub:user'].forEach(k => { localStorage.removeItem(k); sessionStorage.removeItem(k); }); } catch {} if (window.DHBio) window.DHBio.forget(); }
   };
-  let serverConfig = { registration: 'open' };
+  let serverConfig = { registration: 'open' }, configAsked = false;
+  function loadConfig() { // only the register screens need it, so opening the app or the login page never wakes the server
+    if (configAsked) return; configAsked = true;
+    api('/config').then(c => { serverConfig = c; if (document.body.dataset.route === 'register') render(); }).catch(() => { configAsked = false; });
+  }
 
   async function api(path, { method = 'GET', body } = {}) {
     let r;
@@ -97,7 +101,7 @@
   const stamp = () => new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
 
   async function pull() {
-    if (!session.user) return;
+    if (!session.user || !session.token) return;
     setStatus('Syncing…', 'busy');
     try {
       let changed = false;
@@ -117,9 +121,38 @@
     } catch (e) { setStatus(e.offline ? 'Offline — changes saved on this device' : 'Sync paused — ' + e.message, e.offline ? '' : 'err'); }
   }
 
+  // Wake the (possibly sleeping) server, then sync. The app is already usable from the copy on this device.
+  let waking = false, wakeRetry;
+  async function wakeAndSync() {
+    if (!session.user || !session.token || waking) return;
+    waking = true; clearTimeout(wakeRetry);
+    try {
+      setStatus('Connecting…', 'busy');
+      let up = false;
+      for (let i = 0; i < 10 && session.token; i++) {
+        const ctl = new AbortController(), to = setTimeout(() => ctl.abort(), 15000);
+        try { const r = await fetch(API + '/api/health', { cache: 'no-store', signal: ctl.signal }); if (r.ok) up = true; } catch {}
+        clearTimeout(to);
+        if (up || !navigator.onLine) break;
+        setStatus(i < 2 ? 'Waking the server… your tasks are ready on this device' : 'Server is still waking up…', 'busy');
+        await new Promise(r => setTimeout(r, 3000));
+      }
+      if (!session.token) return;
+      if (up) { await pull(); api('/auth/me').then(r => { session.setUser(r.user); renderNavUser(); }).catch(() => {}); }
+      else if (!navigator.onLine) setStatus('Offline — changes saved on this device');
+      else { setStatus('Server is asleep — changes saved on this device'); wakeRetry = setTimeout(wakeAndSync, 60000); }
+    } finally { waking = false; }
+  }
+  // Fingerprint unlock: the token comes out of the Keystore, the local data opens first, the server is contacted last
+  function unlockApp(token) {
+    session.token = token; data.ns = session.user.id; data.load(); autoBackup.load();
+    renderNavUser(); render(); wakeAndSync();
+  }
+  function relockApp() { session.token = null; clearTimeout(pushTimer); clearTimeout(wakeRetry); document.querySelectorAll('dialog[open]').forEach(d => d.close()); }
+
   let pushing = false, pushTimer;
   async function push() {
-    if (!session.user || pushing) return;
+    if (!session.user || !session.token || pushing) return;
     pushing = true; setStatus('Saving…', 'busy');
     try {
       for (const name of DOCS) {
@@ -145,6 +178,7 @@
     if (offline.meta) { clearTimeout(offline.timer); data.wipe('offline'); offline.setMeta(null); offline.handle = null; idb.del('offline-handle'); }
     session.save(token, user, remember);
     data.ns = user.id; data.load(); renderNavUser(); pull(); autoBackup.load();
+    setTimeout(() => window.DHBio && window.DHBio.offer(), 1500);
   }
   function sessionExpired() {
     const had = session.user; session.clear(); renderNavUser();
@@ -356,6 +390,7 @@
 
   // sign in / create an account for the online copy, without leaving offline mode
   function cloudDialog(kind = 'login') {
+    if (kind === 'register') loadConfig();
     let dlg = $('#cloudDlg'); if (!dlg) { dlg = document.createElement('dialog'); dlg.id = 'cloudDlg'; dlg.className = 'tk-dialog mig-dlg'; document.body.appendChild(dlg); }
     const reg = kind === 'register', m = offline.meta;
     dlg.innerHTML = `<form novalidate>
@@ -1328,6 +1363,7 @@
     return pw ? Math.min(4, Math.max(1, s - (pw.length < 8 ? 1 : 0))) : 0;
   }
   function renderRegister() {
+    loadConfig();
     if (session.user) { location.hash = nextRoute(); return; }
     const closed = serverConfig.registration === 'closed', code = serverConfig.registration === 'code';
     view().innerHTML = authShell(closed ? `<h1>Registration is closed</h1><p class="hint auth-sub">Ask the administrator of this DevHub to create an account for you.</p><a class="btn primary wide" href="#login">Back to sign in</a>` :
@@ -1381,6 +1417,7 @@
           <label for="nx">New password</label><input id="nx" name="next" type="password" autocomplete="new-password" minlength="8">
           <p class="hint">Changing your password signs you out on your other devices.</p>
           <button class="primary">Change password</button></form></section>
+        ${window.DHBio ? window.DHBio.panelHtml() : ''}
         <section class="panel"><h2>Sync and data</h2>
           <p class="hint" id="acctSync">${data.hasUnsynced() ? 'Some changes are waiting to sync.' : 'Everything is synced.'}</p>
           <div class="row"><button id="syncNow">Sync now</button><button id="bkOpen" class="primary">Backup &amp; import…</button><button id="ex">Export JSON</button><button id="exq">Export SQLite</button></div>
@@ -1390,6 +1427,7 @@
           <h2 style="margin-top:22px">Delete account</h2><p class="hint">Permanently deletes your account and all your tasks and links.</p>
           <button class="danger" id="del">Delete account…</button></section>
       </div>`;
+    if (window.DHBio) window.DHBio.wirePanel();
     const pf = $('#pf');
     pf.onsubmit = async e => { e.preventDefault(); fieldErrors(pf);
       try { const r = await api('/auth/profile', { method: 'POST', body: { name: pf.name.value, email: pf.email.value } }); session.setUser(r.user); renderNavUser(); toast('Profile saved'); }
@@ -1397,7 +1435,7 @@
     const pwf = $('#pwf');
     pwf.onsubmit = async e => { e.preventDefault(); fieldErrors(pwf);
       if (pwf.next.value.length < 8) return fieldErrors(pwf, { next: 'Use at least 8 characters.' });
-      try { const r = await api('/auth/password', { method: 'POST', body: { current: pwf.current.value, next: pwf.next.value } }); session.save(r.token, r.user, !!localStorage.getItem('devhub:token')); pwf.reset(); toast('Password changed'); }
+      try { const r = await api('/auth/password', { method: 'POST', body: { current: pwf.current.value, next: pwf.next.value } }); session.save(r.token, r.user, !!localStorage.getItem('devhub:token')); if (window.DHBio) await window.DHBio.refresh(r.token, r.user); pwf.reset(); toast('Password changed'); }
       catch (x) { fieldErrors(pwf, x.body?.fields); if (!x.body?.fields) toast(x.message); } };
     $('#syncNow').onclick = async () => { await pull(); await push(); $('#acctSync').textContent = data.hasUnsynced() ? 'Some changes are waiting to sync.' : 'Everything is synced.'; };
     const dbMeta = { name: `${u.name || u.username}'s tasks` };
@@ -1645,6 +1683,7 @@
   const routes = { tools: sub => renderTools(sub), links: renderLinks, account: () => offline.active() ? renderOfflineDb() : renderAccount(), login: renderLogin, register: renderRegister, start: renderStart, mapfile: renderMapFile };
   const PRIVATE = new Set(['tasks', 'links', 'account']);
   function render() {
+    if (window.DHBio && window.DHBio.locked()) return;   // nothing is shown until the fingerprint is accepted
     let [route, sub] = (location.hash.slice(1).split('?')[0] || 'tools').split('/');
     if (route === 'today' || route === 'settings') route = route === 'today' ? 'tasks' : 'account';
     if (PRIVATE.has(route) && !session.user && !offline.meta) { location.replace('#start?next=' + route); return; }
@@ -1654,17 +1693,19 @@
     if (offline.active()) offlineStatus();
   }
   window.addEventListener('hashchange', () => { render(); view().focus({ preventScroll: true }); window.scrollTo(0, 0); });
-  window.addEventListener('online', () => { if (session.user) pull(); });
-  document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible' && session.user && !pushing) pull(); });
+  window.addEventListener('online', () => { if (session.user && session.token) wakeAndSync(); });
+  document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible' && session.user && session.token && !pushing) wakeAndSync(); });
   data.listeners.add(() => { const r = document.body.dataset.route; if ((r === 'tasks' || r === 'links') && !document.querySelector('dialog[open]')) render(); });
 
   // Shared with tasks.js
   // What the task tracker needs to adapt to your own file (null for DevHub databases and online accounts)
   const custom = () => null; // (the tracker always uses DevHub's own format now; migrated extra fields still show per task)
-  window.DH = { $, esc, toast, uid, dayKey, addDays, store, data, session, api, routes, render, copy, saveBlob, view, syncLine, custom, backup: () => showBackupDialog() };
+  window.DH = { $, esc, toast, uid, dayKey, addDays, store, data, session, api, routes, render, copy, saveBlob, view, syncLine, custom, backup: () => showBackupDialog(), unlock: unlockApp, relock: relockApp, renderNavUser };
 
   window.addEventListener('DOMContentLoaded', () => {
-    if (session.user && session.token) { data.ns = session.user.id; data.load(); autoBackup.load(); }
+    const bioLocked = !!(window.DHBio && window.DHBio.locked());   // fingerprint unlock is on and nobody has unlocked yet
+    if (bioLocked) { /* stay quiet: no data, no network until the fingerprint is accepted */ }
+    else if (session.user && session.token) { data.ns = session.user.id; data.load(); autoBackup.load(); }
     else {
       session.clear();
       if (offline.meta) {
@@ -1679,9 +1720,8 @@
       }
     }
     renderNavUser();
-    render();
-    api('/config').then(c => { serverConfig = c; if (document.body.dataset.route === 'register') render(); }).catch(() => {});
-    if (session.user) { pull(); api('/auth/me').then(r => { session.setUser(r.user); renderNavUser(); }).catch(() => {}); }
+    if (bioLocked) window.DHBio.lock();
+    else { render(); if (session.user && session.token) wakeAndSync(); }
     if ('serviceWorker' in navigator && !isNative()) navigator.serviceWorker.register('sw.js').catch(console.error);
   });
 })();

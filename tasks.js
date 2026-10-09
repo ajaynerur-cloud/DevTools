@@ -1,27 +1,35 @@
 /* DevHub Tasks — per-user task tracker.
  * Stored in the signed-in user's tasks.json as:
  *   { tasks: [Task], projects: [{id,name,color,updatedAt}], settings: {dailyGoal} }
- * Task: { id, title, notes, due, priority 1-4, status todo|doing|done, project, tags[], estimate (min),
- *         spent (sec), timerStart, subtasks[{id,title,done}], repeat, createdAt, updatedAt, completedAt, deleted? }
+ * Task: { id, title, notes, due, priority 1-4, status todo|doing|review|blocked|hold|done, project, tags[], estimate (min),
+ *         spent (sec), timerStart, subtasks[{id,title,done}], repeat, remind (local 'YYYY-MM-DDTHH:mm' or null), createdAt, updatedAt, completedAt, deleted? }
  */
 (() => {
   'use strict';
   const { $, esc, toast, uid, dayKey, addDays, data, routes, view, syncLine, session } = window.DH;
 
   const PRIO = { 1: 'Urgent', 2: 'High', 3: 'Medium', 4: 'Low' };
-  const STATUS = { todo: 'To do', doing: 'In progress', done: 'Done' };
+  const STATUS = { todo: 'To do', doing: 'In progress', review: 'In review', blocked: 'Blocked', hold: 'On hold', done: 'Done' };
+  const ORDER = Object.keys(STATUS);                 // board / picker order
+  const ACTIVE = ['doing', 'review'];                // being worked on right now: surfaced in Today and the sidebar count
   // Your own file (offline): use its words for status and priority, and show its extra fields
   const DEF_STATUS = { ...STATUS }, DEF_PRIO = { ...PRIO };
   const custom = () => window.DH.custom && window.DH.custom();
   function applyLabels() { const c = custom(); Object.assign(STATUS, DEF_STATUS, c ? c.labels.status : {}); Object.assign(PRIO, DEF_PRIO, c ? c.labels.priority : {}); }
-  const extraChips = t => { const c = custom(); if (!c || !t.fields) return []; return Object.keys(c.choices).slice(0, 2).filter(k => t.fields[k] != null && t.fields[k] !== '').map(k => `<span class="chip xf" title="${esc(k)}">${esc(k)}: ${esc(t.fields[k])}</span>`); };
   const REPEAT = { '': 'Does not repeat', daily: 'Every day', weekdays: 'Every weekday', weekly: 'Every week', monthly: 'Every month' };
   const COLORS = ['#3346D3', '#1F8A5B', '#C23B3B', '#B7791F', '#7C3AED', '#0E7490', '#DB2777', '#4B5563'];
-  const VIEWS = [['today', 'Today'], ['upcoming', 'Upcoming'], ['board', 'Board'], ['all', 'All tasks'], ['insights', 'Insights']];
+  const VIEWS = [['week', 'Week'], ['board', 'Board'], ['all', 'All'], ['insights', 'Insights']];
+  const ICONS = {
+    week: '<rect x="4" y="5" width="16" height="15" rx="2"/><path d="M16 3v4M8 3v4M4 11h16"/>',
+    board: '<rect x="4" y="4" width="5" height="16" rx="1"/><rect x="11" y="4" width="5" height="10" rx="1"/><path d="M18 4v6"/>',
+    all: '<path d="M9 6h11M9 12h11M9 18h11M5 6h.01M5 12h.01M5 18h.01"/>',
+    insights: '<path d="M4 20h16M7 16V10M12 16V5M17 16v-3"/>' };
+  const svg = (p, c = 'ic') => `<svg class="${c}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${p}</svg>`;
+  const BELL = '<path d="M10 5a2 2 0 1 1 4 0a7 7 0 0 1 4 6v3a4 4 0 0 0 2 3H4a4 4 0 0 0 2-3v-3a7 7 0 0 1 4-6M9 17v1a3 3 0 0 0 6 0v-1"/>';
   const now = () => new Date().toISOString();
   const today = () => dayKey(new Date());
 
-  let ui = { view: 'today', q: '', project: '', prio: '', status: '', sort: 'due', showDone: false, doneOpen: false };
+  let ui = { view: 'week', day: null, nodateOpen: false, q: '', project: '', prio: '', status: '', sort: 'due', showDone: false, doneOpen: false };
 
   /* ---------------- data ---------------- */
   function doc() {
@@ -49,7 +57,7 @@
     d.tasks = d.tasks.filter(t => !t.deleted || Date.parse(t.updatedAt) > cutoff);
     data.set('tasks', d);
   }
-  const blank = p => ({ id: uid(), title: '', notes: '', due: null, priority: 3, status: 'todo', project: null, tags: [], estimate: null, spent: 0, timerStart: null, subtasks: [], repeat: null, createdAt: now(), updatedAt: now(), completedAt: null, ...p });
+  const blank = p => ({ id: uid(), title: '', notes: '', due: null, priority: 3, status: 'todo', project: null, tags: [], estimate: null, spent: 0, timerStart: null, subtasks: [], repeat: null, remind: null, createdAt: now(), updatedAt: now(), completedAt: null, ...p });
   const live = d => d.tasks.filter(t => !t.deleted);
   const find = (d, id) => d.tasks.find(t => t.id === id);
   const spentNow = t => (t.spent || 0) + (t.timerStart ? Math.max(0, (Date.now() - Date.parse(t.timerStart)) / 1000) : 0);
@@ -62,13 +70,20 @@
     if (t.status === 'done' && !wasDone) {
       t.completedAt = now(); stopTimer(t);
       if (t.repeat) {
-        const next = blank({ ...t, id: uid(), status: 'todo', completedAt: null, spent: 0, timerStart: null, createdAt: now(), due: nextDue(t.due || today(), t.repeat), subtasks: t.subtasks.map(s => ({ ...s, id: uid(), done: false })) });
+        const next = blank({ ...t, id: uid(), status: 'todo', completedAt: null, spent: 0, timerStart: null, createdAt: now(), due: nextDue(t.due || today(), t.repeat), remind: shiftRemind(t.remind, t.due, nextDue(t.due || today(), t.repeat)), subtasks: t.subtasks.map(s => ({ ...s, id: uid(), done: false })) });
         d.tasks.push(next);
         if (!silent) { const l = dueLabel(next.due).text; toast(`Next “${t.title}” scheduled for ${/^(Today|Tomorrow)$/.test(l) ? l.toLowerCase() : l}`); }
       }
     }
     if (t.status !== 'done') t.completedAt = null;
     save(d); return t;
+  }
+  // A repeating task's reminder keeps the same time of day, moved by the same number of days as the due date
+  function shiftRemind(remind, from, to) {
+    if (!remind) return null;
+    const days = Math.round((new Date(to + 'T12:00:00') - new Date((from || today()) + 'T12:00:00')) / 864e5), r = new Date(remind);
+    if (isNaN(r)) return null; r.setDate(r.getDate() + days);
+    const p = n => String(n).padStart(2, '0'); return `${r.getFullYear()}-${p(r.getMonth() + 1)}-${p(r.getDate())}T${p(r.getHours())}:${p(r.getMinutes())}`;
   }
   function nextDue(from, rep) {
     const d = new Date(from + 'T12:00:00');
@@ -154,62 +169,67 @@
     return list.filter(t => (!ui.project || t.project === ui.project) && (!ui.prio || t.priority === +ui.prio) &&
       (!q || (t.title + ' ' + t.notes + ' ' + t.tags.join(' ')).toLowerCase().includes(q)));
   }
-  function chipHtml(t, d) {
-    const p = d.projects.find(x => x.id === t.project && !x.deleted), due = dueLabel(t.due), subDone = t.subtasks.filter(s => s.done).length;
-    return [
-      t.due || t.status !== 'done' ? `<span class="chip due ${t.status === 'done' ? '' : due.cls}">${esc(due.text)}</span>` : '',
-      p ? `<span class="chip proj"><i style="background:${esc(p.color)}"></i>${esc(p.name)}</span>` : '',
-      ...extraChips(t),
-      ...t.tags.map(g => `<span class="chip tag">#${esc(g)}</span>`),
-      t.subtasks.length ? `<span class="chip">${subDone}/${t.subtasks.length} subtasks</span>` : '',
-      t.estimate || t.spent ? `<span class="chip">${t.spent ? fmtDur(t.spent) + (t.estimate ? ' / ' : '') : ''}${t.estimate ? fmtEst(t.estimate) : ''}</span>` : '',
-      t.repeat ? `<span class="chip" title="${esc(REPEAT[t.repeat])}">↻ ${esc(REPEAT[t.repeat].replace('Every ', ''))}</span>` : '',
-      t.notes ? `<span class="chip" title="Has notes">Notes</span>` : ''
-    ].join('');
+  // One quiet line under the title: due (when the list doesn't already imply it), status, reminder, project
+  function metaHtml(t, d, { due = true } = {}) {
+    const p = d.projects.find(x => x.id === t.project && !x.deleted), parts = [], isDone = t.status === 'done';
+    if (due && (t.due || !isDone)) { const dl = dueLabel(t.due); parts.push(`<span class="mt ${isDone ? '' : dl.cls}">${esc(dl.text)}</span>`); }
+    if (t.status !== 'todo' && !isDone) parts.push(`<span class="mt st st-${t.status}">${esc(STATUS[t.status])}</span>`);
+    if (t.remind && !isDone) { const r = new Date(t.remind); if (!isNaN(r)) { const sameDay = !t.due || dayKey(r) === t.due; parts.push(`<span class="mt bell" title="Reminder">${svg(BELL)}${esc(r.toLocaleString(undefined, sameDay ? { hour: 'numeric', minute: '2-digit' } : { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' }))}</span>`); } }
+    if (p) parts.push(`<span class="mt proj"><i style="background:${esc(p.color)}"></i>${esc(p.name)}</span>`);
+    return parts.join('<span class="sep" aria-hidden="true">·</span>');
   }
-  function rowHtml(t, d) {
+  function rowHtml(t, d, o) {
     const running = !!t.timerStart;
     return `<li class="tk-row p${t.priority} ${t.status}" data-id="${t.id}">
       <button class="tk-check" role="checkbox" aria-checked="${t.status === 'done'}" aria-label="${t.status === 'done' ? 'Mark as not done' : 'Complete'}: ${esc(t.title)}"></button>
-      <button class="tk-main" data-open aria-label="Open ${esc(t.title)}"><span class="tk-title">${esc(t.title)}</span><span class="tk-meta">${t.status === 'doing' ? '<span class="chip doing">In progress</span>' : ''}${chipHtml(t, d)}</span></button>
+      <button class="tk-main" data-open aria-label="Open ${esc(t.title)}"><span class="tk-title">${esc(t.title)}</span>${(() => { const m = metaHtml(t, d, o); return m ? `<span class="tk-meta">${m}</span>` : ''; })()}</button>
       ${t.status === 'done' ? '' : `<button class="tk-timer ${running ? 'on' : ''}" data-timer aria-label="${running ? 'Stop' : 'Start'} timer" title="${running ? 'Stop' : 'Start'} timer">${running ? `<span data-clock="${t.id}">${fmtClock(spentNow(t))}</span>` : '▶'}</button>`}
     </li>`;
   }
-  const listHtml = (items, d, empty) => items.length ? `<ul class="tk-list">${items.map(t => rowHtml(t, d)).join('')}</ul>` : `<p class="tk-empty">${empty}</p>`;
+  const listHtml = (items, d, empty, o) => items.length ? `<ul class="tk-list">${items.map(t => rowHtml(t, d, o)).join('')}</ul>` : `<p class="tk-empty">${empty}</p>`;
   const section = (title, count, body, extra = '') => `<section class="tk-sec"><header><h2>${title}</h2><span class="tk-count">${count}</span>${extra}</header>${body}</section>`;
 
-  function renderTodayView(d) {
-    const t = today(), all = filtered(live(d));
-    const overdue = all.filter(x => x.status !== 'done' && x.due && x.due < t).sort(byPriority);
-    const todays = all.filter(x => x.status !== 'done' && (x.due === t || (x.status === 'doing' && (!x.due || x.due > t)))).sort((a, b) => (b.status === 'doing') - (a.status === 'doing') || byPriority(a, b));
-    const done = all.filter(x => x.status === 'done' && x.completedAt && dayKey(new Date(x.completedAt)) === t).sort((a, b) => b.completedAt.localeCompare(a.completedAt));
-    const planned = todays.reduce((s, x) => s + (x.estimate || 0), 0);
-    return (overdue.length ? section('Overdue', overdue.length, listHtml(overdue, d), `<button class="ghost tk-link" data-act="reschedule">Move all to today</button>`) : '') +
-      section('Today', todays.length, listHtml(todays, d, all.length ? 'Nothing left for today. Add a task above, or pull something in from Upcoming.' : 'Your day is clear. Add your first task above — try “Review pull request #code !high 30m”.'), planned ? `<span class="hint tk-plan">${fmtEst(planned)} planned</span>` : '') +
-      (done.length ? `<details class="tk-sec tk-done" ${ui.doneOpen ? 'open' : ''}><summary><h2>Completed today</h2><span class="tk-count">${done.length}</span></summary>${listHtml(done, d)}</details>` : '');
+  /* ---------------- week view ---------------- */
+  const weekOf = day => { const off = (new Date(day + 'T12:00:00').getDay() + 6) % 7, mon = addDays(day, -off); return Array.from({ length: 7 }, (_, i) => addDays(mon, i)); };
+  const dayTitle = k => k === today() ? 'Today' : k === addDays(today(), 1) ? 'Tomorrow' : k === addDays(today(), -1) ? 'Yesterday' : new Date(k + 'T12:00:00').toLocaleDateString(undefined, { weekday: 'long', day: 'numeric', month: 'short' });
+  function dayItems(all, k) {
+    const t = today();
+    return all.filter(x => x.status === 'done'
+      ? (x.completedAt ? dayKey(new Date(x.completedAt)) === k : x.due === k)
+      : (x.due === k || (k === t && !x.due && ACTIVE.includes(x.status))));
   }
-  function renderUpcoming(d) {
-    const t = today(), all = filtered(live(d)).filter(x => x.status !== 'done');
-    let html = '';
-    for (let i = 1; i <= 14; i++) {
-      const k = addDays(t, i), items = all.filter(x => x.due === k).sort(byPriority);
-      if (!items.length && i > 7) continue;
-      const dt = new Date(k + 'T12:00:00');
-      const title = i === 1 ? 'Tomorrow' : dt.toLocaleDateString(undefined, { weekday: 'long' });
-      html += section(`${title} <span class="tk-sub">${dt.toLocaleDateString(undefined, { day: 'numeric', month: 'short' })}</span>`, items.length, listHtml(items, d, 'Nothing scheduled'), `<button class="ghost tk-link" data-add-on="${k}">+ Add</button>`);
-    }
-    const later = all.filter(x => x.due && x.due > addDays(t, 14)).sort((a, b) => a.due.localeCompare(b.due));
-    const nodate = all.filter(x => !x.due).sort(byPriority);
-    if (later.length) html += section('Later', later.length, listHtml(later, d));
-    html += section('No date', nodate.length, listHtml(nodate, d, 'Every task has a date.'));
-    return html;
+  function renderWeek(d) {
+    const t = today(), day = ui.day || t, days = weekOf(day), all = filtered(live(d));
+    const items = dayItems(all, day), open = items.filter(x => x.status !== 'done').sort((a, b) => ACTIVE.includes(b.status) - ACTIVE.includes(a.status) || (a.remind || '9').localeCompare(b.remind || '9') || byPriority(a, b));
+    const done = items.filter(x => x.status === 'done').sort((a, b) => (b.completedAt || '').localeCompare(a.completedAt || ''));
+    const overdue = day === t ? all.filter(x => x.status !== 'done' && x.due && x.due < t).sort(byPriority) : [];
+    const nodate = day === t ? all.filter(x => x.status !== 'done' && !x.due && !ACTIVE.includes(x.status)).sort(byPriority) : [];
+    const first = new Date(days[0] + 'T12:00:00'), last = new Date(days[6] + 'T12:00:00');
+    const range = first.getMonth() === last.getMonth() ? first.toLocaleDateString(undefined, { month: 'long', year: 'numeric' }) : `${first.toLocaleDateString(undefined, { month: 'short' })} – ${last.toLocaleDateString(undefined, { month: 'short', year: 'numeric' })}`;
+    const strip = days.map(k => {
+      const n = dayItems(all, k), left = n.filter(x => x.status !== 'done').length, dt = new Date(k + 'T12:00:00');
+      const mark = left ? (k < t ? 'late' : 'has') : n.length ? 'clear' : '';
+      return `<button type="button" class="wk-day ${k === day ? 'on' : ''} ${k === t ? 'today' : ''}" data-day="${k}" aria-pressed="${k === day}" aria-label="${esc(dt.toLocaleDateString(undefined, { weekday: 'long', day: 'numeric', month: 'long' }))}, ${left} to do"><span class="wd">${esc(dt.toLocaleDateString(undefined, { weekday: 'short' }))}</span><b>${dt.getDate()}</b><i class="dot ${mark}"></i></button>`;
+    }).join('');
+    const pct = items.length ? Math.round(done.length / items.length * 100) : 0, planned = open.reduce((a, x) => a + (x.estimate || 0), 0);
+    const emptyMsg = all.length ? (day === t ? 'Nothing left for today.' : 'Nothing planned for this day.') : 'Your day is clear. Add your first task above.';
+    return `<div class="wk">
+      <div class="wk-head"><h2>${esc(range)}</h2><div class="wk-nav"><button type="button" class="ghost" data-wk="-1" aria-label="Previous week">&#8249;</button><button type="button" class="ghost" data-wk="today">Today</button><button type="button" class="ghost" data-wk="1" aria-label="Next week">&#8250;</button></div></div>
+      <div class="wk-strip" role="group" aria-label="Days of the week">${strip}</div>
+      <div class="wk-sum"><div><h3>${esc(dayTitle(day))}</h3><p>${open.length ? `${open.length} to do` : items.length ? 'All done' : 'No tasks'}${done.length ? ` · ${done.length} done` : ''}${planned ? ` · ${fmtEst(planned)} planned` : ''}</p></div>${items.length ? `<span class="wk-pct">${pct}%</span>` : ''}</div>
+      ${items.length ? `<div class="wk-bar" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${pct}"><i style="width:${pct}%"></i></div>` : ''}
+      ${overdue.length ? section('Overdue', overdue.length, listHtml(overdue, d, '', { due: true }), `<button class="ghost tk-link" data-act="reschedule">Move all to today</button>`) : ''}
+      ${open.length ? listHtml(open, d, '', { due: false }) : (overdue.length ? '' : `<p class="tk-empty">${emptyMsg}</p>`)}
+      ${done.length ? `<details class="tk-sec tk-done" ${ui.doneOpen ? 'open' : ''}><summary><h2>Completed</h2><span class="tk-count">${done.length}</span></summary>${listHtml(done, d, '', { due: false })}</details>` : ''}
+      ${nodate.length ? `<details class="tk-sec tk-nodate" ${ui.nodateOpen ? 'open' : ''}><summary><h2>No date</h2><span class="tk-count">${nodate.length}</span></summary>${listHtml(nodate, d, '', { due: false })}</details>` : ''}
+    </div>`;
   }
   function renderBoard(d) {
     const week = addDays(today(), -7), all = filtered(live(d));
-    const cols = { todo: all.filter(x => x.status === 'todo').sort(byPriority), doing: all.filter(x => x.status === 'doing').sort(byPriority), done: all.filter(x => x.status === 'done' && x.completedAt && dayKey(new Date(x.completedAt)) >= week).sort((a, b) => b.completedAt.localeCompare(a.completedAt)) };
+    const cols = Object.fromEntries(ORDER.map(k => [k, k === 'done' ? all.filter(x => x.status === 'done' && x.completedAt && dayKey(new Date(x.completedAt)) >= week).sort((a, b) => b.completedAt.localeCompare(a.completedAt)) : all.filter(x => x.status === k).sort(byPriority)]));
     return `<div class="tk-board">${Object.entries(cols).map(([s, items]) => `<section class="tk-col" data-status="${s}"><header><h2>${STATUS[s]}</h2><span class="tk-count">${items.length}</span>${s === 'done' ? '<span class="hint">last 7 days</span>' : ''}</header>
-      <div class="tk-cards" data-drop="${s}">${items.map(t => `<article class="tk-card p${t.priority} ${t.status}" draggable="true" data-id="${t.id}" tabindex="0"><div class="tk-card-top"><span class="prio-dot" title="${PRIO[t.priority]} priority"></span><span class="tk-title">${esc(t.title)}</span></div><div class="tk-meta">${chipHtml(t, d)}</div>
-      <div class="tk-card-move">${s !== 'todo' ? `<button class="ghost" data-move="${s === 'done' ? 'doing' : 'todo'}" aria-label="Move back">←</button>` : '<span></span>'}${s !== 'done' ? `<button class="ghost" data-move="${s === 'todo' ? 'doing' : 'done'}" aria-label="Move forward">→</button>` : ''}</div></article>`).join('') || '<p class="tk-empty">Drop tasks here</p>'}</div></section>`).join('')}</div>`;
+      <div class="tk-cards" data-drop="${s}">${items.map(t => `<article class="tk-card p${t.priority} ${t.status}" draggable="true" data-id="${t.id}" tabindex="0"><div class="tk-card-top"><span class="prio-dot" title="${PRIO[t.priority]} priority"></span><span class="tk-title">${esc(t.title)}</span></div><div class="tk-meta">${metaHtml(t, d)}</div>
+      <div class="tk-card-move">${ORDER.indexOf(s) > 0 ? `<button class="ghost" data-move="${ORDER[ORDER.indexOf(s) - 1]}" aria-label="Move back">←</button>` : '<span></span>'}${ORDER.indexOf(s) < ORDER.length - 1 ? `<button class="ghost" data-move="${ORDER[ORDER.indexOf(s) + 1]}" aria-label="Move forward">→</button>` : ''}</div></article>`).join('') || '<p class="tk-empty">Drop tasks here</p>'}</div></section>`).join('')}</div>`;
   }
   function renderAll(d) {
     let items = filtered(live(d)).filter(x => ui.status ? x.status === ui.status : ui.showDone || x.status !== 'done');
@@ -247,28 +267,23 @@
   }
 
   function header(d) {
-    const s = stats(d), pct = Math.min(1, s.doneToday / s.goal), C = 2 * Math.PI * 26;
-    const first = (session.user?.name || '').split(' ')[0];
+    const s = stats(d), first = (session.user?.name || '').split(' ')[0];
     return `<header class="tk-head">
-      <div class="tk-hello"><p class="tk-greet">${greeting()}${first ? ', ' + esc(first) : ''}</p><h1>${new Date().toLocaleDateString(undefined, { weekday: 'long', day: 'numeric', month: 'long' })}</h1></div>
-      <div class="tk-stats">
-        <button class="tk-ring" data-act="goal" title="Change daily goal"><svg viewBox="0 0 64 64" aria-hidden="true"><circle cx="32" cy="32" r="26" class="bg"/><circle cx="32" cy="32" r="26" class="fg" stroke-dasharray="${C}" stroke-dashoffset="${C * (1 - pct)}"/></svg><span><b>${s.doneToday}</b>/${s.goal}</span></button>
-        <div class="tk-stat"><b>${s.doneToday >= s.goal ? 'Goal met' : `${s.goal - s.doneToday} to go`}</b><span>daily goal</span></div>
-        <div class="tk-stat"><b>${s.streak} ${s.streak === 1 ? 'day' : 'days'}</b><span>streak</span></div>
-        <div class="tk-stat"><b data-focus>${fmtDur(s.focusToday)}</b><span>focus today</span></div>
-        ${s.overdue ? `<div class="tk-stat warn"><b>${s.overdue}</b><span>overdue</span></div>` : ''}
-      </div></header>`;
+      <div class="tk-hello"><h1>${greeting()}${first ? ', ' + esc(first) : ''}</h1><p class="tk-date">${new Date().toLocaleDateString(undefined, { weekday: 'long', day: 'numeric', month: 'long' })}</p></div>
+      <p class="tk-sum"><button type="button" class="ghost" data-act="goal" title="Change daily goal">${s.doneToday} of ${s.goal} done today</button>${s.streak > 1 ? `<span>${s.streak}-day streak</span>` : ''}${s.overdue ? `<span class="warn">${s.overdue} overdue</span>` : ''}</p>
+    </header>`;
   }
 
   function draw() {
     const d = doc(), el = $('#tkBody'); if (!el) return;
-    const bodies = { today: renderTodayView, upcoming: renderUpcoming, board: renderBoard, all: renderAll, insights: renderInsights };
+    const bodies = { week: renderWeek, board: renderBoard, all: renderAll, insights: renderInsights };
     el.innerHTML = bodies[ui.view](d);
     $('#tkHead').innerHTML = header(d);
     const t = today(), open = live(d).filter(x => x.status !== 'done');
-    const counts = { today: open.filter(x => x.due && x.due <= t).length, upcoming: open.filter(x => x.due > t).length, board: open.filter(x => x.status === 'doing').length, all: open.length };
+    const counts = { week: open.filter(x => x.due && x.due <= t).length, board: open.filter(x => ACTIVE.includes(x.status)).length, all: open.length };
     document.querySelectorAll('.tk-tabs [data-view]').forEach(b => { const on = b.dataset.view === ui.view; b.classList.toggle('on', on); b.setAttribute('aria-selected', on); const c = b.querySelector('.n'); if (c) c.textContent = counts[b.dataset.view] || ''; });
     $('#tkFilters').hidden = ui.view === 'insights';
+    const qi = $('#tkInput'); if (qi && !qi.dataset.day) qi.placeholder = ui.view === 'week' ? `Add a task for ${(ui.day || t) === t ? 'today' : dayTitle(ui.day).split(',')[0].toLowerCase()}` : 'Add a task';
     const ps = $('#tkProject'); ps.innerHTML = `<option value="">All projects</option>${d.projects.filter(p => !p.deleted).map(p => `<option value="${p.id}" ${ui.project === p.id ? 'selected' : ''}>${esc(p.name)}</option>`).join('')}`;
   }
 
@@ -282,20 +297,18 @@
         <div class="tk-parse" id="tkParse" aria-live="polite"></div>
       </form>
       <div class="tk-toolbar">
-        <div class="tk-tabs" role="tablist">${VIEWS.map(([k, l]) => `<button role="tab" data-view="${k}">${l}${k !== 'insights' ? '<span class="n"></span>' : ''}</button>`).join('')}</div>
-        <div class="tk-filters" id="tkFilters">
+        <div class="tk-tabs" role="tablist">${VIEWS.map(([k, l]) => `<button role="tab" data-view="${k}">${svg(ICONS[k])}<span>${l}</span>${k !== 'insights' ? '<span class="n"></span>' : ''}</button>`).join('')}</div>
+        <div class="tk-tools" id="tkFilters">
+          <button type="button" class="tk-iconbtn tk-searchbtn" id="tkSearchBtn" aria-label="Search">${svg('<circle cx="11" cy="11" r="6"/><path d="M20 20l-4-4"/>')}</button>
           <input type="search" id="tkSearch" placeholder="Search tasks" aria-label="Search tasks" value="${esc(ui.q)}">
-          <select id="tkProject" aria-label="Filter by project"></select>
-          <select id="tkPrio" aria-label="Filter by priority"><option value="">Any priority</option>${[1, 2, 3, 4].map(p => `<option value="${p}" ${+ui.prio === p ? 'selected' : ''}>${PRIO[p]}</option>`).join('')}</select>
-          <button type="button" id="tkProjects">Projects</button>${session.user ? '<button type="button" id="tkBackup" title="Download a backup, keep a backup file updated, or import tasks from a file">Backup &amp; import</button>' : ''}
+          <details class="tk-pop"><summary>Filter</summary><div class="tk-pop-body"><label>Project<select id="tkProject" aria-label="Filter by project"></select></label><label>Priority<select id="tkPrio" aria-label="Filter by priority"><option value="">Any priority</option>${[1, 2, 3, 4].map(p => `<option value="${p}" ${+ui.prio === p ? 'selected' : ''}>${PRIO[p]}</option>`).join('')}</select></label></div></details>
+          <details class="tk-pop"><summary aria-label="More options">${svg('<path d="M5 12h.01M12 12h.01M19 12h.01" stroke-width="3"/>')}</summary><div class="tk-pop-body menu"><button type="button" id="tkProjects">Projects</button><button type="button" id="tkNotify">Reminders</button>${session.user ? '<button type="button" id="tkBackup">Backup and import</button>' : ''}</div></details>
         </div>
       </div>
       <div id="tkBody" class="tk-body"></div>
-      <p class="tk-keys hint">Shortcuts: <kbd>N</kbd> new task · <kbd>/</kbd> search · <kbd>1</kbd>–<kbd>5</kbd> switch view</p>
     </div>
     <dialog class="tk-drawer" id="tkDrawer" aria-label="Task details"></dialog>
     <dialog class="tk-dialog" id="tkProjDlg" aria-label="Projects"></dialog>`;
-    if (matchMedia('(max-width: 800px)').matches) $('#tkInput').placeholder = 'Add a task… try #tag !high tomorrow';
     draw();
     wire();
   }
@@ -313,19 +326,25 @@
       e.preventDefault(); const p = parseQuick(input.value);
       if (!p.title) { input.focus(); return; }
       const d = doc();
-      const due = p.due ?? (ui.view === 'today' || ui.view === 'board' ? today() : input.dataset.day || null);
+      const due = p.due ?? (ui.view === 'week' ? (ui.day || today()) : ui.view === 'board' ? today() : input.dataset.day || null);
       d.tasks.push(blank({ title: p.title, due, priority: p.priority || 3, tags: p.tags, estimate: p.estimate, repeat: p.repeat, project: projectFor(d, p.projectName) || ui.project || null }));
       save(d); input.value = ''; delete input.dataset.day; parse.innerHTML = ''; draw(); input.focus();
     };
     document.querySelectorAll('.tk-tabs [data-view]').forEach(b => b.onclick = () => { ui.view = b.dataset.view; draw(); });
     $('#tkSearch').oninput = e => { ui.q = e.target.value; draw(); };
+    $('#tkSearchBtn').onclick = () => { const f = $('#tkFilters'); f.classList.toggle('searching'); if (f.classList.contains('searching')) $('#tkSearch').focus(); };
+    if (ui.q) $('#tkFilters').classList.add('searching');
     $('#tkProject').onchange = e => { ui.project = e.target.value; draw(); };
     $('#tkPrio').onchange = e => { ui.prio = e.target.value; draw(); };
     $('#tkProjects').onclick = openProjects;
+    $('#tkNotify').onclick = () => window.DHNotify && window.DHNotify.openSettings();
+    if (window.DHNotify) window.DHNotify.banner($('.tk'));
     const bk = $('#tkBackup'); if (bk) bk.onclick = () => window.DH.backup();
 
     const body = $('#tkBody');
     body.addEventListener('click', e => {
+      const dayBtn = e.target.closest('[data-day]'); if (dayBtn) { ui.day = dayBtn.dataset.day === today() ? null : dayBtn.dataset.day; draw(); return; }
+      const wk = e.target.closest('[data-wk]'); if (wk) { ui.day = wk.dataset.wk === 'today' ? null : addDays(ui.day || today(), 7 * +wk.dataset.wk); draw(); return; }
       const row = e.target.closest('[data-id]'), id = row?.dataset.id;
       if (e.target.closest('.tk-check')) { const wasDone = find(doc(), id).status === 'done'; patch(id, { status: wasDone ? 'todo' : 'done' }); if (!wasDone) celebrate(row); setTimeout(draw, wasDone ? 0 : 280); return; }
       if (e.target.closest('[data-timer]')) { toggleTimer(id); draw(); return; }
@@ -338,7 +357,7 @@
     });
     body.addEventListener('keydown', e => { const card = e.target.closest('.tk-card'); if (card && e.key === 'Enter') openTask(card.dataset.id); });
     body.addEventListener('change', e => { const f = e.target.dataset.f; if (!f) return; ui[f] = e.target.type === 'checkbox' ? e.target.checked : e.target.value; draw(); });
-    body.addEventListener('toggle', e => { if (e.target.classList?.contains('tk-done')) ui.doneOpen = e.target.open; }, true);
+    body.addEventListener('toggle', e => { const c = e.target.classList; if (c?.contains('tk-done')) ui.doneOpen = e.target.open; else if (c?.contains('tk-nodate')) ui.nodateOpen = e.target.open; }, true);
     // Board drag and drop (mouse); touch uses the ← → buttons
     body.addEventListener('dragstart', e => { const c = e.target.closest('.tk-card'); if (c) { e.dataTransfer.setData('text/plain', c.dataset.id); e.dataTransfer.effectAllowed = 'move'; c.classList.add('dragging'); } });
     body.addEventListener('dragend', e => e.target.closest?.('.tk-card')?.classList.remove('dragging'));
@@ -349,13 +368,16 @@
   }
   function celebrate(row) { row?.classList.add('completing'); }
 
+  // Close the filter and more menus when clicking elsewhere or choosing an item
+  document.addEventListener('click', e => document.querySelectorAll('.tk-pop[open]').forEach(p => { if (!p.contains(e.target) || e.target.closest('.menu button')) p.open = false; }));
+
   // Keyboard shortcuts and live timers (installed once)
   document.addEventListener('keydown', e => {
     if (document.body.dataset.route !== 'tasks' || e.metaKey || e.ctrlKey || e.altKey) return;
     if (/INPUT|TEXTAREA|SELECT/.test(document.activeElement?.tagName) || document.querySelector('dialog[open]')) return;
     if (e.key === 'n' || e.key === 'N') { e.preventDefault(); $('#tkInput')?.focus(); }
     else if (e.key === '/') { e.preventDefault(); $('#tkSearch')?.focus(); }
-    else if (/^[1-5]$/.test(e.key)) { ui.view = VIEWS[+e.key - 1][0]; draw(); }
+    else if (/^[1-4]$/.test(e.key)) { ui.view = VIEWS[+e.key - 1][0]; draw(); }
   });
   setInterval(() => {
     if (document.body.dataset.route !== 'tasks' || document.hidden) return;
@@ -370,16 +392,21 @@
     const cx = custom() || { choices: {} }, xf = custom() ? cx.extraFields : Object.keys(t.fields || {}); // imported files keep their extra fields too
     const projects = d.projects.filter(p => !p.deleted);
     dlg.innerHTML = `<form method="dialog" class="dr">
+      <div class="dr-grip" aria-hidden="true"></div>
       <header class="dr-top"><div class="seg" role="radiogroup" aria-label="Status">${Object.entries(STATUS).map(([k, v]) => `<button type="button" role="radio" aria-checked="${t.status === k}" data-status="${k}">${v}</button>`).join('')}</div><button class="ghost dr-x" value="close" aria-label="Close">✕</button></header>
       <textarea class="dr-title" name="title" rows="1" aria-label="Task title" maxlength="300">${esc(t.title)}</textarea>
-      <div class="dr-grid">
+      <div class="dr-grid dr-main">
         <label>Due date<input type="date" name="due" value="${t.due || ''}"></label>
+        <label>Remind me<input type="datetime-local" name="remind" value="${esc(t.remind || '')}"></label>
         <label>Priority<select name="priority">${[1, 2, 3, 4].map(p => `<option value="${p}" ${t.priority === p ? 'selected' : ''}>${PRIO[p]}</option>`).join('')}</select></label>
+      </div>
+      <details class="dr-more"><summary>More details<span class="hint">${[(projects.find(p => p.id === t.project) || {}).name, t.repeat && REPEAT[t.repeat].toLowerCase(), t.estimate && fmtEst(t.estimate), t.tags.length && t.tags.length + (t.tags.length === 1 ? ' tag' : ' tags')].filter(Boolean).map(esc).join(' · ')}</span></summary>
+        <div class="dr-grid">
         <label>Project<select name="project"><option value="">No project</option>${projects.map(p => `<option value="${p.id}" ${t.project === p.id ? 'selected' : ''}>${esc(p.name)}</option>`).join('')}<option value="__new">New project…</option></select></label>
         <label>Repeat<select name="repeat">${Object.entries(REPEAT).map(([k, v]) => `<option value="${k}" ${(t.repeat || '') === k ? 'selected' : ''}>${v}</option>`).join('')}</select></label>
         <label>Estimate (minutes)<input type="number" name="estimate" min="0" max="10000" step="5" value="${t.estimate ?? ''}" placeholder="e.g. 45"></label>
         <label>Tags<input name="tags" value="${esc(t.tags.join(', '))}" placeholder="bug, frontend" autocapitalize="off"></label>
-      </div>
+        </div></details>
       <label class="dr-label">Notes<textarea name="notes" rows="4" placeholder="Details, links, acceptance criteria…">${esc(t.notes)}</textarea></label>
       ${xf.length ? `<section class="dr-xf"><h3>More fields <span class="hint">${custom() ? `from ${esc(window.DH.store.get('devhub:offline', {}).fileName || 'your file')}` : 'imported'}</span></h3><div class="dr-grid">${xf.map(k => { const v = t.fields?.[k] ?? '', ch = cx.choices[k];
         return `<label>${esc(k)}${ch ? `<select data-xf="${esc(k)}"><option value=""></option>${[...new Set([...ch, ...(v === '' ? [] : [String(v)])])].map(o => `<option ${String(v) === o ? 'selected' : ''}>${esc(o)}</option>`).join('')}<option value="__other">Other…</option></select>` : `<input data-xf="${esc(k)}" value="${esc(v)}">`}</label>`; }).join('')}</div></section>` : ''}
@@ -400,6 +427,13 @@
     dlg.querySelectorAll('[data-xf]').forEach(el => el.onchange = () => { const x = find(doc(), id), k = el.dataset.xf, old = x.fields?.[k];
       if (el.value === '__other') { const nv = prompt(`New value for ${k}`); if (!nv?.trim()) { el.value = old ?? ''; return; } el.add(new Option(nv.trim(), nv.trim()), el.options.length - 1); el.value = nv.trim(); const c = custom(); if (c && c.choices[k] && !c.choices[k].includes(nv.trim())) c.choices[k].push(nv.trim()); }
       const v = typeof old === 'number' && el.value !== '' && !isNaN(+el.value) ? +el.value : el.value; patch(id, { fields: { ...(x.fields || {}), [k]: v } }); });
+    f.remind.onchange = async () => {
+      patch(id, { remind: f.remind.value || null });
+      const N = window.DHNotify; if (!N || !f.remind.value) return;
+      if ((await N.permission()) === 'default') await N.request();                                  // asking right after the person picked a time is the natural moment
+      if ((await N.permission()) !== 'granted') toast('Reminder saved, but notifications are blocked on this device. Open Reminders to fix that.');
+      N.sync();
+    };
     f.priority.onchange = () => patch(id, { priority: +f.priority.value });
     f.repeat.onchange = () => patch(id, { repeat: f.repeat.value || null });
     f.estimate.onchange = () => patch(id, { estimate: f.estimate.value ? Math.max(0, Math.round(+f.estimate.value)) : null });
@@ -447,6 +481,7 @@
     if (!dlg.open) dlg.showModal();
   }
 
+  window.DHTasks = { openTask };
   routes.tasks = () => {
     // One-time import of tasks made before accounts existed
     const legacy = window.DH.store.get('devhub:tasks', null);
