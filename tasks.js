@@ -41,7 +41,58 @@
       if (!STATUS[t.status]) t.status = 'todo'; if (!Array.isArray(t.tags)) t.tags = []; if (!Array.isArray(t.subtasks)) t.subtasks = [];
       t.spent ??= 0; t.createdAt ??= t.updatedAt || now(); t.updatedAt ??= t.createdAt;
     }
+    if (!snapReady) { buildSnap(d); snapReady = true; }
     return d;
+  }
+
+  /* ---------------- field versions ----------------
+   * Every task carries  v  (a counter that goes up with each saved change),
+   *                     fv (when each field last changed) and
+   *                     hist (the last 20 deltas: which fields changed, from what, to what).
+   * Sync merges task by task AND field by field, so an edit to the due date on your phone and an edit to the
+   * title on your laptop both survive. Stamped here, in one place, by comparing each task with how it looked
+   * before the edit, so every way of changing a task is covered. */
+  const TRACK = ['title', 'notes', 'status', 'priority', 'due', 'remind', 'project', 'tags', 'estimate', 'repeat', 'subtasks', 'spent', 'deleted'];
+  const LABEL = { title: 'Title', notes: 'Notes', status: 'Status', priority: 'Priority', due: 'Due', remind: 'Reminder', project: 'Project', tags: 'Tags', estimate: 'Estimate', repeat: 'Repeat', subtasks: 'Subtasks', deleted: 'Deleted', created: 'Created' };
+  const snap = new Map(); let snapReady = false;
+  const fval = (t, f) => f === 'deleted' ? !!t.deleted : (t[f] ?? null);
+  function buildSnap(d) { snap.clear(); for (const t of d.tasks) snap.set(t.id, Object.fromEntries(TRACK.map(f => [f, JSON.stringify(fval(t, f))]))); }
+  function shortVal(f, v, d) {
+    if (v == null || v === '') return null;
+    switch (f) {
+      case 'status': return STATUS[v] || v;
+      case 'priority': return PRIO[v] || v;
+      case 'project': return (d.projects.find(p => p.id === v) || {}).name || null;
+      case 'tags': return v.length ? v.map(x => '#' + x).join(' ') : null;
+      case 'subtasks': return v.length ? `${v.filter(x => x.done).length}/${v.length} done` : null;
+      case 'notes': return `${String(v).length} characters`;
+      case 'remind': return String(v).replace('T', ' ');
+      case 'estimate': return fmtEst(+v);
+      case 'repeat': return REPEAT[v] || v;
+      case 'deleted': return v ? 'yes' : 'no';
+      default: return String(v).slice(0, 60);
+    }
+  }
+  function stampDeltas(d) {
+    const at = now();
+    for (const t of d.tasks) {
+      const prev = snap.get(t.id);
+      if (!prev) {                                                    // a new task
+        if (!t.v) { t.v = 1; t.fv = Object.fromEntries(TRACK.map(f => [f, at])); t.hist = [{ v: 1, at, d: { created: [null, shortVal('title', t.title, d)] } }]; }
+        continue;
+      }
+      const changed = TRACK.filter(f => JSON.stringify(fval(t, f)) !== prev[f]);
+      if (!changed.length) continue;
+      t.v = (t.v || 0) + 1; t.fv = { ...(t.fv || {}) };
+      const delta = {};
+      for (const f of changed) { t.fv[f] = at; if (f !== 'spent') delta[f] = [shortVal(f, JSON.parse(prev[f]), d), shortVal(f, fval(t, f), d)]; }
+      if (Object.keys(delta).length) t.hist = [...(t.hist || []), { v: t.v, at, d: delta }].slice(-20);
+    }
+  }
+  function histHtml(t) {
+    const h = (t.hist || []).slice(-10).reverse();
+    if (!h.length) return '';
+    return `<details class="dr-hist"><summary>History<span class="hint">version ${t.v || 1}</span></summary><ol>${h.map(e => `<li><span class="hv">v${e.v}</span><span class="ht">${esc(new Date(e.at).toLocaleString(undefined, { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' }))}</span><span class="hd">${Object.entries(e.d).map(([f, [a, b]]) => f === 'created' ? 'Created' : `${esc(LABEL[f] || f)}: <s>${esc(a ?? 'empty')}</s> → ${esc(b ?? 'empty')}`).join('<br>')}</span></li>`).join('')}</ol></details>`;
   }
   // Converts the old single-user format { "2026-09-26": [{text, done, priority}] }.
   function migrate(old) {
@@ -55,7 +106,9 @@
   function save(d) {
     const cutoff = Date.now() - 30 * 864e5; // drop deletions older than 30 days once every device has had time to sync
     d.tasks = d.tasks.filter(t => !t.deleted || Date.parse(t.updatedAt) > cutoff);
+    stampDeltas(d);
     data.set('tasks', d);
+    buildSnap(d);
   }
   const blank = p => ({ id: uid(), title: '', notes: '', due: null, priority: 3, status: 'todo', project: null, tags: [], estimate: null, spent: 0, timerStart: null, subtasks: [], repeat: null, remind: null, createdAt: now(), updatedAt: now(), completedAt: null, ...p });
   const live = d => d.tasks.filter(t => !t.deleted);
@@ -414,6 +467,7 @@
         <div class="dr-subadd"><input data-newsub placeholder="Add a subtask and press Enter" aria-label="New subtask"><button type="button" data-addsub>Add</button></div></section>
       <section class="dr-time"><div><h3>Time tracked</h3><p class="dr-spent" data-spent>${t.timerStart ? fmtClock(spentNow(t)) : fmtDur(spentNow(t))}${t.estimate ? ` of ${fmtEst(t.estimate)} estimated` : ''}</p></div>
         <button type="button" class="${t.timerStart ? 'danger' : 'primary'}" data-dtimer>${t.timerStart ? 'Stop timer' : 'Start timer'}</button></section>
+      ${histHtml(t)}
       <footer class="dr-foot"><span class="hint">Created ${new Date(t.createdAt).toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'short' })}${t.completedAt ? ` · Completed ${new Date(t.completedAt).toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'short' })}` : ''}</span>
         <button type="button" class="danger ghost" data-del>Delete task</button></footer>
     </form>`;
@@ -482,6 +536,7 @@
   }
 
   window.DHTasks = { openTask };
+  window.DH.data.listeners.add(() => { snapReady = false; });
   routes.tasks = () => {
     // One-time import of tasks made before accounts existed
     const legacy = window.DH.store.get('devhub:tasks', null);

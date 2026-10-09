@@ -81,16 +81,34 @@
   };
 
   // Merge two copies of a document edited on different devices: newest version of each item wins.
-  function mergeById(a = [], b = []) {
+  function mergeById(a = [], b = [], both) {
     const m = new Map();
     for (const x of b) m.set(x.id, x);
-    for (const x of a) { const y = m.get(x.id); if (!y || String(x.updatedAt || '') >= String(y.updatedAt || '')) m.set(x.id, x); }
+    for (const x of a) { const y = m.get(x.id); m.set(x.id, !y ? x : both ? both(x, y) : String(x.updatedAt || '') >= String(y.updatedAt || '') ? x : y); }
     return [...m.values()];
+  }
+  // Task versions: each field remembers when it last changed (fv), so an edit to one field on one device and an edit to
+  // another field on another device both survive. Records without field versions (older data) fall back to newest-wins.
+  const TRACKED = ['title', 'notes', 'status', 'priority', 'due', 'remind', 'project', 'tags', 'estimate', 'repeat', 'subtasks', 'spent', 'deleted'];
+  function mergeTask(x, y) { // x = this device, y = the other copy
+    if (x === y || canon(x) === canon(y)) return x;   // same on both sides: leave untouched, so repeated syncs settle and change nothing
+    const newer = String(x.updatedAt || '') >= String(y.updatedAt || '') ? x : y;
+    if (!x.fv && !y.fv) return newer;
+    const at = (t, f) => (t.fv && t.fv[f]) || t.updatedAt || '';
+    const out = { ...newer, fv: {} };
+    for (const f of TRACKED) { const from = at(x, f) >= at(y, f) ? x : y; if (f in from) out[f] = from[f]; else delete out[f]; out.fv[f] = at(from, f); }
+    const statusFrom = at(x, 'status') >= at(y, 'status') ? x : y; out.completedAt = statusFrom.completedAt ?? null; // completion follows the status that won
+    out.v = Math.max(x.v || 0, y.v || 0);
+    out.updatedAt = String(x.updatedAt || '') >= String(y.updatedAt || '') ? x.updatedAt : y.updatedAt;
+    const seen = new Set(), hist = [...(x.hist || []), ...(y.hist || [])].filter(e => { const k = e.at + '|' + e.v + '|' + Object.keys(e.d || {}).join(); if (seen.has(k)) return false; seen.add(k); return true; });
+    out.hist = hist.sort((p, q) => String(p.at).localeCompare(String(q.at))).slice(-20);
+    return out;
   }
   function mergeDoc(name, local, remote) {
     if (remote == null) return local; if (local == null) return remote;
     if (name === 'links' && Array.isArray(local) && Array.isArray(remote)) return mergeById(local, remote);
-    if (name === 'tasks' && local.tasks && remote.tasks) return { ...remote, ...local, tasks: mergeById(local.tasks, remote.tasks), projects: mergeById(local.projects, remote.projects) };
+    if (name === 'tasks' && local.tasks && remote.tasks) return { ...remote, ...local, settings: { ...remote.settings, ...local.settings }, tasks: mergeById(local.tasks, remote.tasks, mergeTask), projects: mergeById(local.projects, remote.projects) };
+    if (name === 'prefs' && typeof local === 'object' && typeof remote === 'object' && !Array.isArray(local) && !Array.isArray(remote)) return { ...remote, ...local };
     return local;
   }
 
@@ -175,9 +193,26 @@
   function schedulePush() { if (offline.active()) return markOfflineDirty(); setStatus('Unsaved changes…', 'busy'); clearTimeout(pushTimer); pushTimer = setTimeout(push, 1200); }
 
   function startSession(token, user, remember) {
-    if (offline.meta) { clearTimeout(offline.timer); data.wipe('offline'); offline.setMeta(null); offline.handle = null; idb.del('offline-handle'); }
+    let carried = null;   // tasks, projects and links from the offline database this device was using
+    if (offline.meta) {
+      carried = {}; DOCS.forEach(n => { carried[n] = store.get(`devhub:u:offline:${n}`, null); });
+      clearTimeout(offline.timer); data.wipe('offline'); offline.setMeta(null); offline.handle = null; idb.del('offline-handle');
+    }
     session.save(token, user, remember);
-    data.ns = user.id; data.load(); renderNavUser(); pull(); autoBackup.load();
+    data.ns = user.id; data.load();
+    if (carried) { // add, never replace: both sets of tasks end up in the account, the newest edit of any shared task wins
+      let added = 0;
+      for (const n of DOCS) {
+        if (carried[n] == null) continue;
+        const before = n === 'tasks' && data.docs.tasks ? new Set(data.docs.tasks.tasks.map(t => t.id)) : null;
+        data.docs[n] = n === 'prefs' && data.docs[n] != null ? data.docs[n] : mergeDoc(n, carried[n], data.docs[n]);
+        data.dirty[n] = true;
+        if (n === 'tasks') added = (data.docs.tasks.tasks || []).filter(t => !t.deleted && !(before && before.has(t.id))).length;
+      }
+      data.persist();
+      if (added) setTimeout(() => toast(`${added} task${added === 1 ? '' : 's'} from your offline database added to your account`), 600);
+    }
+    renderNavUser(); pull(); autoBackup.load();
     setTimeout(() => window.DHBio && window.DHBio.offer(), 1500);
   }
   function sessionExpired() {
@@ -356,35 +391,48 @@
     },
     // update the online copy soon after changes (never more than about once a minute — the server limits saves per hour)
     schedule() { const c = this.link(); if (!c || !c.auto || c.expired) return; clearTimeout(this.timer); this.timer = setTimeout(() => this.push(), Math.max(15000, 60000 - (Date.now() - this.lastPush))); },
-    // mode 'merge' (default): the account keeps its other tasks; newest edit of each task wins. 'replace': account = this database.
+    // mode 'merge' (default): TWO-WAY. Tasks that exist only in the account are added to this database, tasks that exist only here
+    // are added to the account, and a task changed in both is merged field by field. Nothing is deleted or replaced.
+    // mode 'replace': the account becomes a copy of this database (only when the person chooses it).
     async push({ manual, mode = 'merge' } = {}) {
       const c = this.link(); if (!c || this.busy) return false;
-      if (c.expired) { if (manual) toast('Sign in again to update the online copy (Database page).'); return false; }
+      if (c.expired) { if (manual) toast('Sign in again to sync the online copy (Database page).'); return false; }
       this.busy = true;
       try {
-        const sigs = { ...(c.sigs || {}) };
+        let adopted = false, fromOnline = 0;
         for (const name of DOCS) {
-          const local = data.docs[name]; if (local == null) continue;
-          const sig = String(JSON.stringify(local).length) + ':' + hashStr(JSON.stringify(local));
-          if (mode !== 'replace' && !manual && sigs[name] === sig) continue; // unchanged since the last copy
           for (let attempt = 0; attempt < 3; attempt++) {
-            const cur = await this.call('/data/' + name);
-            const body = mode === 'replace' ? local : mergeDoc(name, local, cur.data);
-            try { await this.call('/data/' + name, { method: 'PUT', body: { data: body, baseVersion: cur.version || 0 } }); break; }
+            const cur = await this.call('/data/' + name), local = data.docs[name];
+            if (mode === 'replace') { if (local == null) break; await this.call('/data/' + name, { method: 'PUT', body: { data: local, baseVersion: cur.version || 0 } }); break; }
+            const merged = local == null ? cur.data : cur.data == null ? local : mergeDoc(name, local, cur.data);
+            if (merged == null) break;
+            if (canon(merged) !== canon(local)) {            // the account had something this database did not: bring it in
+              if (name === 'tasks') { const had = new Set((local?.tasks || []).map(t => t.id)); fromOnline += (merged.tasks || []).filter(t => !t.deleted && !had.has(t.id)).length; }
+              data.docs[name] = merged; adopted = true;
+            }
+            if (cur.data != null && canon(merged) === canon(cur.data)) break;   // the account already has everything
+            try { await this.call('/data/' + name, { method: 'PUT', body: { data: merged, baseVersion: cur.version || 0 } }); break; }
             catch (e) { if (e.status !== 409 || attempt === 2) throw e; }
           }
-          sigs[name] = sig;
         }
+        if (adopted) { data.persist(); markOfflineDirty(); data.changed(); }
         this.lastPush = Date.now();
-        this.save({ ...this.link(), sigs, lastAt: new Date().toISOString(), error: null });
-        if (manual) toast(`Online copy updated in ${c.user.username}’s account`);
+        this.save({ ...this.link(), lastAt: new Date().toISOString(), error: null });
+        if (manual) toast(fromOnline ? `Synced with ${c.user.username}’s account — ${fromOnline} task${fromOnline === 1 ? '' : 's'} added from online` : `Synced with ${c.user.username}’s account`);
+        else if (fromOnline) toast(`${fromOnline} task${fromOnline === 1 ? '' : 's'} from your online copy added`);
         return true;
       } catch (e) {
         this.save({ ...this.link(), error: e.message });
-        if (manual) toast('Online copy not updated: ' + e.message); else if (e.offline) this.schedule();
+        if (manual) toast('Online copy not synced: ' + e.message); else if (e.offline) this.schedule();
         return false;
       } finally { this.busy = false; if (document.body.dataset.route === 'account' && offline.active()) renderOfflineDb(); }
     }
+  };
+  // order-insensitive comparison of two documents (lists of records with ids may come back in any order)
+  const canon = v => {
+    if (Array.isArray(v)) { const p = v.map(canon); return '[' + (v.length && v.every(x => x && typeof x === 'object' && 'id' in x) ? p.sort() : p).join(',') + ']'; }
+    if (v && typeof v === 'object') return '{' + Object.keys(v).filter(k => v[k] !== undefined).sort().map(k => JSON.stringify(k) + ':' + canon(v[k])).join(',') + '}';
+    return JSON.stringify(v ?? null);
   };
   const hashStr = str => { let h = 2166136261; for (let i = 0; i < str.length; i++) { h ^= str.charCodeAt(i); h = Math.imul(h, 16777619); } return (h >>> 0).toString(36); };
 
@@ -1333,7 +1381,7 @@
   };
   const pwToggle = form => form.querySelectorAll('.pw-toggle').forEach(b => b.onclick = () => { const i = b.previousElementSibling; const show = i.type === 'password'; i.type = show ? 'text' : 'password'; b.textContent = show ? 'Hide' : 'Show'; b.setAttribute('aria-pressed', show); });
   const nextRoute = () => new URLSearchParams(location.hash.split('?')[1] || '').get('next') || 'tasks';
-  const authShell = inner => `<div class="auth"><div class="auth-card"><div class="auth-brand"><span class="brand-mark">{ }</span><span>DevHub</span></div>${offline.meta ? `<p class="form-note">Signing in closes your offline database “${esc(offline.meta.name)}”.${offline.meta.fileDirty ? ' It has changes that aren’t saved to the file yet — <a href="#account">save it first</a>.' : ''}</p>` : ''}${inner}</div>
+  const authShell = inner => `<div class="auth"><div class="auth-card"><div class="auth-brand"><span class="brand-mark">{ }</span><span>DevHub</span></div>${offline.meta ? `<p class="form-note">Signing in closes your offline database “${esc(offline.meta.name)}” and adds its tasks to your account (nothing is deleted or replaced).${offline.meta.fileDirty ? ' It has changes that aren’t saved to the file yet — <a href="#account">save it first</a>.' : ''}</p>` : ''}${inner}</div>
     <p class="auth-foot hint">Your tasks and links are private to your account.${API ? '' : ''} The developer tools work without signing in — <a href="#tools">open tools</a>.</p></div>`;
 
   function renderLogin() {
@@ -1542,11 +1590,11 @@
           ${(() => { const c = m.cloud; if (!c) return `<p class="hint">Keep a copy of this database in a DevHub account, so it’s safe even if this device or file is lost — and you can reach it from any device by signing in. You stay offline: this database is still the one you work in.</p>
             <div class="row"><button class="primary" id="clIn">Sign in…</button>${serverConfig.registration !== 'closed' ? '<button id="clReg">Create account…</button>' : ''}</div>`;
             return `<dl class="kv2"><dt>Account</dt><dd><b>${esc(c.user.name || c.user.username)}</b> <span class="hint">@${esc(c.user.username)}</span></dd>
-              <dt>Last copied</dt><dd>${c.lastAt ? new Date(c.lastAt).toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'short' }) : 'Not yet'}${c.error ? ` <span class="mig-bad">· ${esc(c.error)}</span>` : ''}</dd></dl>
+              <dt>Last synced</dt><dd>${c.lastAt ? new Date(c.lastAt).toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'short' }) : 'Not yet'}${c.error ? ` <span class="mig-bad">· ${esc(c.error)}</span>` : ''}</dd></dl>
               ${c.expired ? '<p class="form-err">The sign-in for the online copy has ended. Sign in again to keep it updated.</p><div class="row"><button class="primary" id="clIn">Sign in again…</button><button class="ghost" id="clOff">Stop online copy</button></div>'
-              : `<label class="check-line"><input type="checkbox" id="clAuto" ${c.auto ? 'checked' : ''}> Update the online copy automatically after changes</label>
-              <div class="row" style="margin-top:10px"><button class="primary" id="clNow">Update now</button><button class="ghost" id="clOff">Stop online copy</button></div>
-              <p class="hint" style="margin-top:8px">The account keeps any tasks it already had; deleting a task here deletes it there too. To work online instead, use “Close and sign in” below.</p>`}`; })()}
+              : `<label class="check-line"><input type="checkbox" id="clAuto" ${c.auto ? 'checked' : ''}> Keep this database and the online copy in sync automatically</label>
+              <div class="row" style="margin-top:10px"><button class="primary" id="clNow">Sync now</button><button class="ghost" id="clOff">Stop online copy</button></div>
+              <p class="hint" style="margin-top:8px">The database and the online copy are merged both ways: tasks added online appear here, tasks added here appear online, and nothing is replaced or lost. To work online instead, use “Close and sign in” below.</p>`}`; })()}
         </section>
         <section class="panel"><h2>Download backup</h2><p class="hint">A one-off copy, only when you ask for it. Both formats hold the same data${tg === 'browser' ? ' — keep one somewhere safe, because clearing this browser’s data removes the database' : ''}.</p>
           <div class="row"><button id="dlSqlite">Backup as SQLite</button><button id="dlJson">Backup as JSON</button></div>
@@ -1569,7 +1617,7 @@
     const ci = $('#clIn'); if (ci) ci.onclick = () => cloudDialog('login');
     const cr = $('#clReg'); if (cr) cr.onclick = () => cloudDialog('register');
     const cn = $('#clNow'); if (cn) cn.onclick = async () => { cn.disabled = true; await cloud.push({ manual: true }); };
-    const ca = $('#clAuto'); if (ca) ca.onchange = () => { cloud.save({ ...cloud.link(), auto: ca.checked }); if (ca.checked) cloud.schedule(); toast(ca.checked ? 'The online copy updates automatically' : 'Automatic updates off — use Update now'); };
+    const ca = $('#clAuto'); if (ca) ca.onchange = () => { cloud.save({ ...cloud.link(), auto: ca.checked }); if (ca.checked) cloud.schedule(); toast(ca.checked ? 'The online copy updates automatically' : 'Automatic sync off — use Sync now'); };
     const co = $('#clOff'); if (co) co.onclick = () => { if (!confirm('Stop keeping an online copy? The copy already in the account stays there.')) return; cloud.save(null); toast('Online copy stopped — the account still has the last copy'); renderOfflineDb(); };
     $('#dbOpen').onclick = async () => {
       let r; try { r = await pickDbFile($('#dbFile')); } catch (e) { return toast(e.message); }
@@ -1693,8 +1741,9 @@
     if (offline.active()) offlineStatus();
   }
   window.addEventListener('hashchange', () => { render(); view().focus({ preventScroll: true }); window.scrollTo(0, 0); });
-  window.addEventListener('online', () => { if (session.user && session.token) wakeAndSync(); });
-  document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible' && session.user && session.token && !pushing) wakeAndSync(); });
+  window.addEventListener('online', () => { if (session.user && session.token) wakeAndSync(); else if (offline.active()) cloud.schedule(); });
+  document.addEventListener('visibilitychange', () => { if (document.visibilityState !== 'visible') return; if (session.user && session.token && !pushing) wakeAndSync(); else if (offline.active()) cloud.schedule(); });
+  setInterval(() => { if (!document.hidden && offline.active()) cloud.schedule(); }, 300000);
   data.listeners.add(() => { const r = document.body.dataset.route; if ((r === 'tasks' || r === 'links') && !document.querySelector('dialog[open]')) render(); });
 
   // Shared with tasks.js
@@ -1710,6 +1759,7 @@
       session.clear();
       if (offline.meta) {
         data.ns = 'offline'; data.load();
+        setTimeout(() => { const c = cloud.link(); if (c && c.auto && !c.expired) cloud.push(); }, 2500);   // bring in anything added online since last time
         if (offline.meta.adapter) { const m = offline.meta; delete m.adapter; m.migratedFrom = m.fileName; m.format = 'sqlite'; m.fileName = slug(m.name) + '.sqlite'; m.fileDirty = true; offline.setMeta(m); idb.del('offline-handle'); idb.del('offline-source'); }
         idb.get('offline-handle').then(async h => { // reconnect to the file picked earlier (Chrome/Edge desktop)
           if (!h || !offline.meta) { if (offline.meta?.fileDirty && target() !== 'file') saveOffline(); return; }

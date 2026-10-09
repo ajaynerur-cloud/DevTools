@@ -138,6 +138,16 @@ Open **Reminders** in the task view (or set **Remind me** on a task) to get noti
 - **Android app:** reminders are scheduled with Android's alarm manager, so they arrive with the app closed and after a reboot. The app **requires** the notification permission (Android 13+) and *Alarms & reminders* (Android 12+): a blocking screen stays up until both are on. The CI workflow declares these permissions in the manifest.
 - Notification settings are per device and are not synced. The reminder time itself is stored on the task and syncs.
 
+## How local and online tasks combine
+
+Tasks are never replaced wholesale. Whenever a copy on this device meets the copy on the server (a sync, signing in, or the online copy of an offline database), both sets are added together: tasks that exist on only one side are kept.
+
+**Field versions.** Every task carries `v` (a version number that goes up with each saved change), `fv` (when each field last changed) and `hist` (the last 20 changes: which fields changed, from what, to what). If the same task was edited on two devices, the merge works field by field: the newer change to each field wins, so a new due date from your phone and a new title from your laptop both survive. Older tasks without field versions fall back to newest-edit-wins. A deleted task stays deleted until you press Undo. Open a task and expand **History** to see its versions. Signing in or creating an account while an offline database is open adds that database's tasks, projects and links to the account.
+
+## Online copy of an offline database: two-way
+
+When an offline database has an online copy, the two are kept in step **both ways**. A sync fetches the account's tasks, adds any this database doesn't have, merges tasks changed on both sides field by field (see field versions above), and sends the combined result back, so the online board and the offline data end up identical. It runs when the app opens, when you return to it or come back online, every 5 minutes while it is open, after each save, and when you press **Sync now** on the Database page. Choosing *replace* when you first connect an account is the only way anything is overwritten.
+
 ## Fingerprint unlock (Android app)
 
 Opt-in. After you sign in with your password the app offers *Unlock with your fingerprint?*; you can also switch it on or off under **Account → Fingerprint unlock**.
