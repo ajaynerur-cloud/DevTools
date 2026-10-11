@@ -1165,9 +1165,500 @@
     };
   }
 
+  // ---------- text → JSON / XML mapper: read plain text, map its fields, create JSON or XML ----------
+  const TM_ACCEPT = '.txt,.text,.log,.csv,.tsv,.tab,.psv,.dat,.prn,.lst,.out,text/plain,text/csv';
+  const TM_SAMPLE = 'order_id|customer name|email|amount|paid|order date|tags|city\n1001|Ada Lovelace|ada@example.com|1,250.50|yes|03/02/2026|priority;b2b|London\n1002|Linus Torvalds|linus@example.com|89.99|no|15/02/2026|retail|Portland\n1003|Grace Hopper|grace@example.com|430|yes|28/02/2026|b2b;navy|Arlington\n1004|Alan Turing|alan@example.com|1,020|yes|01/03/2026||London';
+  const TM_LAYOUTS = { delimited: 'Columns with a delimiter (CSV, TSV, pipe…)', kv: 'Key: value lines (one block per record)', fixed: 'Fixed-width columns', regex: 'Pattern (regular expression)', lines: 'One value per line' };
+  const TM_DELIMS = { ',': 'Comma ,', '\t': 'Tab', '|': 'Pipe |', ';': 'Semicolon ;', ' ': 'Spaces', custom: 'Other…' };
+  const TM_TYPES = { auto: 'Auto', text: 'Text', int: 'Whole number', num: 'Number', bool: 'True / false', date: 'Date (ISO / auto)', 'date-dmy': 'Date (DD/MM/YYYY)', 'date-mdy': 'Date (MM/DD/YYYY)', 'list;': 'List, split on ;', 'list,': 'List, split on ,', 'list|': 'List, split on |', 'list ': 'List, split on spaces', json: 'JSON value' };
+  const TM_XML_AS = { el: 'Element', attr: 'Attribute', text: 'Text of parent' };
+  const TM_SHAPES = { array: 'Array of records  [ {…}, {…} ]', wrap: 'Object with a list  { "records": [ … ] }', keyed: 'Object keyed by a field  { "1001": {…} }', ndjson: 'JSON Lines (one record per line)' };
+  const TM_IND = { 2: '  ', 4: '    ', tab: '\t', min: '' };
+
+  async function tmDecode(blob) {
+    const u8 = new Uint8Array(await blob.arrayBuffer());
+    if (u8[0] === 0xFF && u8[1] === 0xFE) return new TextDecoder('utf-16le').decode(u8.subarray(2));
+    if (u8[0] === 0xFE && u8[1] === 0xFF) return new TextDecoder('utf-16be').decode(u8.subarray(2));
+    const n = Math.min(u8.length, 4000); let z = 0; for (let i = 1; i < n; i += 2) if (u8[i] === 0) z++;
+    if (n > 20 && z > n / 2 * 0.6) return new TextDecoder('utf-16le').decode(u8);
+    try { return new TextDecoder('utf-8', { fatal: true }).decode(u8).replace(/^\uFEFF/, ''); }
+    catch { return new TextDecoder('windows-1252').decode(u8); }
+  }
+  function tmCsv(text, d) { // quote-aware split; quoted fields may contain the delimiter and line breaks
+    const rows = []; let row = [], f = '', q = false, i = 0; const n = text.length, one = d.length === 1;
+    while (i < n) {
+      const c = text[i];
+      if (q) { if (c === '"') { if (text[i + 1] === '"') { f += '"'; i += 2; continue; } q = false; i++; continue; } f += c; i++; continue; }
+      if (c === '"' && f.trim() === '') { q = true; f = ''; i++; continue; }
+      if (one ? c === d : text.startsWith(d, i)) { row.push(f); f = ''; i += d.length; continue; }
+      if (c === '\n') { row.push(f); rows.push(row); row = []; f = ''; i++; continue; }
+      f += c; i++;
+    }
+    row.push(f); rows.push(row);
+    return rows.filter(r => r.some(x => x.trim() !== ''));
+  }
+  const tmCount = (l, d) => { let n = 0, q = false; for (const c of l) { if (c === '"') q = !q; else if (!q && c === d) n++; } return n; };
+  function tmNames(cells, n) {
+    const seen = new Map();
+    return Array.from({ length: n }, (_, i) => {
+      let s = String(cells[i] ?? '').trim() || `column${i + 1}`; const k = s.toLowerCase();
+      if (seen.has(k)) { const c = seen.get(k) + 1; seen.set(k, c); s = `${s}_${c}`; } else seen.set(k, 1);
+      return s;
+    });
+  }
+  function tmFixedAuto(lines) {
+    const L = lines.filter(l => l.trim()).slice(0, 300); if (!L.length) return [0];
+    const w = Math.max(...L.map(l => l.length));
+    const blank = Array.from({ length: w }, (_, i) => L.every(l => i >= l.length || l[i] === ' ' || l[i] === '\t'));
+    const starts = [0]; for (let i = 1; i < w; i++) if (blank[i - 1] && !blank[i]) starts.push(i);
+    return starts;
+  }
+  const tmPositions = s => [...new Set([0, ...String(s).split(/[\s,;]+/).map(Number).filter(n => Number.isInteger(n) && n >= 0)])].sort((a, b) => a - b);
+  const tmLooksHeader = cells => cells.length > 0 && cells.every(c => c.trim() && !/^[-+]?[\d.,\s:/$€£%-]+$/.test(c.trim())) && new Set(cells.map(c => c.trim().toLowerCase())).size === cells.length;
+  const TM_KV = /^\s*([A-Za-z_][^:=\t|;,]{0,40}?)\s*([:=])(?=\s|$|[^/=])/;
+
+  // Guess the layout of a text so the user starts from a sensible reading
+  function tmDetect(text) {
+    const p = { layout: 'lines', delim: ',', delimCustom: '', kvSep: ':', fixedPos: '0', regex: '', regexWhole: false, header: false, skip: 0, comment: '', trim: true };
+    const all = text.split(/\r\n|\r|\n/), L = all.filter(l => l.trim()).slice(0, 80);
+    if (!L.length) return p;
+    const kv = L.filter(l => TM_KV.test(l));
+    const hasBlank = all.slice(0, 400).some((l, i, a) => !l.trim() && i > 0 && i < a.length - 1);
+    let best = null;
+    for (const d of ['\t', '|', ';', ',']) {
+      const counts = L.map(l => tmCount(l, d)), tally = {};
+      counts.forEach(c => tally[c] = (tally[c] || 0) + 1);
+      const mode = +Object.keys(tally).sort((a, b) => tally[b] - tally[a] || b - a)[0], share = tally[mode] / L.length;
+      if (mode >= 1 && share >= 0.8 && (!best || share > best.share)) best = { d, share };
+    }
+    if (kv.length >= L.length * 0.8 && L.length >= 2 && (!best || hasBlank || best.share < 1)) {
+      p.layout = 'kv'; p.kvSep = kv.filter(l => TM_KV.exec(l)[2] === '=').length > kv.length / 2 ? '=' : ':'; return p;
+    }
+    if (best) {
+      p.layout = 'delimited'; p.delim = best.d;
+      const first = tmCsv(L[0], best.d)[0] || [];
+      p.header = L.length > 1 && tmLooksHeader(first); return p;
+    }
+    const pos = tmFixedAuto(L);
+    if (L.length >= 2 && pos.length >= 2 && L.some(l => /\S {2,}\S/.test(l))) {
+      p.layout = 'fixed'; p.fixedPos = pos.join(', ');
+      p.header = tmLooksHeader(pos.map((s, i) => L[0].slice(s, pos[i + 1]))); return p;
+    }
+    if (L.length >= 2 && L.every(l => /\s/.test(l.trim()))) { p.layout = 'delimited'; p.delim = ' '; p.header = tmLooksHeader(L[0].trim().split(/\s+/)); }
+    return p;
+  }
+
+  function tmTable(rows, header, T) {
+    const n = Math.max(0, ...rows.map(r => r.length));
+    const fields = header && rows.length ? tmNames(rows[0], n) : tmNames([], n);
+    const data = header ? rows.slice(1) : rows;
+    const records = data.map(r => { const o = {}; fields.forEach((k, i) => o[k] = T(r[i] ?? '')); return o; });
+    const ragged = data.filter(r => r.length !== n).length;
+    return { fields, records, notes: ragged ? [`${ragged.toLocaleString()} line${ragged === 1 ? ' has' : 's have'} fewer columns than the others; the missing values are left empty.`] : [] };
+  }
+  function tmParse(text, p) {
+    let lines = text.split(/\r\n|\r|\n/);
+    if (p.skip > 0) lines = lines.slice(p.skip);
+    if (p.comment) lines = lines.filter(l => !l.trimStart().startsWith(p.comment));
+    const T = p.trim ? s => s.trim() : s => s;
+    if (p.layout === 'delimited') {
+      const d = p.delim === 'custom' ? (p.delimCustom.replace(/\\t/g, '\t') || ',') : p.delim;
+      const rows = d === ' ' ? lines.filter(l => l.trim()).map(l => l.trim().split(/\s+/)) : tmCsv(lines.join('\n'), d);
+      return tmTable(rows, p.header, T);
+    }
+    if (p.layout === 'fixed') {
+      const pos = tmPositions(p.fixedPos);
+      return tmTable(lines.filter(l => l.trim()).map(l => pos.map((s, i) => l.slice(s, pos[i + 1]))), p.header, s => T(s).trim() === '' ? '' : T(s));
+    }
+    if (p.layout === 'kv') {
+      const sep = p.kvSep === '\t' ? '\\t' : p.kvSep.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      const re = new RegExp(`^\\s*([^\\s${sep}][^${sep}]*?)\\s*${sep}\\s?(.*)$`);
+      const records = [], order = []; let cur = null, last = null, bad = 0;
+      const close = () => { if (cur) records.push(cur); cur = null; last = null; };
+      for (const l of lines) {
+        if (!l.trim()) { close(); continue; }
+        const m = re.exec(l);
+        if (m) { const k = m[1].trim(); if (cur && k in cur) close(); cur ||= {}; cur[k] = T(m[2]); last = k; if (!order.includes(k)) order.push(k); }
+        else if (cur && last && /^\s/.test(l)) cur[last] += (cur[last] ? ' ' : '') + l.trim();
+        else bad++;
+      }
+      close();
+      records.forEach(r => order.forEach(k => { if (!(k in r)) r[k] = ''; }));
+      return { fields: order, records: records.map(r => Object.fromEntries(order.map(k => [k, r[k]]))), notes: bad ? [`${bad.toLocaleString()} line${bad === 1 ? '' : 's'} without a “key${p.kvSep === '\t' ? ' ⇥ ' : p.kvSep + ' '}value” pair ${bad === 1 ? 'was' : 'were'} skipped.`] : [] };
+    }
+    if (p.layout === 'regex') {
+      if (!p.regex) return { fields: [], records: [], notes: ['Enter a pattern. Name the parts you want as fields, e.g. (?<date>\\S+) (?<level>\\w+) (?<message>.*)'] };
+      let re; try { re = new RegExp(p.regex, p.regexWhole ? 'gm' : ''); } catch (e) { return { fields: [], records: [], notes: [], error: 'Pattern error: ' + e.message }; }
+      const rows = [], unmatched = [];
+      const take = m => { if (!m) return; const g = m.groups ? Object.entries(m.groups) : m.slice(1).map((v, i) => [`group${i + 1}`, v]); rows.push(g.length ? g : [['match', m[0]]]); };
+      if (p.regexWhole) { for (const m of lines.join('\n').matchAll(re)) { if (m[0] === '') break; take(m); } }
+      else lines.filter(l => l.trim()).forEach(l => { const m = re.exec(l); m ? take(m) : unmatched.push(l); });
+      const fields = rows.length ? rows[0].map(([k]) => k) : [];
+      return { fields, records: rows.map(r => Object.fromEntries(r.map(([k, v]) => [k, T(v ?? '')]))), notes: unmatched.length ? [`${unmatched.length.toLocaleString()} line${unmatched.length === 1 ? ' doesn’t' : 's don’t'} match the pattern and ${unmatched.length === 1 ? 'was' : 'were'} skipped, e.g. “${unmatched[0].slice(0, 80)}”.`] : [] };
+    }
+    return { fields: ['value'], records: lines.filter(l => l.trim()).map(l => ({ value: T(l) })), notes: [] };
+  }
+
+  // Suggest a type from the values a field holds
+  function tmGuessType(vals, delim) {
+    const v = vals.filter(x => x !== '').slice(0, 500); if (!v.length) return 'text';
+    const all = re => v.every(x => re.test(x));
+    if (all(/^(true|false|yes|no|y|n)$/i) && v.some(x => !/^[01]$/.test(x))) return 'bool';
+    if (all(/^[-+]?\d{1,15}$/) && !v.some(x => /^[-+]?0\d/.test(x))) return 'int';
+    if (all(/^[-+]?[$€£¥₹]?(\d{1,3}(,\d{3})+|\d+)?(\.\d+)?$/) && v.some(x => /\d/.test(x)) && !v.some(x => /^[-+]?0\d/.test(x))) return 'num';
+    if (all(/^\d{4}-\d{2}-\d{2}([ T]\d{1,2}:\d{2}(:\d{2})?)?/)) return 'date';
+    const dm = v.map(x => /^(\d{1,2})[/.-](\d{1,2})[/.-](\d{2}|\d{4})$/.exec(x));
+    if (dm.every(Boolean)) { if (dm.some(m => +m[1] > 12)) return 'date-dmy'; if (dm.some(m => +m[2] > 12)) return 'date-mdy'; }
+    for (const s of [';', '|']) if (s !== delim && v.filter(x => x.includes(s)).length >= v.length / 2) return 'list' + s;
+    return 'text';
+  }
+  const tmPad = n => String(n).padStart(2, '0');
+  function tmDate(v, order) {
+    const t = (h, mi, s) => h != null ? `T${tmPad(h)}:${mi}:${s || '00'}` : '';
+    if (order) {
+      const m = /^(\d{1,2})[/.-](\d{1,2})[/.-](\d{2}|\d{4})(?:[ T](\d{1,2}):(\d{2})(?::(\d{2}))?)?$/.exec(v); if (!m) return null;
+      let [d, mo] = order === 'dmy' ? [+m[1], +m[2]] : [+m[2], +m[1]], y = +m[3]; if (m[3].length === 2) y += y < 70 ? 2000 : 1900;
+      if (mo < 1 || mo > 12 || d < 1 || d > 31) return null;
+      return `${y}-${tmPad(mo)}-${tmPad(d)}${t(m[4], m[5], m[6])}`;
+    }
+    const m = /^(\d{4})[-/.](\d{1,2})[-/.](\d{1,2})(?:[ T](\d{1,2}):(\d{2})(?::(\d{2}))?)?$/.exec(v);
+    if (m) return `${m[1]}-${tmPad(m[2])}-${tmPad(m[3])}${t(m[4], m[5], m[6])}`;
+    const d = new Date(v); return isNaN(d) ? null : d.toISOString();
+  }
+  function tmConv(v, type) {
+    switch (type) {
+      case 'text': return { v };
+      case 'auto': return /^-?(0|[1-9]\d{0,14})(\.\d+)?$/.test(v) ? { v: Number(v) } : v === 'true' || v === 'false' ? { v: v === 'true' } : { v };
+      case 'int': { const s = v.replace(/[,\s_]/g, ''); return /^[-+]?\d+$/.test(s) && Number.isSafeInteger(+s) ? { v: +s } : { v, bad: true }; }
+      case 'num': { const s = v.replace(/[,\s_]/g, '').replace(/^([-+]?)[$€£¥₹]/, '$1').replace(/%$/, ''); const n = Number(s); return s !== '' && isFinite(n) ? { v: n } : { v, bad: true }; }
+      case 'bool': { const s = v.toLowerCase(); return /^(true|yes|y|1|on|t)$/.test(s) ? { v: true } : /^(false|no|n|0|off|f)$/.test(s) ? { v: false } : { v, bad: true }; }
+      case 'date': case 'date-dmy': case 'date-mdy': { const d = tmDate(v, type.slice(5)); return d ? { v: d } : { v, bad: true }; }
+      case 'json': try { return { v: JSON.parse(v) }; } catch { return { v, bad: true }; }
+      default: if (type.startsWith('list')) { const s = type.slice(4); return { v: (s === ' ' ? v.split(/\s+/) : v.split(s)).map(x => x.trim()).filter(Boolean) }; } return { v };
+    }
+  }
+  const tmXmlName = s => { let n = String(s).trim().replace(/[^\w.\-\u00B7\u00C0-\uFFFF]/g, '_'); if (!n) n = '_'; if (/^[^A-Za-z_\u00C0-\uFFFF]/.test(n) || /^xml/i.test(n)) n = '_' + n; return n; };
+  const tmXmlEsc = (s, attr) => String(s).replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F]/g, '').replace(/[&<>]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' }[c])).replace(/"/g, attr ? '&quot;' : '"');
+  const tmStyle = { asis: s => s, camel: s => { const w = words(s); return w.map((x, i) => i ? cap(x) : x).join('') || s; }, snake: s => words(s).join('_') || s, pascal: s => words(s).map(cap).join('') || s, kebab: s => words(s).join('-') || s };
+  const tmSing = s => { const x = s.replace(/ies$/i, 'y').replace(/(ss|x|ch|sh)es$/i, '$1').replace(/([^s])s$/i, '$1'); return x && x !== s ? x : 'record'; };
+
+  // One record → a JSON object and an XML node, following the mapping rows
+  function tmRecord(rec, rows, o, stats) {
+    const json = {}, xml = { name: o.xmlRow, attrs: [], kids: [], text: null };
+    const kid = (node, name) => { let k = null; for (let i = node.kids.length - 1; i >= 0; i--) if (node.kids[i].name === name) { k = node.kids[i]; break; } if (!k) { k = { name, attrs: [], kids: [], text: null }; node.kids.push(k); } return k; };
+    for (const r of rows) {
+      const path = r.to.split('.').map(s => s.trim()).filter(Boolean); if (!path.length) continue;
+      let raw = r.kind === 'const' ? r.value : rec[r.src] ?? '';
+      if (o.trim) raw = raw.trim();
+      let val;
+      if (raw === '') { if (o.empty === 'omit') continue; val = o.empty === 'null' ? null : r.type.startsWith('list') ? [] : ''; }
+      else { const c = tmConv(raw, r.type); if (c.bad && stats) stats.bad[r.id] = (stats.bad[r.id] || 0) + 1; val = c.v; }
+      // JSON
+      let j = json;
+      for (const k of path.slice(0, -1)) { if (j[k] === null || typeof j[k] !== 'object' || Array.isArray(j[k])) { if (j[k] !== undefined && stats) stats.clash.add(r.to); j[k] = {}; } j = j[k]; }
+      const lk = path[path.length - 1];
+      if (j[lk] !== undefined && stats) stats.clash.add(r.to);
+      j[lk] = val;
+      // XML
+      let x = xml; for (const k of path.slice(0, -1)) x = kid(x, tmXmlName(k));
+      const xv = v => v === null ? null : typeof v === 'object' && !Array.isArray(v) ? JSON.stringify(v) : v;
+      if (r.xml === 'attr') { if (val !== null) x.attrs.push([tmXmlName(lk), Array.isArray(val) ? val.join(' ') : xv(val)]); }
+      else if (r.xml === 'text') x.text = Array.isArray(val) ? val.join(' ') : xv(val);
+      else if (Array.isArray(val)) val.forEach(v => x.kids.push({ name: tmXmlName(lk), attrs: [], kids: [], text: xv(v) }));
+      else {
+        const nm = tmXmlName(lk), ex = x.kids.find(k => k.name === nm && k.text === null && !k.filled);
+        if (ex) { ex.text = xv(val); ex.filled = true; } else x.kids.push({ name: nm, attrs: [], kids: [], text: xv(val), filled: true });
+      }
+    }
+    return { json, xml };
+  }
+  function tmXmlSer(node, ind, depth, out) {
+    const pad = ind ? '\n' + ind.repeat(depth) : '';
+    const a = node.attrs.map(([k, v]) => ` ${k}="${tmXmlEsc(v, true)}"`).join('');
+    const txt = node.text === null || node.text === undefined ? '' : tmXmlEsc(node.text);
+    if (!node.kids.length) { out.push(pad, txt === '' ? `<${node.name}${a}/>` : `<${node.name}${a}>${txt}</${node.name}>`); return; }
+    out.push(pad, `<${node.name}${a}>`, txt);
+    node.kids.forEach(k => tmXmlSer(k, ind, depth + 1, out));
+    out.push(pad, `</${node.name}>`);
+  }
+
+  function textMapperTool() {
+    return el => {
+      const opt = (map, v) => Object.entries(map).map(([k, l]) => `<option value="${esc(k)}" ${k === v ? 'selected' : ''}>${esc(l)}</option>`).join('');
+      el.innerHTML = `<div class="tm">
+        <section class="tm-step"><h3 class="mig-h"><span class="mig-n">1</span> Text <span class="hint">— upload a .txt / .log / .csv / .dat file, or paste text</span></h3>
+          <div data-src></div>
+          <textarea data-paste hidden spellcheck="false" autocapitalize="off" placeholder="Paste your text here"></textarea>
+          <div class="row" style="margin-top:8px"><button type="button" class="ghost" data-sample>Load sample</button></div></section>
+        <section class="tm-step" data-s2 hidden><h3 class="mig-h"><span class="mig-n">2</span> Read the text <span class="hint" data-det></span></h3>
+          <div class="opt-grid tm-read">
+            <label>Layout <select data-p="layout">${opt(TM_LAYOUTS)}</select></label>
+            <label data-for="delimited">Delimiter <select data-p="delim">${opt(TM_DELIMS)}</select></label>
+            <label data-for="delimited" data-custom>Other delimiter <input data-p="delimCustom" class="mono" placeholder="e.g. ~ or ::"></label>
+            <label data-for="kv">Key / value separator <select data-p="kvSep"><option value=":">Colon  key: value</option><option value="=">Equals  key=value</option><option value="&#9;">Tab</option></select></label>
+            <label data-for="fixed">Column start positions <span class="tm-inline"><input data-p="fixedPos" class="mono" placeholder="0, 10, 25"><button type="button" class="ghost" data-autofix>Detect</button></span></label>
+            <label data-for="regex" class="tm-wide">Pattern — name each part with (?&lt;name&gt;…) <input data-p="regex" class="mono" placeholder="(?<date>\\S+) (?<level>\\w+) (?<message>.*)"></label>
+            <label data-for="regex" class="check"><input type="checkbox" data-p="regexWhole"> Match across the whole text (records span lines)</label>
+            <label data-for="delimited fixed" class="check"><input type="checkbox" data-p="header"> First line has the field names</label>
+            <label>Skip lines at the top <input type="number" min="0" data-p="skip" value="0"></label>
+            <label>Ignore lines starting with <input data-p="comment" class="mono" placeholder="e.g. # or //"></label>
+            <label class="check"><input type="checkbox" data-p="trim" checked> Trim spaces around values</label>
+          </div>
+          <div data-parsed></div></section>
+        <section class="tm-step" data-s3 hidden><h3 class="mig-h"><span class="mig-n">3</span> Map fields <span class="hint">— choose what each field becomes in JSON and XML</span></h3>
+          <p class="hint tm-help">Use dots to nest: <code>customer.address.city</code> → <code>{"customer":{"address":{"city":…}}}</code> and <code>&lt;customer&gt;&lt;address&gt;&lt;city&gt;</code>. “In XML” decides whether a value is a child element, an attribute of its parent, or the parent’s own text.</p>
+          <div class="table-wrap tm-map"><table><thead><tr><th title="Include">Use</th><th>Source field</th><th>Sample</th><th>→ Target name</th><th>Type</th><th>In XML</th><th><span class="sr">Order</span></th></tr></thead><tbody></tbody></table></div>
+          <div class="row tm-maptools"><button type="button" class="ghost" data-addconst>+ Add fixed value</button>
+            <label class="inline">Rename all <select data-style><option value="">Choose…</option><option value="camel">camelCase</option><option value="snake">snake_case</option><option value="pascal">PascalCase</option><option value="kebab">kebab-case</option><option value="asis">Same as source</option></select></label>
+            <button type="button" class="ghost" data-all="1">Use all</button><button type="button" class="ghost" data-all="0">Use none</button>
+            <button type="button" class="ghost" data-reset>Reset mapping</button></div></section>
+        <section class="tm-step" data-s4 hidden><h3 class="mig-h"><span class="mig-n">4</span> Preview and create</h3>
+          <div class="opt-grid">
+            <label>JSON shape <select data-o="shape">${opt(TM_SHAPES)}</select></label>
+            <label data-ofor="wrap">List key <input data-o="wrapKey" class="mono" placeholder="records"></label>
+            <label data-ofor="keyed">Key field <select data-o="keyRow"></select></label>
+            <label>XML root element <input data-o="xmlRoot" class="mono" placeholder="records"></label>
+            <label>XML record element <input data-o="xmlRow" class="mono" placeholder="record"></label>
+            <label>Group records by <select data-o="group"></select></label>
+            <label>Empty values <select data-o="empty"><option value="keep">Keep as empty text</option><option value="null">Make null / empty element</option><option value="omit">Leave the field out</option></select></label>
+            <label>Indent <select data-o="indent"><option value="2">2 spaces</option><option value="4">4 spaces</option><option value="tab">Tabs</option><option value="min">Minified</option></select></label>
+            <label class="check"><input type="checkbox" data-o="decl" checked> XML declaration &lt;?xml …?&gt;</label>
+          </div>
+          <div class="tm-warn" data-warn hidden></div>
+          <p class="hint" data-pvh></p>
+          <div class="grid2 tm-pv"><div><div class="tm-pvh"><b>JSON</b><button type="button" class="ghost" data-copy="json">Copy</button></div><pre class="out preview" data-pv="json"></pre></div>
+            <div><div class="tm-pvh"><b>XML</b><button type="button" class="ghost" data-copy="xml">Copy</button></div><pre class="out preview" data-pv="xml"></pre></div></div>
+          <div class="row action-bar"><button class="primary" data-make="json">Create JSON</button><button class="primary" data-make="xml">Create XML</button><span class="hint">Your text file isn’t changed.</span></div>
+          <div data-result hidden></div></section></div>`;
+
+      const S = { text: '', name: '', p: null, parsed: null, sig: '', rows: [], seq: 0,
+        o: { shape: 'array', wrapKey: 'records', keyRow: '', xmlRoot: 'records', xmlRow: 'record', group: '', empty: 'keep', indent: '2', decl: true } };
+      const paste = $('[data-paste]', el), s2 = $('[data-s2]', el), s3 = $('[data-s3]', el), s4 = $('[data-s4]', el), tbody = $('.tm-map tbody', el), resEl = $('[data-result]', el);
+      const LS = 'devhub-txtmap:';
+      const lsGet = k => { try { return JSON.parse(localStorage.getItem(LS + k) || 'null'); } catch { return null; } };
+      const lsSet = (k, v) => { try { localStorage.setItem(LS + k, JSON.stringify(v)); } catch { } };
+      let tParse = 0, tPrev = 0;
+
+      // ----- step 1: text in -----
+      const src = fileSource($('[data-src]', el), { accept: TM_ACCEPT, pasteArea: paste, onFile: async x => {
+        if (!x) { S.name = ''; load(paste.value, true); return; }
+        paste.hidden = true;
+        try { S.name = x.name; load(await tmDecode(x.blob), true); } catch (e) { toast('Couldn’t read that file: ' + e.message); }
+      } });
+      paste.oninput = () => { clearTimeout(tParse); tParse = setTimeout(() => { const first = t => (t.split(/\r?\n/).find(l => l.trim()) || ''); const fresh = !S.p || first(paste.value) !== first(S.text); src.clear(); S.name = ''; load(paste.value, fresh); }, 350); };
+      $('[data-sample]', el).onclick = () => { src.clear(); paste.hidden = false; paste.value = TM_SAMPLE; S.name = 'orders.txt'; load(TM_SAMPLE, true); };
+
+      function load(text, detect) {
+        S.text = text || ''; resEl.hidden = true;
+        const has = !!S.text.trim(); s2.hidden = s3.hidden = s4.hidden = !has;
+        if (!has) return;
+        if (detect || !S.p) {
+          S.p = tmDetect(S.text);
+          $('[data-det]', el).textContent = `— detected: ${S.p.layout === 'delimited' ? `columns separated by ${TM_DELIMS[S.p.delim].toLowerCase()}` : TM_LAYOUTS[S.p.layout].toLowerCase()}${S.p.header ? ', with a header line' : ''}. Change it below if it’s wrong.`;
+          const base = (S.name || 'records').replace(/\.[^.]+$/, ''), root = tmXmlName(tmStyle.snake(base) || 'records');
+          S.o.xmlRoot = root; S.o.xmlRow = tmXmlName(tmSing(root)); S.o.wrapKey = tmStyle.camel(base) || 'records';
+          writeP(); writeO();
+        }
+        parse();
+      }
+      // ----- step 2: read options -----
+      function writeP() {
+        el.querySelectorAll('[data-p]').forEach(i => { const v = S.p[i.dataset.p]; if (i.type === 'checkbox') i.checked = !!v; else i.value = v ?? ''; });
+        showP();
+      }
+      function showP() {
+        el.querySelectorAll('[data-for]').forEach(n => n.hidden = !n.dataset.for.split(' ').includes(S.p.layout));
+        $('[data-custom]', el).hidden = S.p.layout !== 'delimited' || S.p.delim !== 'custom';
+      }
+      el.querySelectorAll('[data-p]').forEach(i => i.addEventListener(i.tagName === 'SELECT' || i.type === 'checkbox' ? 'change' : 'input', () => {
+        S.p[i.dataset.p] = i.type === 'checkbox' ? i.checked : i.type === 'number' ? Math.max(0, +i.value || 0) : i.value;
+        if (i.dataset.p === 'layout' && S.p.layout === 'fixed' && tmPositions(S.p.fixedPos).length < 2) { S.p.fixedPos = tmFixedAuto(S.text.split(/\r\n|\r|\n/).slice(S.p.skip)).join(', '); writeP(); }
+        $('[data-det]', el).textContent = ''; showP();
+        clearTimeout(tParse); tParse = setTimeout(parse, i.tagName === 'INPUT' && i.type !== 'checkbox' ? 300 : 0);
+      }));
+      $('[data-autofix]', el).onclick = () => { S.p.fixedPos = tmFixedAuto(S.text.split(/\r\n|\r|\n/).slice(S.p.skip)).join(', '); writeP(); parse(); };
+
+      function parse() {
+        const out = $('[data-parsed]', el);
+        let r; try { r = tmParse(S.text, S.p); } catch (e) { r = { fields: [], records: [], notes: [], error: e.message }; }
+        S.parsed = r;
+        const head = r.fields.slice(0, 40);
+        out.innerHTML = r.error ? `<div class="out err">${esc(r.error)}</div>` : `<p class="hint"><b>${r.records.length.toLocaleString()} record${r.records.length === 1 ? '' : 's'}</b> · ${r.fields.length} field${r.fields.length === 1 ? '' : 's'}${S.name ? ` · ${esc(S.name)}` : ''}${r.records.length > 5 ? ' · first 5 shown' : ''}</p>
+          ${r.notes.map(n => `<p class="hint mig-warn">${esc(n)}</p>`).join('')}
+          ${head.length && r.records.length ? `<div class="table-wrap tm-parsed"><table><thead><tr>${head.map(f => `<th>${esc(f)}</th>`).join('')}</tr></thead><tbody>${r.records.slice(0, 5).map(rec => `<tr>${head.map(f => `<td>${esc(String(rec[f]).slice(0, 80))}</td>`).join('')}</tr>`).join('')}</tbody></table></div>` : ''}`;
+        const ok = !r.error && r.fields.length > 0;
+        s3.hidden = s4.hidden = !ok;
+        if (!ok) return;
+        const sig = S.p.layout + '|' + r.fields.join('\u0001');
+        if (sig !== S.sig) { S.sig = sig; buildRows(); }
+        else { refreshSamples(); preview(); }
+      }
+
+      // ----- step 3: mapping -----
+      function defaultRows() {
+        const d = S.p.layout === 'delimited' ? (S.p.delim === 'custom' ? S.p.delimCustom : S.p.delim) : '';
+        return S.parsed.fields.map(f => ({ id: 'r' + (++S.seq), kind: 'field', src: f, on: true, to: tmStyle.camel(f), type: tmGuessType(S.parsed.records.slice(0, 500).map(r => r[f]), d), xml: 'el' }));
+      }
+      function buildRows() {
+        const saved = lsGet(S.sig);
+        if (saved && Array.isArray(saved.rows)) {
+          S.rows = saved.rows.filter(r => r.kind === 'const' || S.parsed.fields.includes(r.src)).map(r => ({ ...r, id: 'r' + (++S.seq) }));
+          S.parsed.fields.filter(f => !S.rows.some(r => r.src === f)).forEach(f => S.rows.push(...defaultRows().filter(r => r.src === f)));
+          if (saved.o) { Object.assign(S.o, saved.o, { keyRow: '', group: '' }); const k = S.rows.find(r => r.src === saved.keySrc), g = S.rows.find(r => r.src === saved.groupSrc); if (k) S.o.keyRow = k.id; if (g) S.o.group = g.id; writeO(); }
+          toast('Using the mapping you set for this layout last time');
+        } else { S.rows = defaultRows(); S.o.keyRow = ''; S.o.group = ''; }
+        renderRows();
+      }
+      const sampleOf = r => { if (r.kind === 'const') return ''; const v = S.parsed.records.find(x => x[r.src] !== '')?.[r.src] ?? ''; return v.length > 40 ? v.slice(0, 40) + '…' : v; };
+      function renderRows() {
+        tbody.innerHTML = S.rows.map((r, i) => `<tr data-id="${r.id}" class="${r.on ? '' : 'tm-off'}">
+          <td><input type="checkbox" data-m="on" ${r.on ? 'checked' : ''} aria-label="Use ${esc(r.src || 'fixed value')}"></td>
+          <td>${r.kind === 'const' ? `<input data-m="value" value="${esc(r.value)}" placeholder="Fixed value" aria-label="Fixed value">` : `<b>${esc(r.src)}</b>`}</td>
+          <td class="hint tm-sample" data-sample>${r.kind === 'const' ? '<i>same for every record</i>' : esc(sampleOf(r))}</td>
+          <td><input data-m="to" class="mono" value="${esc(r.to)}" aria-label="Target name for ${esc(r.src || 'fixed value')}"></td>
+          <td><select data-m="type">${opt(TM_TYPES, r.type)}</select></td>
+          <td><select data-m="xml">${opt(TM_XML_AS, r.xml)}</select></td>
+          <td class="tm-ord"><button type="button" class="ghost" data-mv="-1" ${i ? '' : 'disabled'} aria-label="Move up">↑</button><button type="button" class="ghost" data-mv="1" ${i < S.rows.length - 1 ? '' : 'disabled'} aria-label="Move down">↓</button>${r.kind === 'const' ? '<button type="button" class="ghost danger" data-del aria-label="Remove">✕</button>' : ''}</td></tr>`).join('');
+        fillSelects(); preview();
+      }
+      function refreshSamples() { tbody.querySelectorAll('tr').forEach(tr => { const r = S.rows.find(x => x.id === tr.dataset.id); if (r && r.kind !== 'const') $('[data-sample]', tr).textContent = sampleOf(r); }); }
+      tbody.addEventListener('input', e => {
+        const t = e.target, tr = t.closest('tr'), r = tr && S.rows.find(x => x.id === tr.dataset.id); if (!r || !t.dataset.m) return;
+        r[t.dataset.m] = t.type === 'checkbox' ? t.checked : t.value;
+        if (t.dataset.m === 'on') tr.classList.toggle('tm-off', !t.checked);
+        if (t.dataset.m === 'to') fillSelects();
+        schedule();
+      });
+      tbody.addEventListener('click', e => {
+        const b = e.target.closest('button'), tr = b && b.closest('tr'); if (!tr) return;
+        const i = S.rows.findIndex(x => x.id === tr.dataset.id);
+        if (b.dataset.mv) { const j = i + +b.dataset.mv; if (j < 0 || j >= S.rows.length) return; [S.rows[i], S.rows[j]] = [S.rows[j], S.rows[i]]; }
+        else if (b.hasAttribute('data-del')) S.rows.splice(i, 1);
+        else return;
+        renderRows(); save();
+      });
+      $('[data-addconst]', el).onclick = () => { S.rows.push({ id: 'r' + (++S.seq), kind: 'const', src: '', value: '', on: true, to: 'source', type: 'text', xml: 'el' }); renderRows(); save(); const ins = tbody.querySelectorAll('[data-m="value"]'); ins[ins.length - 1]?.focus(); };
+      $('[data-style]', el).onchange = e => { const f = tmStyle[e.target.value]; if (!f) return;
+        S.rows.forEach(r => r.to = (r.kind === 'const' ? r.to : r.src).split('.').map(f).join('.')); e.target.value = ''; renderRows(); save(); };
+      el.querySelectorAll('[data-all]').forEach(b => b.onclick = () => { S.rows.forEach(r => r.on = b.dataset.all === '1'); renderRows(); save(); });
+      $('[data-reset]', el).onclick = () => { try { localStorage.removeItem(LS + S.sig); } catch { } S.rows = defaultRows(); S.o.keyRow = S.o.group = ''; renderRows(); toast('Mapping reset'); };
+
+      // ----- step 4: output options, preview, create -----
+      function fillSelects() {
+        const used = S.rows.filter(r => r.on && r.to.trim()), lab = r => esc(r.to.trim() + (r.kind === 'const' ? ' (fixed)' : r.src !== r.to.trim() ? ` ← ${r.src}` : ''));
+        const ks = $('[data-o="keyRow"]', el), gs = $('[data-o="group"]', el);
+        ks.innerHTML = used.map(r => `<option value="${r.id}">${lab(r)}</option>`).join('');
+        if (!used.some(r => r.id === S.o.keyRow)) S.o.keyRow = used[0]?.id || '';
+        ks.value = S.o.keyRow;
+        gs.innerHTML = `<option value="">No grouping</option>` + used.map(r => `<option value="${r.id}">${lab(r)}</option>`).join('');
+        if (S.o.group && !used.some(r => r.id === S.o.group)) S.o.group = '';
+        gs.value = S.o.group;
+      }
+      function writeO() {
+        el.querySelectorAll('[data-o]').forEach(i => { if (i.type === 'checkbox') i.checked = !!S.o[i.dataset.o]; else if (i.tagName !== 'SELECT' || [...i.options].some(o => o.value === S.o[i.dataset.o])) i.value = S.o[i.dataset.o] ?? ''; });
+        el.querySelectorAll('[data-ofor]').forEach(n => n.hidden = n.dataset.ofor !== S.o.shape);
+      }
+      el.querySelectorAll('[data-o]').forEach(i => i.addEventListener(i.tagName === 'SELECT' || i.type === 'checkbox' ? 'change' : 'input', () => {
+        S.o[i.dataset.o] = i.type === 'checkbox' ? i.checked : i.value;
+        el.querySelectorAll('[data-ofor]').forEach(n => n.hidden = n.dataset.ofor !== S.o.shape);
+        schedule();
+      }));
+      function schedule() { clearTimeout(tPrev); tPrev = setTimeout(() => { preview(); save(); }, 150); }
+      function save() {
+        if (!S.sig) return; const k = S.rows.find(r => r.id === S.o.keyRow), g = S.rows.find(r => r.id === S.o.group);
+        lsSet(S.sig, { rows: S.rows.map(({ id, ...r }) => r), o: { ...S.o, keyRow: '', group: '' }, keySrc: k?.src, groupSrc: g?.src });
+      }
+
+      // Build the JSON and/or XML text for the first `limit` records
+      function build(kinds, limit, stats) {
+        const o = { ...S.o, trim: S.p.trim, xmlRoot: tmXmlName(S.o.xmlRoot.trim() || 'records'), xmlRow: tmXmlName(S.o.xmlRow.trim() || 'record') };
+        const rows = S.rows.filter(r => r.on && r.to.trim());
+        const recs = S.parsed.records.slice(0, limit);
+        const gRow = S.rows.find(r => r.id === o.group && r.on), kRow = S.rows.find(r => r.id === o.keyRow);
+        const rawOf = (row, rec) => { const v = row.kind === 'const' ? row.value : rec[row.src] ?? ''; return String(v).trim() || '(empty)'; };
+        const built = recs.map(rec => ({ ...tmRecord(rec, rows, o, stats), g: gRow ? rawOf(gRow, rec) : null, k: kRow ? rawOf(kRow, rec) : null }));
+        const ind = TM_IND[o.indent] ?? '  ', out = {};
+        const groups = () => { const m = new Map(); built.forEach(b => { if (!m.has(b.g)) m.set(b.g, []); m.get(b.g).push(b); }); return m; };
+        if (kinds.includes('json')) {
+          if (o.shape === 'ndjson') out.json = built.map(b => JSON.stringify(b.json)).join('\n') + (built.length ? '\n' : '');
+          else {
+            let doc;
+            if (o.shape === 'keyed') { doc = {}; built.forEach(b => { if (b.k in doc) { if (stats) stats.dupKeys++; } else doc[b.k] = b.json; }); }
+            else { const list = gRow ? Object.fromEntries([...groups()].map(([g, l]) => [g, l.map(b => b.json)])) : built.map(b => b.json); doc = o.shape === 'wrap' ? { [o.wrapKey.trim() || 'records']: list } : list; }
+            out.json = JSON.stringify(doc, null, ind || undefined) + '\n';
+          }
+        }
+        if (kinds.includes('xml')) {
+          const root = { name: o.xmlRoot, attrs: [], kids: [], text: null };
+          if (gRow) { const gname = tmXmlName(gRow.to.split('.').pop().trim() || 'group'); for (const [g, l] of groups()) root.kids.push({ name: gname, attrs: [['value', g]], kids: l.map(b => b.xml), text: null }); }
+          else root.kids = built.map(b => b.xml);
+          const body = []; tmXmlSer(root, ind, 0, body);
+          out.xml = (o.decl ? '<?xml version="1.0" encoding="UTF-8"?>' : '') + body.join('').replace(/^\n/, o.decl ? '\n' : '') + '\n';
+        }
+        return out;
+      }
+      function warnings(stats, total) {
+        const w = [];
+        for (const [id, n] of Object.entries(stats.bad)) { const r = S.rows.find(x => x.id === id); if (r) w.push(`<b>${esc(r.to)}</b>: ${n.toLocaleString()} value${n === 1 ? '' : 's'} couldn’t be read as ${esc(TM_TYPES[r.type].toLowerCase())} and ${n === 1 ? 'was' : 'were'} kept as text.`); }
+        const names = S.rows.filter(r => r.on && r.to.trim()).map(r => r.to.trim()), dup = [...new Set(names.filter((n, i) => names.indexOf(n) !== i))];
+        if (dup.length) w.push(`More than one field maps to ${dup.map(d => `<b>${esc(d)}</b>`).join(', ')} — in JSON the last one wins.`);
+        stats.clash.forEach(c => { if (!dup.includes(c)) w.push(`<b>${esc(c)}</b> clashes with another nested name; one value overwrites the other.`); });
+        const fixed = S.rows.filter(r => r.on && r.to.trim()).flatMap(r => r.to.split('.').map(s => s.trim()).filter(s => s && tmXmlName(s) !== s)).filter((s, i, a) => a.indexOf(s) === i);
+        if (fixed.length) w.push(`Not valid XML names, adjusted in XML only: ${fixed.slice(0, 6).map(s => `<code>${esc(s)}</code> → <code>${esc(tmXmlName(s))}</code>`).join(', ')}${fixed.length > 6 ? '…' : ''}`);
+        if (stats.dupKeys) w.push(`${stats.dupKeys.toLocaleString()} record${stats.dupKeys === 1 ? ' has' : 's have'} a key that’s already used, so ${stats.dupKeys === 1 ? 'it was' : 'they were'} left out of the keyed JSON. Pick a unique key field.`);
+        if (!names.length) w.push('No fields are selected — tick at least one under “Use”.');
+        return w;
+      }
+      function preview() {
+        if (!S.parsed || !S.rows.length) return;
+        const total = S.parsed.records.length, n = Math.min(3, total);
+        const stats = { bad: {}, clash: new Set(), dupKeys: 0 }, scan = Math.min(total, 2000);
+        build(['json'], scan, stats);
+        const out = build(['json', 'xml'], n);
+        const cut = s => s.length > 65536 ? s.slice(0, 65536) + '\n…' : s;
+        $('[data-pv="json"]', el).textContent = cut(out.json); $('[data-pv="xml"]', el).textContent = cut(out.xml);
+        $('[data-pvh]', el).textContent = `Preview of the first ${n} of ${total.toLocaleString()} record${total === 1 ? '' : 's'} — updates as you change the mapping.`;
+        const w = warnings(stats, scan), wEl = $('[data-warn]', el);
+        wEl.hidden = !w.length; wEl.innerHTML = w.map(x => `<p>${x}</p>`).join('');
+        resEl.hidden = true;
+      }
+      el.querySelectorAll('[data-copy]').forEach(b => b.onclick = () => {
+        if (S.parsed.records.length > 3 && S.parsed.records.length <= 20000) copy(build([b.dataset.copy], Infinity)[b.dataset.copy]);
+        else if (S.parsed.records.length <= 3) copy($(`[data-pv="${b.dataset.copy}"]`, el).textContent);
+        else toast('Too large to copy — use Create to download it');
+      });
+      el.querySelectorAll('[data-make]').forEach(b => b.onclick = () => {
+        const kind = b.dataset.make;
+        if (!S.rows.some(r => r.on && r.to.trim())) return toast('Tick at least one field under “Use”');
+        b.disabled = true;
+        setTimeout(() => {
+          try {
+            const t0 = performance.now(), stats = { bad: {}, clash: new Set(), dupKeys: 0 };
+            const text = build([kind], Infinity, stats)[kind];
+            const ext = kind === 'json' ? (S.o.shape === 'ndjson' ? 'ndjson' : 'json') : 'xml';
+            const name = (S.name ? S.name.replace(/\.[^.]+$/, '') : 'data') + '.' + ext;
+            const blob = new Blob([text], { type: kind === 'json' ? 'application/json' : 'application/xml' });
+            const w = warnings(stats, S.parsed.records.length);
+            resEl.hidden = false;
+            resEl.innerHTML = `<div class="result-head"><div><b>${esc(name)}</b><div class="hint">${S.parsed.records.length.toLocaleString()} records · ${fmtBytes(blob.size)} · ${Math.round(performance.now() - t0)} ms</div></div>
+              <div class="row"><button class="primary" data-dl>Download</button>${canShareFiles() ? '<button data-share>Share</button>' : ''}${blob.size < 5e6 ? '<button data-cp>Copy</button>' : ''}</div></div>
+              ${w.length ? `<div class="tm-warn">${w.map(x => `<p>${x}</p>`).join('')}</div>` : ''}`;
+            $('[data-dl]', resEl).onclick = () => saveBlob(blob, name).catch(e => toast(e.message));
+            const sh = $('[data-share]', resEl); if (sh) sh.onclick = () => shareBlob(blob, name);
+            const cp = $('[data-cp]', resEl); if (cp) cp.onclick = () => copy(text);
+            saveBlob(blob, name).catch(e => toast(e.message));
+            save();
+          } catch (e) { resEl.hidden = false; resEl.innerHTML = `<div class="out err">${esc(e.message)}</div>`; }
+          b.disabled = false;
+        }, 20);
+      });
+    };
+  }
+
   const FILE_TOOLS = [
     ...Object.entries(FMT).map(([k, f]) => ({ id: 'fmt-' + k, group: 'Formatters', name: `${f.name} formatter`, desc: `Pretty-print${f.minify ? ' or minify' : ''} ${f.name}${k === 'js' ? ' and TypeScript/JSX' : k === 'css' ? ', SCSS and Less' : ''}. Open a file from your device or paste text.${k === 'yaml' ? ' Comments are not kept.' : ''}`, render: formatterTool(k) })),
     { id: 'migrate', group: 'Converters', name: 'Data migrator (DB / JSON / XML)', desc: 'Move records from a .db/.sqlite, .json or .xml file into an existing .db/.sqlite, .json or .xml file — any combination. Map tables, fields and values (e.g. “Completed” → Done), preview the result, then create the updated file.', render: migratorTool() },
+    { id: 'text-map', group: 'Converters', name: 'Text → JSON / XML mapper', desc: 'Upload or paste plain text (delimited columns, key: value blocks, fixed-width or log lines), map each field to a JSON key or XML element/attribute with types and nesting, preview both side by side, then create a JSON or XML file.', render: textMapperTool() },
     { id: 'conv-any', group: 'Converters', name: 'Any format converter', desc: 'Convert between JSON, NDJSON, CSV, TSV, Excel, XML and YAML. Also exports SQL inserts and Markdown tables.', render: converterTool({}) },
     { id: 'conv-json-csv', group: 'Converters', name: 'JSON ⇄ CSV', desc: 'Nested objects become dot.columns; the reverse rebuilds them.', render: converterTool({ from: ['json', 'ndjson', 'csv', 'tsv'], to: ['csv', 'tsv', 'json', 'ndjson'] }) },
     { id: 'conv-json-xlsx', group: 'Converters', name: 'JSON ⇄ Excel', desc: 'Export JSON to a filtered .xlsx sheet, or read any sheet back to JSON.', render: converterTool({ from: ['json', 'ndjson', 'xlsx'], to: ['xlsx', 'json', 'ndjson'] }) },

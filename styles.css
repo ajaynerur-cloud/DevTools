@@ -738,3 +738,37 @@ body.bio-locked main, body.bio-locked .nav { visibility: hidden; }
 .dr-hist .ht { color: var(--muted); font-size: .8rem; }
 .dr-hist .hd { line-height: 1.5; overflow-wrap: anywhere; }
 .dr-hist s { color: var(--muted); }
+
+/* ================= Text → JSON / XML mapper ================= */
+.tm-step { margin-top: 18px; padding-top: 14px; border-top: 1px solid var(--line); }
+.tm-step:first-child { margin-top: 0; padding-top: 0; border-top: 0; }
+.tm-step [data-paste] { margin-top: 10px; min-height: 160px; font-family: var(--mono); font-size: .85rem; }
+.tm-read > label { display: flex; flex-direction: column; }
+.tm-read > label.check { flex-direction: row; align-items: center; }
+.tm-wide { grid-column: 1 / -1; }
+.tm-inline { display: flex; gap: 6px; margin-top: 4px; }
+.tm-inline input { margin: 0 !important; }
+.tm-parsed { margin-top: 8px; max-height: 240px; }
+.tm-help { margin: 0 0 10px; max-width: 90ch; }
+.tm-map { max-height: none; }
+.tm-map .table-wrap td, .tm-map td { overflow: visible; max-width: none; vertical-align: middle; }
+.tm-map td input:not([type=checkbox]), .tm-map td select { min-height: 0; padding: 4px 8px; font-size: .85rem; }
+.tm-map td input[data-m="to"] { min-width: 170px; }
+.tm-map td input[data-m="value"] { min-width: 140px; }
+.tm-map td select[data-m="type"] { min-width: 150px; }
+.tm-map td select[data-m="xml"] { min-width: 120px; }
+.tm-map td input[type=checkbox] { width: 18px; height: 18px; accent-color: var(--accent); }
+.tm-sample { max-width: 200px !important; overflow: hidden !important; text-overflow: ellipsis; font-family: var(--mono); }
+.tm-ord { white-space: nowrap; }
+.tm-ord button { padding: 2px 8px; min-height: 0 !important; font-size: .85rem; }
+.tm-off td:not(:first-child) { opacity: .45; }
+.tm-maptools { margin-top: 10px; gap: 8px; flex-wrap: wrap; align-items: center; }
+.tm-maptools label.inline { margin: 0; display: flex; align-items: center; gap: 6px; }
+.tm-maptools select { width: auto; }
+.tm-warn { border: 1px solid color-mix(in srgb, var(--danger) 45%, var(--line)); background: color-mix(in srgb, var(--danger) 7%, var(--surface)); border-radius: 8px; padding: 4px 12px; margin: 10px 0; font-size: .85rem; }
+.tm-warn p { margin: 6px 0; }
+.tm-pv { margin-top: 6px; }
+.tm-pvh { display: flex; justify-content: space-between; align-items: center; margin-bottom: 4px; }
+.tm-pvh button { padding: 2px 10px; min-height: 0; font-size: .8rem; }
+.tm-pv pre { max-height: 380px; overflow: auto; margin: 0; white-space: pre; word-break: normal; }
+.tm-pv > div { min-width: 0; }

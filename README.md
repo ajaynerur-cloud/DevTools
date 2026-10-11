@@ -3,7 +3,7 @@
 A developer toolkit for phone, tablet and desktop, with private user accounts:
 
 - **Tasks:** a full task tracker with Today, Upcoming, Board, All tasks and Insights views.
-- **31 developer tools:** formatters, large-file converters, a data migrator, encoders and generators. They run entirely in the browser and need no account.
+- **32 developer tools:** formatters, large-file converters, a data migrator, a text → JSON/XML mapper, encoders and generators. They run entirely in the browser and need no account.
 - **Tool store links:** your own list of registries and marketplaces.
 - **Accounts:** registration and sign-in, where every user sees only their own data.
 
@@ -64,6 +64,21 @@ The developer tools never need either; they always work without signing in.
 **Moving between modes**
 - **Offline to online:** sign in, then use Account → Import backup with your `.json` or `.sqlite` file.
 - **Online to offline:** use Account → Export JSON or Export SQLite, then use "Open database file" on any device.
+
+## Text → JSON / XML mapper
+
+Tools → Converters → **Text → JSON / XML mapper** turns a plain-text file into JSON or XML, with a mapping screen in between.
+
+1. **Text:** upload a `.txt`, `.log`, `.csv`, `.dat`, `.prn`… file (UTF-8, UTF-16 and Windows-1252 are read), or paste text.
+2. **Read the text:** DevHub detects the layout and shows the records it found. Change it if needed:
+   - **Columns with a delimiter:** comma, tab, pipe, semicolon, spaces or your own; quoted values are respected.
+   - **Key: value lines:** `name: Ada` / `id=7` blocks, one block per record (a blank line or a repeated key starts the next).
+   - **Fixed-width columns:** column start positions, detected automatically.
+   - **Pattern:** a regular expression with named groups, e.g. `(?<date>\S+) (?<level>\w+) (?<message>.*)` for log lines.
+   - **One value per line.**
+   You can also skip header lines, ignore comment lines and trim spaces.
+3. **Map fields:** for each field choose whether to use it, its target name, its type (text, number, whole number, true/false, date DD/MM/YYYY or MM/DD/YYYY → ISO, list split on `;` `,` `|`, JSON) and whether it becomes an XML element, attribute or text. Dots nest: `customer.address.city`. Add fixed values, reorder, or rename everything to camelCase / snake_case / PascalCase. The mapping is remembered for files with the same layout.
+4. **Preview and create:** JSON and XML previews update live, with warnings for values that don't fit their type, duplicate names and invalid XML names. Choose the JSON shape (array, wrapped list, keyed by a field, JSON Lines), XML root/record element names, grouping and how to treat empty values, then **Create JSON** or **Create XML**.
 
 ## Data migrator (DB / JSON / XML)
 
