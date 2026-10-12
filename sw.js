@@ -1,27 +1,36 @@
 // DevHub service worker: offline app shell, never caches GitHub API calls.
-const CACHE = 'devhub-v18';
+const CACHE = 'devhub-v19';
 const SHELL = ['./', 'index.html', 'styles.css', 'app.js', 'manifest.webmanifest',
   'favicon.ico', 'icons/icon.svg', 'icons/favicon-32.png', 'icons/apple-touch-icon.png', 'icons/icon-192.png', 'icons/icon-512.png', 'icons/icon-maskable-192.png', 'icons/icon-maskable-512.png', 'seed/links.json', 'config.js', 'tasks.js', 'notify.js', 'biolock.js', 'offline-db.js', 'adapter.js', 'worker.js', 'migrate.js', 'vendor/sql-wasm.js', 'vendor/sql-wasm.wasm',
   'vendor/papaparse.min.js', 'vendor/xlsx.full.min.js', 'vendor/fxp.min.js', 'vendor/js-yaml.min.js', 'vendor/beautifier.min.js', 'vendor/sql-formatter.min.js'];
 
 self.addEventListener('install', e => {
-  e.waitUntil(caches.open(CACHE).then(c => c.addAll(SHELL)).then(() => self.skipWaiting()));
+  // cache: 'reload' skips the browser's HTTP cache so the new version's files are stored, not stale copies
+  e.waitUntil(caches.open(CACHE).then(c => c.addAll(SHELL.map(u => new Request(u, { cache: 'reload' })))).then(() => self.skipWaiting()));
 });
 self.addEventListener('activate', e => {
-  e.waitUntil(caches.keys().then(keys => Promise.all(keys.filter(k => k !== CACHE).map(k => caches.delete(k)))).then(() => self.clients.claim()));
+  e.waitUntil((async () => {
+    const old = (await caches.keys()).filter(k => k !== CACHE);
+    await Promise.all(old.map(k => caches.delete(k)));
+    await self.clients.claim();
+  })());
 });
 self.addEventListener('fetch', e => {
   const url = new URL(e.request.url);
   // Account API calls always go to the network, never the cache
   if (e.request.method !== 'GET' || url.pathname.startsWith('/api/') || url.origin !== location.origin && !/fonts\.(googleapis|gstatic)\.com$/.test(url.hostname)) return;
-  // Stale-while-revalidate for app files and fonts
+  // App files (HTML, JS, CSS, JSON, manifest): network first, so a new deploy shows up on the next load; the cache is the offline fallback.
+  // Fonts, icons and bundled libraries: cache first (they rarely change), refreshed in the background.
+  const appFile = url.origin === location.origin && !/\/(vendor|icons)\//.test(url.pathname) && (e.request.mode === 'navigate' || /\.(html|js|css|json|webmanifest)$/.test(url.pathname) || url.pathname.endsWith('/'));
   e.respondWith(caches.open(CACHE).then(async cache => {
-    const cached = await cache.match(e.request, { ignoreSearch: url.origin === location.origin });
-    const network = fetch(e.request).then(res => {
-      if (res.ok || res.type === 'opaque') cache.put(e.request, res.clone());
-      return res;
-    }).catch(() => cached || (e.request.mode === 'navigate' ? cache.match('index.html') : Response.error()));
-    return cached || network;
+    const cached = () => cache.match(e.request, { ignoreSearch: url.origin === location.origin }).then(r => r || (e.request.mode === 'navigate' ? cache.match('index.html') : undefined));
+    if (appFile) {
+      try { const res = await fetch(e.request, { cache: 'no-cache' }); if (res.ok) cache.put(e.request, res.clone()); return res; }
+      catch { return (await cached()) || Response.error(); }
+    }
+    const hit = await cached();
+    const network = fetch(e.request).then(res => { if (res.ok || res.type === 'opaque') cache.put(e.request, res.clone()); return res; }).catch(() => hit || Response.error());
+    return hit || network;
   }));
 });
 

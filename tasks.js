@@ -351,6 +351,9 @@
     const d = doc(), el = $('#tkBody'); if (!el) return;
     const bodies = { week: renderWeek, board: renderBoard, all: renderAll, insights: renderInsights };
     el.innerHTML = bodies[ui.view](d);
+    // compact applies to every tab (Week, Board, All); Board also offers "Titles only"
+    const dense = bv.density !== 'comfy'; el.closest('.tk')?.classList.toggle('tk-dense', dense);
+    const db = $('#tkDense'); if (db) db.setAttribute('aria-pressed', dense);
     $('#tkHead').innerHTML = header(d);
     const t = today(), open = live(d).filter(x => x.status !== 'done');
     const counts = { week: open.filter(x => x.due && x.due <= t).length, board: open.filter(x => ACTIVE.includes(x.status)).length, all: open.length };
@@ -374,6 +377,7 @@
         <div class="tk-tools" id="tkFilters">
           <button type="button" class="tk-iconbtn tk-searchbtn" id="tkSearchBtn" aria-label="Search">${svg('<circle cx="11" cy="11" r="6"/><path d="M20 20l-4-4"/>')}</button>
           <input type="search" id="tkSearch" placeholder="Search tasks" aria-label="Search tasks" value="${esc(ui.q)}">
+          <button type="button" class="tk-iconbtn tk-densebtn" id="tkDense" aria-pressed="false" title="Compact view — smaller rows and cards on every tab">${svg('<path d="M4 6h16M4 10h16M4 14h16M4 18h16"/>')}<span>Compact</span></button>
           <details class="tk-pop"><summary>Filter</summary><div class="tk-pop-body"><label>Project<select id="tkProject" aria-label="Filter by project"></select></label><label>Priority<select id="tkPrio" aria-label="Filter by priority"><option value="">Any priority</option>${[1, 2, 3, 4].map(p => `<option value="${p}" ${+ui.prio === p ? 'selected' : ''}>${PRIO[p]}</option>`).join('')}</select></label></div></details>
           <details class="tk-pop"><summary aria-label="More options">${svg('<path d="M5 12h.01M12 12h.01M19 12h.01" stroke-width="3"/>')}</summary><div class="tk-pop-body menu"><button type="button" id="tkProjects">Projects</button><button type="button" id="tkNotify">Reminders</button>${session.user ? '<button type="button" id="tkBackup">Backup and import</button>' : ''}</div></details>
         </div>
@@ -405,6 +409,7 @@
     };
     document.querySelectorAll('.tk-tabs [data-view]').forEach(b => b.onclick = () => { ui.view = b.dataset.view; draw(); });
     $('#tkSearch').oninput = e => { ui.q = e.target.value; draw(); };
+    $('#tkDense').onclick = () => { bv.density = bv.density === 'comfy' ? 'compact' : 'comfy'; saveBv(); draw(); };
     $('#tkSearchBtn').onclick = () => { const f = $('#tkFilters'); f.classList.toggle('searching'); if (f.classList.contains('searching')) $('#tkSearch').focus(); };
     if (ui.q) $('#tkFilters').classList.add('searching');
     $('#tkProject').onchange = e => { ui.project = e.target.value; draw(); };

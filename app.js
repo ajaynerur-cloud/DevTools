@@ -2263,6 +2263,14 @@
     renderNavUser();
     if (bioLocked) window.DHBio.lock();
     else { render(); if (session.user && session.token) wakeAndSync(); }
-    if ('serviceWorker' in navigator && !isNative()) navigator.serviceWorker.register('sw.js').catch(console.error);
+    if ('serviceWorker' in navigator && !isNative()) {
+      const hadController = !!navigator.serviceWorker.controller; let reloaded = false;
+      // A new version was deployed: its service worker takes over, then reload once so every file is the new one
+      navigator.serviceWorker.addEventListener('controllerchange', () => { if (hadController && !reloaded) { reloaded = true; location.reload(); } });
+      navigator.serviceWorker.register('sw.js', { updateViaCache: 'none' }).then(reg => {
+        reg.update().catch(() => {});
+        document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') reg.update().catch(() => {}); });
+      }).catch(console.error);
+    }
   });
 })();

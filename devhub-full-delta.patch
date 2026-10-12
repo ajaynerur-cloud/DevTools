@@ -1,6 +1,6 @@
 diff -ruN a/README.md b/README.md
---- a/README.md	2026-10-12 10:04:53.644296052 +0000
-+++ b/README.md	2026-10-12 10:04:53.649428332 +0000
+--- a/README.md	2026-10-12 18:07:14.504836585 +0000
++++ b/README.md	2026-10-12 18:07:14.508480835 +0000
 @@ -3,7 +3,7 @@
  A developer toolkit for phone, tablet and desktop, with private user accounts:
  
@@ -33,8 +33,8 @@ diff -ruN a/README.md b/README.md
  
  Tools → Converters → **Data migrator** moves records from one file into another file you already have. Any combination works:
 diff -ruN a/app.js b/app.js
---- a/app.js	2026-10-12 10:04:53.645315831 +0000
-+++ b/app.js	2026-10-12 10:04:53.650271759 +0000
+--- a/app.js	2026-10-12 18:07:14.505535066 +0000
++++ b/app.js	2026-10-12 18:07:14.509069578 +0000
 @@ -1165,9 +1165,500 @@
      };
    }
@@ -536,10 +536,63 @@ diff -ruN a/app.js b/app.js
      { id: 'conv-any', group: 'Converters', name: 'Any format converter', desc: 'Convert between JSON, NDJSON, CSV, TSV, Excel, XML and YAML. Also exports SQL inserts and Markdown tables.', render: converterTool({}) },
      { id: 'conv-json-csv', group: 'Converters', name: 'JSON ⇄ CSV', desc: 'Nested objects become dot.columns; the reverse rebuilds them.', render: converterTool({ from: ['json', 'ndjson', 'csv', 'tsv'], to: ['csv', 'tsv', 'json', 'ndjson'] }) },
      { id: 'conv-json-xlsx', group: 'Converters', name: 'JSON ⇄ Excel', desc: 'Export JSON to a filtered .xlsx sheet, or read any sheet back to JSON.', render: converterTool({ from: ['json', 'ndjson', 'xlsx'], to: ['xlsx', 'json', 'ndjson'] }) },
+@@ -1772,6 +2263,14 @@
+     renderNavUser();
+     if (bioLocked) window.DHBio.lock();
+     else { render(); if (session.user && session.token) wakeAndSync(); }
+-    if ('serviceWorker' in navigator && !isNative()) navigator.serviceWorker.register('sw.js').catch(console.error);
++    if ('serviceWorker' in navigator && !isNative()) {
++      const hadController = !!navigator.serviceWorker.controller; let reloaded = false;
++      // A new version was deployed: its service worker takes over, then reload once so every file is the new one
++      navigator.serviceWorker.addEventListener('controllerchange', () => { if (hadController && !reloaded) { reloaded = true; location.reload(); } });
++      navigator.serviceWorker.register('sw.js', { updateViaCache: 'none' }).then(reg => {
++        reg.update().catch(() => {});
++        document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') reg.update().catch(() => {}); });
++      }).catch(console.error);
++    }
+   });
+ })();
+diff -ruN a/index.html b/index.html
+--- a/index.html	2026-10-12 18:07:14.505785919 +0000
++++ b/index.html	2026-10-12 18:07:14.509302714 +0000
+@@ -18,7 +18,7 @@
+   <link rel="preconnect" href="https://fonts.googleapis.com">
+   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+   <link href="https://fonts.googleapis.com/css2?family=Instrument+Sans:wght@400;500;600;700&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet">
+-  <link rel="stylesheet" href="styles.css">
++  <link rel="stylesheet" href="styles.css?v=2026.10.12-2">
+ </head>
+ <body>
+   <div class="shell">
+@@ -29,16 +29,17 @@
+       <a href="#links" data-route="links">Tool stores</a>
+       <a href="#account" data-route="account" class="nav-link">Account</a>
+       <div class="nav-user" id="navUser" role="status" aria-live="polite"></div>
++      <div class="build" title="DevHub build">Build 2026.10.12-2</div>
+     </nav>
+     <main id="view" tabindex="-1"></main>
+   </div>
+   <div class="toast" id="toast" role="status" aria-live="polite"></div>
+-  <script src="config.js"></script>
+-  <script src="offline-db.js"></script>
+-  <script src="adapter.js"></script>
+-  <script src="app.js"></script>
+-  <script src="tasks.js"></script>
+-  <script src="notify.js"></script>
+-  <script src="biolock.js"></script>
++  <script src="config.js?v=2026.10.12-2"></script>
++  <script src="offline-db.js?v=2026.10.12-2"></script>
++  <script src="adapter.js?v=2026.10.12-2"></script>
++  <script src="app.js?v=2026.10.12-2"></script>
++  <script src="tasks.js?v=2026.10.12-2"></script>
++  <script src="notify.js?v=2026.10.12-2"></script>
++  <script src="biolock.js?v=2026.10.12-2"></script>
+ </body>
+ </html>
 diff -ruN a/styles.css b/styles.css
---- a/styles.css	2026-10-12 10:04:53.646126440 +0000
-+++ b/styles.css	2026-10-12 10:04:53.650730289 +0000
-@@ -738,3 +738,128 @@
+--- a/styles.css	2026-10-12 18:07:14.505962366 +0000
++++ b/styles.css	2026-10-12 18:07:14.509443862 +0000
+@@ -738,3 +738,158 @@
  .dr-hist .ht { color: var(--muted); font-size: .8rem; }
  .dr-hist .hd { line-height: 1.5; overflow-wrap: anywhere; }
  .dr-hist s { color: var(--muted); }
@@ -668,19 +721,89 @@ diff -ruN a/styles.css b/styles.css
 +  .tk-board:not(.lay-list) .e-d { display: none; }
 +  .tk-board:not(.lay-list) .e-m { display: inline; }
 +}
++
++.build { font-size: .7rem; color: var(--muted); opacity: .7; padding: 6px 12px 0; font-family: var(--mono); }
++@media (max-width: 800px) { .build { display: none; } }
++/* the page never scrolls sideways; wide content (tables, previews) scrolls inside its own box */
++main { overflow-x: clip; }
++
++/* ================= Compact view on every task tab (toolbar “Compact” button) ================= */
++.tk-densebtn { display: inline-flex; align-items: center; gap: 6px; font-size: .86rem; }
++.tk-densebtn svg { width: 16px; height: 16px; }
++.tk-densebtn[aria-pressed="true"] { color: var(--accent); border-color: var(--accent); background: color-mix(in srgb, var(--accent) 10%, var(--surface)); }
++/* list rows (Week, All): one tight line — title with its details beside it */
++.tk-dense .tk-sec { margin-top: 10px; }
++.tk-dense .tk-sec > header, .tk-dense .tk-sec > summary { padding: 2px 2px 4px; }
++.tk-dense .tk-sec h2 { font-size: .9rem; }
++.tk-dense .tk-row { gap: 10px; padding: 6px 10px 6px 12px; }
++.tk-dense .tk-row::before { top: 6px; bottom: 6px; }
++.tk-dense .tk-check { width: 18px; height: 18px; min-width: 18px; height: 18px; border-width: 2px; }
++.tk-dense .tk-row.done .tk-check::after, .tk-dense .tk-row.completing .tk-check::after { left: 4px; top: 1px; width: 4px; height: 8px; }
++.tk-dense .tk-main { flex-direction: row; flex-wrap: wrap; align-items: baseline; align-content: center; gap: 0 12px; }
++.tk-dense .tk-title { font-size: .9rem; line-height: 1.3; }
++.tk-dense .tk-meta { font-size: .76rem; line-height: 1.3; gap: 0 6px; }
++.tk-dense .mt .ic { width: 12px; height: 12px; }
++.tk-dense .tk-timer { padding: 2px 8px; font-size: .74rem; }
++.tk-dense .tk-empty { padding: 10px 0; }
++@media (max-width: 800px) {
++  .tk-densebtn span { display: none; }
++  .tk-dense .tk-row { padding: 8px 10px 8px 12px; }   /* keep rows easy to tap */
++  .tk-dense .tk-main { flex-direction: row; flex-wrap: wrap; align-items: center; align-content: center; min-height: 38px !important; gap: 0 10px; }
++  .tk-dense .tk-row { padding: 4px 10px 4px 12px; }
++}
 diff -ruN a/sw.js b/sw.js
---- a/sw.js	2026-10-12 10:04:53.646158114 +0000
-+++ b/sw.js	2026-10-12 10:04:53.649325320 +0000
-@@ -1,5 +1,5 @@
+--- a/sw.js	2026-10-12 18:07:14.505987296 +0000
++++ b/sw.js	2026-10-12 18:07:14.508398346 +0000
+@@ -1,27 +1,36 @@
  // DevHub service worker: offline app shell, never caches GitHub API calls.
 -const CACHE = 'devhub-v17';
-+const CACHE = 'devhub-v18';
++const CACHE = 'devhub-v19';
  const SHELL = ['./', 'index.html', 'styles.css', 'app.js', 'manifest.webmanifest',
    'favicon.ico', 'icons/icon.svg', 'icons/favicon-32.png', 'icons/apple-touch-icon.png', 'icons/icon-192.png', 'icons/icon-512.png', 'icons/icon-maskable-192.png', 'icons/icon-maskable-512.png', 'seed/links.json', 'config.js', 'tasks.js', 'notify.js', 'biolock.js', 'offline-db.js', 'adapter.js', 'worker.js', 'migrate.js', 'vendor/sql-wasm.js', 'vendor/sql-wasm.wasm',
    'vendor/papaparse.min.js', 'vendor/xlsx.full.min.js', 'vendor/fxp.min.js', 'vendor/js-yaml.min.js', 'vendor/beautifier.min.js', 'vendor/sql-formatter.min.js'];
+ 
+ self.addEventListener('install', e => {
+-  e.waitUntil(caches.open(CACHE).then(c => c.addAll(SHELL)).then(() => self.skipWaiting()));
++  // cache: 'reload' skips the browser's HTTP cache so the new version's files are stored, not stale copies
++  e.waitUntil(caches.open(CACHE).then(c => c.addAll(SHELL.map(u => new Request(u, { cache: 'reload' })))).then(() => self.skipWaiting()));
+ });
+ self.addEventListener('activate', e => {
+-  e.waitUntil(caches.keys().then(keys => Promise.all(keys.filter(k => k !== CACHE).map(k => caches.delete(k)))).then(() => self.clients.claim()));
++  e.waitUntil((async () => {
++    const old = (await caches.keys()).filter(k => k !== CACHE);
++    await Promise.all(old.map(k => caches.delete(k)));
++    await self.clients.claim();
++  })());
+ });
+ self.addEventListener('fetch', e => {
+   const url = new URL(e.request.url);
+   // Account API calls always go to the network, never the cache
+   if (e.request.method !== 'GET' || url.pathname.startsWith('/api/') || url.origin !== location.origin && !/fonts\.(googleapis|gstatic)\.com$/.test(url.hostname)) return;
+-  // Stale-while-revalidate for app files and fonts
++  // App files (HTML, JS, CSS, JSON, manifest): network first, so a new deploy shows up on the next load; the cache is the offline fallback.
++  // Fonts, icons and bundled libraries: cache first (they rarely change), refreshed in the background.
++  const appFile = url.origin === location.origin && !/\/(vendor|icons)\//.test(url.pathname) && (e.request.mode === 'navigate' || /\.(html|js|css|json|webmanifest)$/.test(url.pathname) || url.pathname.endsWith('/'));
+   e.respondWith(caches.open(CACHE).then(async cache => {
+-    const cached = await cache.match(e.request, { ignoreSearch: url.origin === location.origin });
+-    const network = fetch(e.request).then(res => {
+-      if (res.ok || res.type === 'opaque') cache.put(e.request, res.clone());
+-      return res;
+-    }).catch(() => cached || (e.request.mode === 'navigate' ? cache.match('index.html') : Response.error()));
+-    return cached || network;
++    const cached = () => cache.match(e.request, { ignoreSearch: url.origin === location.origin }).then(r => r || (e.request.mode === 'navigate' ? cache.match('index.html') : undefined));
++    if (appFile) {
++      try { const res = await fetch(e.request, { cache: 'no-cache' }); if (res.ok) cache.put(e.request, res.clone()); return res; }
++      catch { return (await cached()) || Response.error(); }
++    }
++    const hit = await cached();
++    const network = fetch(e.request).then(res => { if (res.ok || res.type === 'opaque') cache.put(e.request, res.clone()); return res; }).catch(() => hit || Response.error());
++    return hit || network;
+   }));
+ });
+ 
 diff -ruN a/tasks.js b/tasks.js
---- a/tasks.js	2026-10-12 10:04:53.646171712 +0000
-+++ b/tasks.js	2026-10-12 10:04:53.650756877 +0000
+--- a/tasks.js	2026-10-12 18:07:14.505999949 +0000
++++ b/tasks.js	2026-10-12 18:07:14.509470186 +0000
 @@ -29,6 +29,13 @@
    const now = () => new Date().toISOString();
    const today = () => dayKey(new Date());
@@ -720,7 +843,33 @@ diff -ruN a/tasks.js b/tasks.js
    }
    function renderAll(d) {
      let items = filtered(live(d)).filter(x => ui.status ? x.status === ui.status : ui.showDone || x.status !== 'done');
-@@ -396,6 +416,9 @@
+@@ -331,6 +351,9 @@
+     const d = doc(), el = $('#tkBody'); if (!el) return;
+     const bodies = { week: renderWeek, board: renderBoard, all: renderAll, insights: renderInsights };
+     el.innerHTML = bodies[ui.view](d);
++    // compact applies to every tab (Week, Board, All); Board also offers "Titles only"
++    const dense = bv.density !== 'comfy'; el.closest('.tk')?.classList.toggle('tk-dense', dense);
++    const db = $('#tkDense'); if (db) db.setAttribute('aria-pressed', dense);
+     $('#tkHead').innerHTML = header(d);
+     const t = today(), open = live(d).filter(x => x.status !== 'done');
+     const counts = { week: open.filter(x => x.due && x.due <= t).length, board: open.filter(x => ACTIVE.includes(x.status)).length, all: open.length };
+@@ -354,6 +377,7 @@
+         <div class="tk-tools" id="tkFilters">
+           <button type="button" class="tk-iconbtn tk-searchbtn" id="tkSearchBtn" aria-label="Search">${svg('<circle cx="11" cy="11" r="6"/><path d="M20 20l-4-4"/>')}</button>
+           <input type="search" id="tkSearch" placeholder="Search tasks" aria-label="Search tasks" value="${esc(ui.q)}">
++          <button type="button" class="tk-iconbtn tk-densebtn" id="tkDense" aria-pressed="false" title="Compact view — smaller rows and cards on every tab">${svg('<path d="M4 6h16M4 10h16M4 14h16M4 18h16"/>')}<span>Compact</span></button>
+           <details class="tk-pop"><summary>Filter</summary><div class="tk-pop-body"><label>Project<select id="tkProject" aria-label="Filter by project"></select></label><label>Priority<select id="tkPrio" aria-label="Filter by priority"><option value="">Any priority</option>${[1, 2, 3, 4].map(p => `<option value="${p}" ${+ui.prio === p ? 'selected' : ''}>${PRIO[p]}</option>`).join('')}</select></label></div></details>
+           <details class="tk-pop"><summary aria-label="More options">${svg('<path d="M5 12h.01M12 12h.01M19 12h.01" stroke-width="3"/>')}</summary><div class="tk-pop-body menu"><button type="button" id="tkProjects">Projects</button><button type="button" id="tkNotify">Reminders</button>${session.user ? '<button type="button" id="tkBackup">Backup and import</button>' : ''}</div></details>
+         </div>
+@@ -385,6 +409,7 @@
+     };
+     document.querySelectorAll('.tk-tabs [data-view]').forEach(b => b.onclick = () => { ui.view = b.dataset.view; draw(); });
+     $('#tkSearch').oninput = e => { ui.q = e.target.value; draw(); };
++    $('#tkDense').onclick = () => { bv.density = bv.density === 'comfy' ? 'compact' : 'comfy'; saveBv(); draw(); };
+     $('#tkSearchBtn').onclick = () => { const f = $('#tkFilters'); f.classList.toggle('searching'); if (f.classList.contains('searching')) $('#tkSearch').focus(); };
+     if (ui.q) $('#tkFilters').classList.add('searching');
+     $('#tkProject').onchange = e => { ui.project = e.target.value; draw(); };
+@@ -396,6 +421,9 @@
  
      const body = $('#tkBody');
      body.addEventListener('click', e => {
@@ -730,7 +879,7 @@ diff -ruN a/tasks.js b/tasks.js
        const dayBtn = e.target.closest('[data-day]'); if (dayBtn) { ui.day = dayBtn.dataset.day === today() ? null : dayBtn.dataset.day; draw(); return; }
        const wk = e.target.closest('[data-wk]'); if (wk) { ui.day = wk.dataset.wk === 'today' ? null : addDays(ui.day || today(), 7 * +wk.dataset.wk); draw(); return; }
        const row = e.target.closest('[data-id]'), id = row?.dataset.id;
-@@ -408,8 +431,22 @@
+@@ -408,8 +436,22 @@
        const addOn = e.target.closest('[data-add-on]');
        if (addOn) { input.dataset.day = addOn.dataset.addOn; input.placeholder = `Add a task for ${dueLabel(addOn.dataset.addOn).text}…`; input.focus(); window.scrollTo({ top: 0, behavior: 'smooth' }); }
      });
