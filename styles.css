@@ -772,3 +772,94 @@ body.bio-locked main, body.bio-locked .nav { visibility: hidden; }
 .tm-pvh button { padding: 2px 10px; min-height: 0; font-size: .8rem; }
 .tm-pv pre { max-height: 380px; overflow: auto; margin: 0; white-space: pre; word-break: normal; }
 .tm-pv > div { min-width: 0; }
+
+/* ================= Board: view options + fit every column on desktop (no sideways scrolling) ================= */
+.tk-bv { margin: 14px 0 0; }
+.tk-bv-body { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 10px; }
+.tk-stabs, .tk-bv-toggle, .bv-m, .mv-l, .e-m { display: none; }
+.tk-bv-l { font-size: .8rem; color: var(--muted); font-weight: 600; }
+.tk-bv .seg button { padding: 4px 10px; font-size: .8rem; min-height: 0; }
+.tk-bv label.inline { margin: 0 0 0 4px; font-size: .84rem; display: flex; align-items: center; gap: 6px; }
+.tk-bv label.inline input { width: 16px; height: 16px; accent-color: var(--accent); }
+
+/* card density */
+.tk-board.d-compact .tk-card { padding: 6px 9px 5px; border-radius: 8px; }
+.tk-board.d-compact .tk-card-top { margin-bottom: 2px; }
+.tk-board.d-compact .tk-title { font-size: .88rem; }
+.tk-board.d-compact .tk-meta { font-size: .76rem; gap: 0 6px; }
+.tk-board.d-compact .tk-card-move, .tk-board.d-titles .tk-card-move, .tk-board.d-titles .tk-meta { display: none; }
+.tk-board.d-compact .tk-cards { gap: 5px; }
+.tk-board.d-titles .tk-card { padding: 5px 9px; border-radius: 7px; }
+.tk-board.d-titles .tk-card-top { margin: 0; }
+.tk-board.d-titles .tk-title { font-size: .86rem; }
+.tk-board.d-titles .tk-cards { gap: 4px; }
+
+/* list layout: each status is a full-width band, cards flow in a grid */
+.tk-board.lay-list { grid-template-columns: 1fr !important; overflow-x: visible; scroll-snap-type: none; }
+.tk-board.lay-list .tk-cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(230px, 1fr)); align-items: start; max-height: none; overflow: visible; min-height: 0; }
+.tk-board.lay-list.d-titles .tk-cards { grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)); }
+.tk-board.lay-list .tk-empty { margin: 0; }
+
+@media (min-width: 801px) {
+  .tk:has(.tk-board) { max-width: none; }                       /* the board uses the full window width */
+  .tk-board { grid-template-columns: repeat(var(--n, 6), minmax(0, 1fr)); gap: 10px; overflow-x: visible; align-items: start; }
+  .tk-board.lay-2, .tk-board.lay-3 { grid-template-columns: repeat(var(--c), minmax(0, 1fr)); }
+  .tk-col { padding: 8px; }
+  .tk-col > header { padding: 2px 2px 8px; gap: 6px; flex-wrap: wrap; }
+  .tk-col > header .hint { flex-basis: 100%; }
+  .tk-card { padding: 8px 10px 4px; }
+  .tk-card .tk-title { overflow-wrap: anywhere; }
+  /* long columns scroll on their own, so the board fits the screen */
+  .tk-board.fit:not(.lay-list) .tk-cards { max-height: max(380px, calc(100dvh - 330px)); overflow-y: auto; scrollbar-width: thin; padding-right: 2px; }
+  .tk-board.fit.lay-2 .tk-cards { max-height: max(260px, calc(50dvh - 170px)); }
+  .tk-board.fit.lay-3 .tk-cards { max-height: max(200px, calc(33dvh - 120px)); }
+}
+/* narrower desktop / tablet landscape: Auto switches to 2 rows instead of squeezing every column into one */
+@media (min-width: 801px) and (max-width: 1250px) {
+  .tk-board.lay-auto { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+  .tk-board.fit.lay-auto .tk-cards { max-height: 420px; }
+}
+/* on phones the board swipes column by column, so only Auto (swipe) and List apply */
+@media (max-width: 800px) {
+  .tk-bv [data-bv="layout"][data-v="row"], .tk-bv [data-bv="layout"][data-v="2"], .tk-bv [data-bv="layout"][data-v="3"], .tk-bv label:has([data-bvc="fit"]) { display: none; }
+}
+
+/* ================= Phone: one status at a time, as tabs ================= */
+@keyframes tk-in-r { from { opacity: 0; transform: translateX(18px); } to { opacity: 1; transform: none; } }
+@keyframes tk-in-l { from { opacity: 0; transform: translateX(-18px); } to { opacity: 1; transform: none; } }
+@media (max-width: 800px) {
+  .bv-d { display: none; } .bv-m { display: inline; }
+  .tk-bv { position: sticky; top: 0; z-index: 5; display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 8px; margin: 10px calc(-1 * clamp(16px, 4vw, 44px)) 0; padding: 8px clamp(16px, 4vw, 44px); background: var(--paper); border-bottom: 1px solid var(--line); }
+  .tk-stabs { display: flex; gap: 6px; overflow-x: auto; scrollbar-width: none; scroll-snap-type: x proximity; padding: 2px 0; }
+  .tk-stabs::-webkit-scrollbar { display: none; }
+  .tk-stabs button { flex: none; scroll-snap-align: center; display: inline-flex; align-items: center; gap: 6px; padding: 7px 12px; min-height: 36px; border-radius: 999px; font-size: .86rem; font-weight: 600; color: var(--muted); background: var(--surface); border: 1px solid var(--line); white-space: nowrap; }
+  .tk-stabs button .n { font-size: .72rem; font-weight: 600; min-width: 20px; padding: 0 6px; border-radius: 999px; background: var(--paper); color: var(--muted); text-align: center; }
+  .tk-stabs button[aria-selected="true"] { background: var(--accent); border-color: var(--accent); color: var(--accent-ink); }
+  .tk-stabs button[aria-selected="true"] .n { background: color-mix(in srgb, var(--accent-ink) 22%, transparent); color: var(--accent-ink); }
+  .tk-bv-toggle { display: inline-grid; place-items: center; width: 40px; height: 40px; padding: 0; border-radius: 10px; border: 1px solid var(--line); }
+  .tk-bv.open .tk-bv-toggle { color: var(--accent); border-color: var(--accent); }
+  .tk-bv-body { display: none; grid-column: 1 / -1; padding: 10px 0 4px; gap: 8px 8px; }
+  .tk-bv.open .tk-bv-body { display: flex; }
+  .tk-bv-l { display: block; flex-basis: 100%; margin-top: 2px; }
+  .tk-bv-body label.inline { margin: 4px 12px 0 0; }
+  .tk-bv:has(+ .tk-board.lay-list) .tk-stabs { visibility: hidden; }
+
+  /* tabs mode: only the chosen status, full width, no column chrome */
+  .tk-board:not(.lay-list) { display: block; overflow: visible; scroll-snap-type: none; margin-top: 10px; }
+  .tk-board:not(.lay-list) .tk-col { display: none; border: 0; background: none; padding: 0; }
+  .tk-board:not(.lay-list) .tk-col.on { display: block; }
+  .tk-board:not(.lay-list) .tk-col.in-r { animation: tk-in-r .18s ease-out; }
+  .tk-board:not(.lay-list) .tk-col.in-l { animation: tk-in-l .18s ease-out; }
+  .tk-board:not(.lay-list) .tk-col > header { display: none; }
+  .tk-board:not(.lay-list) .tk-col[data-status="done"] > header { display: block; padding: 0 2px 6px; }
+  .tk-board:not(.lay-list) .tk-col[data-status="done"] > header > :not(.hint) { display: none; }
+  .tk-board:not(.lay-list) .tk-cards { max-height: none; overflow: visible; gap: 8px; }
+  .tk-board:not(.lay-list) .tk-empty { text-align: center; padding: 28px 0; }
+  .tk-board:not(.lay-list) .tk-card { cursor: pointer; }
+  /* move buttons name where the card goes; kept in Compact because you can't drag between tabs */
+  .tk-board:not(.lay-list).d-compact .tk-card-move { display: flex; }
+  .tk-card-move button { display: inline-flex; align-items: center; gap: 4px; font-size: .78rem; min-height: 32px; }
+  .mv-l { display: inline; }
+  .tk-board:not(.lay-list) .e-d { display: none; }
+  .tk-board:not(.lay-list) .e-m { display: inline; }
+}

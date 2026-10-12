@@ -29,6 +29,13 @@
   const now = () => new Date().toISOString();
   const today = () => dayKey(new Date());
 
+  // Board view settings (per device): layout, card density, hide empty columns, fit columns to the screen
+  const BV_KEY = 'devhub-board-view';
+  const BV_LAYOUTS = [['auto', '<span class="bv-d">Auto</span><span class="bv-m">Tabs</span>'], ['row', '1 row'], ['2', '2 rows'], ['3', '3 rows'], ['list', 'List']];
+  const BV_DENSITY = [['comfy', 'Comfortable'], ['compact', 'Compact'], ['titles', 'Titles only']];
+  let bvOpen = false; // phone: the view options are folded behind a “View” button
+  const bv = (() => { const d = { layout: 'auto', density: 'comfy', hideEmpty: false, fit: true, tab: 'todo' }; try { return { ...d, ...JSON.parse(localStorage.getItem(BV_KEY) || '{}') }; } catch { return d; } })();
+  const saveBv = () => { try { localStorage.setItem(BV_KEY, JSON.stringify(bv)); } catch { } };
   let ui = { view: 'week', day: null, nodateOpen: false, q: '', project: '', prio: '', status: '', sort: 'due', showDone: false, doneOpen: false };
 
   /* ---------------- data ---------------- */
@@ -280,9 +287,22 @@
   function renderBoard(d) {
     const week = addDays(today(), -7), all = filtered(live(d));
     const cols = Object.fromEntries(ORDER.map(k => [k, k === 'done' ? all.filter(x => x.status === 'done' && x.completedAt && dayKey(new Date(x.completedAt)) >= week).sort((a, b) => b.completedAt.localeCompare(a.completedAt)) : all.filter(x => x.status === k).sort(byPriority)]));
-    return `<div class="tk-board">${Object.entries(cols).map(([s, items]) => `<section class="tk-col" data-status="${s}"><header><h2>${STATUS[s]}</h2><span class="tk-count">${items.length}</span>${s === 'done' ? '<span class="hint">last 7 days</span>' : ''}</header>
+    let shown = Object.entries(cols);
+    if (bv.hideEmpty) shown = shown.filter(([s, items]) => items.length || s === 'todo');
+    if (!shown.some(([s]) => s === bv.tab)) bv.tab = shown[0][0];
+    const n = shown.length, per = bv.layout === 'row' ? n : bv.layout === '2' ? Math.ceil(n / 2) : bv.layout === '3' ? Math.ceil(n / 3) : n;
+    const seg = (key, list) => `<div class="seg" role="radiogroup" aria-label="${key === 'layout' ? 'Board layout' : 'Card size'}">${list.map(([k, l]) => `<button type="button" role="radio" aria-checked="${bv[key] === k}" data-bv="${key}" data-v="${k}">${l}</button>`).join('')}</div>`;
+    const bar = `<div class="tk-bv${bvOpen ? ' open' : ''}" aria-label="Board view options">
+        <div class="tk-stabs" role="tablist" aria-label="Status">${shown.map(([s, items]) => `<button type="button" role="tab" data-btab="${s}" aria-selected="${s === bv.tab}" class="st-${s}">${STATUS[s]}<span class="n">${items.length}</span></button>`).join('')}</div>
+        <button type="button" class="tk-bv-toggle ghost" data-bvt aria-expanded="${bvOpen}" aria-label="View options">${'<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M4 6h10M18 6h2M4 12h4M12 12h8M4 18h12M20 18h0"/><circle cx="16" cy="6" r="2"/><circle cx="10" cy="12" r="2"/><circle cx="18" cy="18" r="2"/></svg>'}</button>
+        <div class="tk-bv-body"><span class="tk-bv-l">Layout</span>${seg('layout', BV_LAYOUTS)}
+        <span class="tk-bv-l">Cards</span>${seg('density', BV_DENSITY)}
+        <label class="inline"><input type="checkbox" data-bvc="hideEmpty" ${bv.hideEmpty ? 'checked' : ''}> Hide empty columns</label>
+        ${bv.layout === 'list' ? '' : `<label class="inline" title="Long columns scroll on their own so the board fits the window"><input type="checkbox" data-bvc="fit" ${bv.fit ? 'checked' : ''}> Fit to screen</label>`}
+      </div></div>`;
+    return bar + `<div class="tk-board lay-${bv.layout} d-${bv.density}${bv.fit ? ' fit' : ''}" style="--n:${n};--c:${per}">${shown.map(([s, items]) => `<section class="tk-col${s === bv.tab ? ' on' : ''}" data-status="${s}"><header><h2>${STATUS[s]}</h2><span class="tk-count">${items.length}</span>${s === 'done' ? '<span class="hint">last 7 days</span>' : ''}</header>
       <div class="tk-cards" data-drop="${s}">${items.map(t => `<article class="tk-card p${t.priority} ${t.status}" draggable="true" data-id="${t.id}" tabindex="0"><div class="tk-card-top"><span class="prio-dot" title="${PRIO[t.priority]} priority"></span><span class="tk-title">${esc(t.title)}</span></div><div class="tk-meta">${metaHtml(t, d)}</div>
-      <div class="tk-card-move">${ORDER.indexOf(s) > 0 ? `<button class="ghost" data-move="${ORDER[ORDER.indexOf(s) - 1]}" aria-label="Move back">←</button>` : '<span></span>'}${ORDER.indexOf(s) < ORDER.length - 1 ? `<button class="ghost" data-move="${ORDER[ORDER.indexOf(s) + 1]}" aria-label="Move forward">→</button>` : ''}</div></article>`).join('') || '<p class="tk-empty">Drop tasks here</p>'}</div></section>`).join('')}</div>`;
+      <div class="tk-card-move">${ORDER.indexOf(s) > 0 ? `<button class="ghost" data-move="${ORDER[ORDER.indexOf(s) - 1]}" aria-label="Move back to ${STATUS[ORDER[ORDER.indexOf(s) - 1]]}">←<span class="mv-l">${STATUS[ORDER[ORDER.indexOf(s) - 1]]}</span></button>` : '<span></span>'}${ORDER.indexOf(s) < ORDER.length - 1 ? `<button class="ghost" data-move="${ORDER[ORDER.indexOf(s) + 1]}" aria-label="Move forward to ${STATUS[ORDER[ORDER.indexOf(s) + 1]]}"><span class="mv-l">${STATUS[ORDER[ORDER.indexOf(s) + 1]]}</span>→</button>` : ''}</div></article>`).join('') || `<p class="tk-empty"><span class="e-d">Drop tasks here</span><span class="e-m">Nothing in ${STATUS[s]}</span></p>`}</div></section>`).join('')}</div>`;
   }
   function renderAll(d) {
     let items = filtered(live(d)).filter(x => ui.status ? x.status === ui.status : ui.showDone || x.status !== 'done');
@@ -396,6 +416,9 @@
 
     const body = $('#tkBody');
     body.addEventListener('click', e => {
+      const bt = e.target.closest('[data-btab]'); if (bt) { showTab(bt.dataset.btab); return; }
+      if (e.target.closest('[data-bvt]')) { bvOpen = !bvOpen; const w = body.querySelector('.tk-bv'); w.classList.toggle('open', bvOpen); e.target.closest('[data-bvt]').setAttribute('aria-expanded', bvOpen); return; }
+      const bvb = e.target.closest('[data-bv]'); if (bvb) { bv[bvb.dataset.bv] = bvb.dataset.v; saveBv(); draw(); return; }
       const dayBtn = e.target.closest('[data-day]'); if (dayBtn) { ui.day = dayBtn.dataset.day === today() ? null : dayBtn.dataset.day; draw(); return; }
       const wk = e.target.closest('[data-wk]'); if (wk) { ui.day = wk.dataset.wk === 'today' ? null : addDays(ui.day || today(), 7 * +wk.dataset.wk); draw(); return; }
       const row = e.target.closest('[data-id]'), id = row?.dataset.id;
@@ -408,8 +431,22 @@
       const addOn = e.target.closest('[data-add-on]');
       if (addOn) { input.dataset.day = addOn.dataset.addOn; input.placeholder = `Add a task for ${dueLabel(addOn.dataset.addOn).text}…`; input.focus(); window.scrollTo({ top: 0, behavior: 'smooth' }); }
     });
+    // phone tabs: tap a status, or swipe the cards left/right to go to the next/previous status
+    function showTab(st, dir) {
+      bv.tab = st; saveBv();
+      body.querySelectorAll('[data-btab]').forEach(b => { const on = b.dataset.btab === st; b.setAttribute('aria-selected', on); if (on) b.scrollIntoView({ block: 'nearest', inline: 'center', behavior: 'smooth' }); });
+      body.querySelectorAll('.tk-col').forEach(c => { const on = c.dataset.status === st; c.classList.toggle('on', on); if (on && dir) { c.classList.remove('in-l', 'in-r'); void c.offsetWidth; c.classList.add(dir > 0 ? 'in-r' : 'in-l'); } });
+    }
+    let sx = null, sy = 0;
+    body.addEventListener('touchstart', e => { sx = e.target.closest('.tk-board:not(.lay-list)') && matchMedia('(max-width: 800px)').matches ? e.touches[0].clientX : null; sy = e.touches[0].clientY; }, { passive: true });
+    body.addEventListener('touchend', e => {
+      if (sx === null) return; const dx = e.changedTouches[0].clientX - sx, dy = e.changedTouches[0].clientY - sy; sx = null;
+      if (Math.abs(dx) < 70 || Math.abs(dy) > Math.abs(dx) * 0.6) return;
+      const tabs = [...body.querySelectorAll('[data-btab]')].map(b => b.dataset.btab), i = tabs.indexOf(bv.tab), j = i + (dx < 0 ? 1 : -1);
+      if (j >= 0 && j < tabs.length) showTab(tabs[j], dx < 0 ? 1 : -1);
+    }, { passive: true });
     body.addEventListener('keydown', e => { const card = e.target.closest('.tk-card'); if (card && e.key === 'Enter') openTask(card.dataset.id); });
-    body.addEventListener('change', e => { const f = e.target.dataset.f; if (!f) return; ui[f] = e.target.type === 'checkbox' ? e.target.checked : e.target.value; draw(); });
+    body.addEventListener('change', e => { if (e.target.dataset.bvc) { bv[e.target.dataset.bvc] = e.target.checked; saveBv(); draw(); return; } const f = e.target.dataset.f; if (!f) return; ui[f] = e.target.type === 'checkbox' ? e.target.checked : e.target.value; draw(); });
     body.addEventListener('toggle', e => { const c = e.target.classList; if (c?.contains('tk-done')) ui.doneOpen = e.target.open; else if (c?.contains('tk-nodate')) ui.nodateOpen = e.target.open; }, true);
     // Board drag and drop (mouse); touch uses the ← → buttons
     body.addEventListener('dragstart', e => { const c = e.target.closest('.tk-card'); if (c) { e.dataTransfer.setData('text/plain', c.dataset.id); e.dataTransfer.effectAllowed = 'move'; c.classList.add('dragging'); } });
