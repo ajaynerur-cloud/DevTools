@@ -1801,25 +1801,45 @@
         return f.map((x, i) => `${names[i].padEnd(13)} ${x}`).join('\n') + `\n\nNext runs (local time)\n${runs.join('\n') || 'None in the next year'}`;
       } }] }) }
   ];
-  const GROUPS = ['Formatters', 'Converters', 'Encode & decode', 'Text', 'Generators', 'Utilities'];
-  const TOOLS = [...FILE_TOOLS, ...BASIC_TOOLS].sort((a, b) => GROUPS.indexOf(a.group) - GROUPS.indexOf(b.group));
+  const SAP_TOOLS = [
+    { id: 'sap-cva', group: 'SAP tools', name: 'SAP CVA Orchestrator', desc: 'Map SAP Code Vulnerability Analyzer findings to CVA codes (exact code, then keyword match) for up to 11 systems at once. Builds the 13-sheet CVA report per system — priorities, P1/P2 backlog, RAG heatmap, unique objects — plus an executive summary and a trend-history JSON.',
+      render: el => window.DHSapCva ? window.DHSapCva.render(el, { esc, toast, saveBlob }) : (el.innerHTML = '<p class="out err">The SAP CVA module did not load. Reload the page.</p>') }
+  ];
+  const GROUPS = ['Formatters', 'Converters', 'SAP tools', 'Encode & decode', 'Text', 'Generators', 'Utilities'];
+  const TOOLS = [...FILE_TOOLS, ...SAP_TOOLS, ...BASIC_TOOLS].sort((a, b) => GROUPS.indexOf(a.group) - GROUPS.indexOf(b.group));
 
   // ---------- views ----------
   const view = () => $('#view');
   const syncLine = () => session.user || offline.meta ? `<div class="mobile-sync"><span class="ms-text">${esc($('#syncStatus')?.textContent || '')}</span>${!session.user && offline.meta ? '<button type="button" class="ghost" data-save-db hidden>Save file</button>' : ''}</div>` : '';
 
+  const headCollapsed = () => { try { return localStorage.getItem('dh-head-collapsed') === '1'; } catch { return false; } };
+  // each tool remembers whether its own header (title + description) is collapsed
+  const toolCollapsed = id => { try { return (JSON.parse(localStorage.getItem('dh-tool-collapsed') || '{}'))[id] === 1; } catch { return false; } };
+  const setToolCollapsed = (id, c) => { try { const m = JSON.parse(localStorage.getItem('dh-tool-collapsed') || '{}'); if (c) m[id] = 1; else delete m[id]; localStorage.setItem('dh-tool-collapsed', JSON.stringify(m)); } catch {} };
+  const groupCollapsed = g => { try { return (JSON.parse(localStorage.getItem('dh-group-collapsed') || '{}'))[g] === 1; } catch { return false; } };
+  const setGroupCollapsed = (g, c) => { try { const m = JSON.parse(localStorage.getItem('dh-group-collapsed') || '{}'); if (c) m[g] = 1; else delete m[g]; localStorage.setItem('dh-group-collapsed', JSON.stringify(m)); } catch {} };
+  const CHEVRON = '<svg viewBox="0 0 20 20" width="18" height="18" aria-hidden="true"><path d="M5 12.5 10 7.5l5 5" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>';
+  const wireCollapse = (box, btn, isCollapsed, save, labels) => { btn.onclick = () => { const c = !isCollapsed(); save(c); box.classList.toggle('collapsed', c); btn.setAttribute('aria-expanded', String(!c)); btn.title = c ? labels[1] : labels[0]; $('.sr', btn).textContent = btn.title; }; };
   function renderTools(sub) {
     const t = TOOLS.find(x => x.id === sub) || TOOLS[0];
     const grouped = GROUPS.map(g => [g, TOOLS.filter(x => x.group === g)]).filter(([, l]) => l.length);
-    view().innerHTML = `${syncLine()}<h1>Developer tools</h1><p class="lede">${TOOLS.length} tools in ${grouped.length} groups. Everything runs on your device — nothing you open or paste is uploaded.</p>
+    const hc = headCollapsed(), tc = toolCollapsed(t.id);
+    view().innerHTML = `${syncLine()}<header class="page-head${hc ? ' collapsed' : ''}" id="pageHead"><div class="ph-text"><h1>Developer tools</h1><p class="lede">${TOOLS.length} tools in ${grouped.length} groups. Everything runs on your device — nothing you open or paste is uploaded.</p></div>
+      <button type="button" class="ghost ph-toggle" id="phToggle" aria-expanded="${!hc}" aria-controls="pageHead" title="${hc ? 'Expand header' : 'Collapse header'}">${CHEVRON}<span class="sr">${hc ? 'Expand header' : 'Collapse header'}</span></button></header>
       <label class="picker"><span class="sr">Choose a tool</span><select id="picker">${grouped.map(([g, l]) => `<optgroup label="${esc(g)}">${l.map(x => `<option value="${x.id}" ${x.id === t.id ? 'selected' : ''}>${esc(x.name)}</option>`).join('')}</optgroup>`).join('')}</select></label>
       <div class="tools"><nav class="tool-list" aria-label="Tools"><input id="tf" type="search" placeholder="Filter tools" aria-label="Filter tools">
-      ${grouped.map(([g, l]) => `<div class="tool-group" data-g><h3>${esc(g)}</h3>${l.map(x => `<button data-id="${x.id}" class="${x.id === t.id ? 'active' : ''}" ${x.id === t.id ? 'aria-current="page"' : ''}>${esc(x.name)}</button>`).join('')}</div>`).join('')}</nav>
-      <section class="workspace panel"><div class="ws-head"><span class="ws-group">${esc(t.group)}</span><h2>${esc(t.name)}</h2></div><p class="hint ws-desc">${esc(t.desc)}</p><div id="ws"></div></section></div>`;
-    view().querySelectorAll('.tool-list button').forEach(b => b.onclick = () => location.hash = `tools/${b.dataset.id}`);
+      ${grouped.map(([g, l]) => { const gc = groupCollapsed(g); return `<div class="tool-group${gc ? ' collapsed' : ''}" data-g="${esc(g)}"><h3><button type="button" class="tg-toggle" aria-expanded="${!gc}" title="${gc ? 'Expand' : 'Collapse'} ${esc(g)}"><span class="tg-name">${esc(g)}</span><span class="tg-n">${l.length}</span>${CHEVRON}</button></h3>${l.map(x => `<button data-id="${x.id}" class="${x.id === t.id ? 'active' : ''}" ${x.id === t.id ? 'aria-current="page"' : ''}>${esc(x.name)}</button>`).join('')}</div>`; }).join('')}</nav>
+      <section class="workspace panel"><header class="ws-top${tc ? ' collapsed' : ''}" id="wsTop"><div class="ws-head"><span class="ws-group">${esc(t.group)}</span><h2>${esc(t.name)}</h2></div>
+        <button type="button" class="ghost ph-toggle ws-toggle" id="wsToggle" aria-expanded="${!tc}" aria-controls="wsDesc" title="${tc ? 'Show description' : 'Hide description'}">${CHEVRON}<span class="sr">${tc ? 'Show description' : 'Hide description'}</span></button>
+        <p class="hint ws-desc" id="wsDesc">${esc(t.desc)}</p></header><div id="ws"></div></section></div>`;
+    wireCollapse($('#pageHead'), $('#phToggle'), headCollapsed, c => { try { localStorage.setItem('dh-head-collapsed', c ? '1' : '0'); } catch {} }, ['Collapse header', 'Expand header']);
+    wireCollapse($('#wsTop'), $('#wsToggle'), () => toolCollapsed(t.id), c => setToolCollapsed(t.id, c), ['Hide description', 'Show description']);
+    view().querySelectorAll('.tool-list button[data-id]').forEach(b => b.onclick = () => location.hash = `tools/${b.dataset.id}`);
     $('#picker').onchange = e => location.hash = `tools/${e.target.value}`;
     $('#tf').oninput = e => { const q = e.target.value.toLowerCase();
-      view().querySelectorAll('.tool-group').forEach(g => { let any = false; g.querySelectorAll('button').forEach(b => { const hit = (b.textContent + ' ' + g.firstElementChild.textContent).toLowerCase().includes(q); b.hidden = !hit; any ||= hit; }); g.hidden = !any; }); };
+      $('.tool-list').classList.toggle('filtering', !!q);   // while filtering, matches show even in collapsed groups
+      view().querySelectorAll('.tool-group').forEach(g => { let any = false; g.querySelectorAll('button[data-id]').forEach(b => { const hit = (b.textContent + ' ' + g.dataset.g).toLowerCase().includes(q); b.hidden = !hit; any ||= hit; }); g.hidden = !any; }); };
+    view().querySelectorAll('.tg-toggle').forEach(b => b.onclick = () => { const g = b.closest('.tool-group'), c = !g.classList.contains('collapsed'); g.classList.toggle('collapsed', c); setGroupCollapsed(g.dataset.g, c); b.setAttribute('aria-expanded', String(!c)); b.title = (c ? 'Expand ' : 'Collapse ') + g.dataset.g; });
     cancelJob();
     t.render($('#ws'));
   }

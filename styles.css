@@ -893,3 +893,94 @@ main { overflow-x: clip; }
   .tk-dense .tk-main { flex-direction: row; flex-wrap: wrap; align-items: center; align-content: center; min-height: 38px !important; gap: 0 10px; }
   .tk-dense .tk-row { padding: 4px 10px 4px 12px; }
 }
+
+/* ================= Collapsible page header (Tools) ================= */
+.page-head { display: flex; align-items: flex-start; gap: 12px; margin-bottom: 24px; }
+.page-head .ph-text { flex: 1; min-width: 0; }
+.page-head .lede { margin-bottom: 0; }
+.ph-toggle { flex: none; display: inline-grid; place-items: center; width: 36px; height: 36px; padding: 0; border-radius: 10px; color: var(--muted); border: 1px solid var(--line) !important; background: var(--surface); margin-top: 4px; }
+.ph-toggle:hover { color: var(--accent); border-color: var(--accent) !important; }
+.ph-toggle svg { transition: transform .2s ease; }
+.page-head.collapsed { margin-bottom: 14px; align-items: center; }
+.page-head.collapsed h1 { font-size: 1rem; margin: 0; letter-spacing: 0; color: var(--muted); }
+.page-head.collapsed .lede { display: none; }
+.page-head.collapsed .ph-toggle { width: 30px; height: 30px; margin-top: 0; }
+.page-head.collapsed .ph-toggle svg { transform: rotate(180deg); }
+@media (max-width: 800px) { .page-head.collapsed { margin-bottom: 10px; } }
+
+/* ================= SAP tools › CVA Orchestrator ================= */
+.cva { display: flex; flex-direction: column; gap: 14px; }
+.cva-card { border: 1px solid var(--line); border-radius: 12px; padding: 14px 16px; background: var(--surface); transition: border-color .15s, background .15s; }
+.cva-card.over { border-color: var(--accent); background: color-mix(in srgb, var(--accent) 6%, var(--surface)); }
+.cva-card-h { display: flex; justify-content: space-between; align-items: flex-start; gap: 12px; flex-wrap: wrap; margin-bottom: 10px; }
+.cva-card-h h3 { font-size: .95rem; margin: 0 0 2px; }
+.cva-card-h .hint { margin: 0; max-width: 70ch; }
+.cva-card code { font-family: var(--mono); font-size: .78rem; background: var(--paper); padding: 1px 5px; border-radius: 4px; }
+.cva-apped { margin-top: 12px; }
+.cva-apped .table-wrap td { overflow: visible; }
+.cva-apptable input { padding: 5px 8px; font-size: .82rem; min-width: 110px; }
+.cva-drop { padding: 22px; }
+.cva-drop .hint { margin: 0; }
+.cva-ft { max-height: none; }
+.cva-ft td { overflow: visible; vertical-align: middle; }
+.cva-ft th, .cva-ft td { padding: 6px 8px; }
+.cva-ft select, .cva-ft input[type=date] { padding: 5px 8px; font-size: .82rem; min-width: 0; width: auto; }
+.cva-ft select[data-sheet] { max-width: 150px; }
+.cva-ft select[data-app] { max-width: 130px; }
+.cva-sys { line-height: 1.25; }
+.cva-sys b { display: block; font-size: .8rem; }
+.cva-sys .hint { display: block; max-width: 180px; overflow: hidden; text-overflow: ellipsis; font-size: .76rem; }
+.cva-fn { display: inline-block; max-width: 170px; overflow: hidden; text-overflow: ellipsis; vertical-align: middle; font-weight: 600; }
+.cva-sm { padding: 4px 10px !important; font-size: .8rem !important; }
+.cva-opts { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 8px 14px; align-items: center; }
+.cva-opts label.check { display: flex; gap: 8px; align-items: center; margin: 0; font-weight: 500; }
+.cva-opts input[type=text] { padding: 6px 10px; font-size: .85rem; }
+.cva-opts input:disabled { opacity: .5; }
+.cva-hist-hint { margin: 10px 0 0; }
+.cva-tpl { margin-top: 12px; padding-top: 12px; border-top: 1px dashed var(--line); }
+.cva-tpl select { flex: 0 1 320px !important; padding: 6px 10px; font-size: .85rem; }
+.cva-run { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+button.cva-go { min-width: 180px; padding: 10px 18px; font-size: .95rem; background: var(--ok); border-color: var(--ok); }
+button.cva-go:disabled { opacity: .45; cursor: not-allowed; }
+.cva-prog .progress { margin: 0; max-width: none; height: 8px; background: var(--paper); border: 1px solid var(--line); border-radius: 999px; overflow: hidden; }
+.cva-prog .progress span { display: block; height: 100%; background: var(--accent); border-radius: 999px; transition: width .25s ease; }
+.cva-results .result-head { margin-top: 0; }
+.cva-rt { max-height: none; }
+.cva-rt th, .cva-rt td { padding: 6px 8px; }
+.cva-rt td:first-child { max-width: 260px; font-weight: 600; }
+.cva-rt td:last-child { text-align: right; }
+.cva-rt .p1 { background: color-mix(in srgb, #FFC7CE 70%, transparent) !important; color: #9C0006; text-align: center; font-weight: 600; }
+.cva-rt .p2 { background: color-mix(in srgb, #FFEB9C 70%, transparent) !important; color: #7A5B00; text-align: center; font-weight: 600; }
+.cva-rt .p3 { background: color-mix(in srgb, #C6EFCE 70%, transparent) !important; color: #1F6B35; text-align: center; }
+.cva-rt .p4 { background: color-mix(in srgb, #D9EAD3 70%, transparent) !important; color: #3D5A33; text-align: center; }
+.cva-rt .cva-extra td { font-weight: 500; }
+.cva-logbox { border: 1px solid var(--line); border-radius: 12px; background: var(--surface); }
+.cva-logbox summary { cursor: pointer; padding: 10px 14px; font-weight: 600; font-size: .9rem; display: flex; align-items: center; justify-content: space-between; }
+.cva-logbox summary button { padding: 2px 10px; font-size: .78rem; }
+.cva-log { margin: 0; padding: 12px 14px; background: #0B1220; color: #8BE9C4; font: .76rem/1.55 var(--mono); max-height: 320px; overflow: auto; white-space: pre; border-radius: 0 0 11px 11px; }
+@media (max-width: 800px) { .cva-opts { grid-template-columns: 1fr; } button.cva-go { width: 100%; } }
+
+/* ================= Collapsible tool header (each tool remembers its own state) ================= */
+.ws-top { display: grid; grid-template-columns: minmax(0, 1fr) auto; column-gap: 12px; align-items: start; }
+.ws-top .ws-head { grid-column: 1; }
+.ws-top .ws-toggle { grid-column: 2; grid-row: 1; margin-top: 0; width: 32px; height: 32px; }
+.ws-top .ws-desc { grid-column: 1 / -1; }
+.ws-top.collapsed { margin-bottom: 12px; padding-bottom: 10px; border-bottom: 1px solid var(--line); align-items: center; }
+.ws-top.collapsed .ws-head h2 { margin: 0; font-size: 1.05rem; }
+.ws-top.collapsed .ws-desc { display: none; }
+.ws-top.collapsed .ws-toggle svg { transform: rotate(180deg); }
+
+/* ================= Collapsible tool groups (Formatters, Converters, …) ================= */
+.tool-group h3 { margin: 10px 0 2px; }
+.tool-group:first-of-type h3 { margin-top: 0; }
+.tool-list .tg-toggle { display: flex; align-items: center; gap: 6px; width: 100%; padding: 5px 8px 5px 10px; border-radius: 6px;
+  font: 600 .78rem var(--sans); color: var(--muted); letter-spacing: .01em; background: transparent; border: 0; text-align: left; cursor: pointer; }
+.tool-list .tg-toggle:hover { background: var(--surface); color: var(--ink); }
+.tg-name { flex: 1; }
+.tg-n { font-size: .7rem; font-weight: 600; min-width: 20px; padding: 0 6px; border-radius: 999px; background: var(--surface); border: 1px solid var(--line); text-align: center; line-height: 1.5; opacity: 0; transition: opacity .15s; }
+.tg-toggle svg { width: 14px; height: 14px; flex: none; transition: transform .2s ease; }
+.tool-group.collapsed .tg-toggle svg { transform: rotate(180deg); }
+.tool-group.collapsed .tg-n { opacity: 1; }
+.tool-group.collapsed > button[data-id]:not(.active) { display: none; }   /* the open tool stays visible */
+.tool-list.filtering .tool-group.collapsed > button[data-id]:not([hidden]) { display: block; }
+.tool-list.filtering .tg-n { opacity: 0; }

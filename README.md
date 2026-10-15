@@ -3,7 +3,7 @@
 A developer toolkit for phone, tablet and desktop, with private user accounts:
 
 - **Tasks:** a full task tracker with Today, Upcoming, Board, All tasks and Insights views.
-- **32 developer tools:** formatters, large-file converters, a data migrator, a text → JSON/XML mapper, encoders and generators. They run entirely in the browser and need no account.
+- **33 developer tools:** formatters, large-file converters, a data migrator, a text → JSON/XML mapper, encoders and generators. They run entirely in the browser and need no account.
 - **Tool store links:** your own list of registries and marketplaces.
 - **Accounts:** registration and sign-in, where every user sees only their own data.
 
@@ -64,6 +64,17 @@ The developer tools never need either; they always work without signing in.
 **Moving between modes**
 - **Offline to online:** sign in, then use Account → Import backup with your `.json` or `.sqlite` file.
 - **Online to offline:** use Account → Export JSON or Export SQLite, then use "Open database file" on any device.
+
+## SAP tools › SAP CVA Orchestrator
+
+Tools → SAP tools → **SAP CVA Orchestrator** is the browser version of `SAP_CVA_Orchestrator_v2.pyw`. It runs entirely on the device, in a background worker.
+
+1. **Applications:** open your `applications.json` (same format as the desktop tool) or add applications on the page. They're remembered on this device.
+2. **Source files:** up to 11 CVA findings workbooks, one row each, with worksheet, Application ID and scan date.
+3. **Outputs:** one `<System>_<SystemNo>_<AppId>_CVA_Report.xlsx` per file, with the same 13 sheets, colours, filters and frozen headers. Optionally, the `SAP_CVA_Executive_Summary.xlsx` (Consolidated_View) and the trend history `SAP_CVA_History.json`. Open last run's history and tick *Subsequent run* to append.
+4. Download each file, all of them as a .zip, or (Chrome/Edge desktop) save them straight into a folder.
+
+Mapping is identical to the desktop tool: an exact CVA code in any text column wins, otherwise the best keyword/description score (≥ 20). The engine is `sap-cva-core.js`; styled Excel output uses `vendor/xlsx-style.min.js` ([xlsx-js-style](https://github.com/gitbrent/xlsx-js-style), Apache-2.0).
 
 ## Text → JSON / XML mapper
 
