@@ -989,3 +989,13 @@ button.cva-go:disabled { opacity: .45; cursor: not-allowed; }
 .cva-outdir button { padding: 6px 12px; font-size: .85rem; }
 .cva-outdir-name { overflow-wrap: anywhere; }
 .cva-saved { color: var(--ok); }
+.cva-appbar { margin-bottom: 10px; }
+.cva-dirty { font-size: .8rem; font-weight: 600; color: #B7791F; }
+.cva-appwrap { max-height: 320px; }
+.cva-apptable td { vertical-align: middle; }
+.cva-apptable tfoot td { position: sticky; bottom: 0; background: var(--surface); border-top: 1px solid var(--line); }
+.cva-apptable tr.cva-new td { background: color-mix(in srgb, var(--ok) 10%, transparent) !important; }
+.cva-run button.danger { margin-left: auto; }
+.cva-run button.danger.armed { background: var(--danger); color: #fff; border-color: var(--danger); }
+@media (max-width: 800px) { .cva-run button.danger { margin-left: 0; } }
+.cva-run button:disabled { opacity: .45; cursor: not-allowed; }

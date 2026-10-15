@@ -18,7 +18,7 @@
 
   // state survives switching tools during the session
   const S = window.__sapCvaState ||= {
-    apps: ls.get(LS_APPS, {}), appsName: ls.get(LS_APPS + '-name', ''),
+    apps: ls.get(LS_APPS, {}), appsName: ls.get(LS_APPS + '-name', ''), appsDirty: ls.get(LS_APPS + '-dirty', false), appsHandle: null, appsHandleLoaded: false, historyIn: undefined,
     rows: [], outDir: null, outDirLoaded: false, history: null, historyName: '', results: null, log: [],
     opts: Object.assign({ summary: true, summaryName: 'SAP_CVA_Executive_Summary.xlsx', keepHistory: true, subsequent: true, historyName: 'SAP_CVA_History.json' }, ls.get(LS_OPTS, {}))
   };
@@ -31,7 +31,9 @@
     rq.onsuccess = () => { try { const tx = rq.result.transaction('kv', mode), r = fn(tx.objectStore('kv')); tx.oncomplete = () => ok(r && r.result); tx.onerror = () => no(tx.error); } catch (e) { no(e); } };
   });
   const folderStore = { get: () => idb('readonly', s => s.get('outDir')).catch(() => null), set: h => idb('readwrite', s => s.put(h, 'outDir')).catch(() => {}), del: () => idb('readwrite', s => s.delete('outDir')).catch(() => {}) };
+  const appsFileStore = { get: () => idb('readonly', s => s.get('appsFile')).catch(() => null), set: h => idb('readwrite', s => s.put(h, 'appsFile')).catch(() => {}), del: () => idb('readwrite', s => s.delete('appsFile')).catch(() => {}) };
   const canPickFolder = () => typeof window.showDirectoryPicker === 'function';
+  const canOpenFile = () => typeof window.showOpenFilePicker === 'function';
 
   function render(el, H) {
     const { esc, toast, saveBlob } = H, $ = (s, r = el) => r.querySelector(s), $$ = (s, r = el) => [...r.querySelectorAll(s)];
@@ -41,12 +43,12 @@
         <section class="cva-card">
           <header class="cva-card-h"><div><h3>1 · Applications</h3><p class="hint">Application ID → system number, system name and business area. Same <code>applications.json</code> format as the desktop tool.</p></div>
             <span class="chip" data-appcount></span></header>
-          <div class="row">
-            <label class="btn primary">Open applications.json<input type="file" accept=".json,application/json" hidden data-appfile></label>
-            <button type="button" data-appedit>Edit / create</button>
-            <button type="button" data-appsave>Download applications.json</button>
+          <div class="row cva-appbar">
+            ${canOpenFile() ? '<button type="button" class="primary" data-appopen>Open applications.json</button>' : '<label class="btn primary">Open applications.json<input type="file" accept=".json,application/json" hidden data-appfile></label>'}
+            <button type="button" data-appsave>Save applications.json</button>
+            <span class="cva-dirty" data-appdirty hidden>● Unsaved changes</span>
           </div>
-          <div class="cva-apped" data-apped hidden></div>
+          <div class="cva-apped" data-apped></div>
         </section>
 
         <section class="cva-card">
@@ -78,7 +80,9 @@
 
         <div class="cva-run">
           <button type="button" class="primary cva-go" data-run>Run processing</button>
+          <button type="button" data-rerun hidden title="Clear the results and log, then process the same files again">↻ Re-run</button>
           <span class="hint" data-why></span>
+          <button type="button" class="danger" data-clearall title="Remove the source files, created files and log. Applications and settings stay.">Clear all</button>
         </div>
         <div class="cva-prog" data-prog hidden><div class="progress"><span style="width:0"></span></div></div>
         <div class="cva-results" data-results hidden></div>
@@ -93,29 +97,65 @@
     $('[data-clearlog]').onclick = e => { e.preventDefault(); S.log = []; logEl.textContent = ''; };
 
     // ---------- applications ----------
-    const saveApps = () => { ls.set(LS_APPS, S.apps); ls.set(LS_APPS + '-name', S.appsName); };
-    const paintAppCount = () => { const n = appIds().length; $('[data-appcount]').textContent = n ? `${n} application${n === 1 ? '' : 's'}${S.appsName ? ' · ' + S.appsName : ''}` : 'None loaded'; };
-    $('[data-appfile]').onchange = async e => {
-      const f = e.target.files[0]; e.target.value = ''; if (!f) return;
-      try { const map = SapCva.parseApplications(JSON.parse((await f.text()).replace(/^﻿/, ''))); S.apps = map; S.appsName = f.name; saveApps(); log(`Loaded ${Object.keys(map).length} application(s) from ${f.name}`); toast(`Loaded ${Object.keys(map).length} applications`); paintAppCount(); paintFiles(); if (!$('[data-apped]').hidden) paintAppEditor(); }
-      catch (err) { toast('Applications JSON error'); log('Applications JSON error: ' + err.message.replace(/\n+/g, ' ')); alertBox(err.message); }
+    const saveApps = () => { ls.set(LS_APPS, S.apps); ls.set(LS_APPS + '-name', S.appsName); ls.set(LS_APPS + '-dirty', S.appsDirty); };
+    const paintAppCount = () => {
+      const n = appIds().length;
+      $('[data-appcount]').textContent = n ? `${n} application${n === 1 ? '' : 's'}${S.appsName ? ' · ' + S.appsName : ''}` : 'None loaded';
+      $('[data-appdirty]').hidden = !S.appsDirty;
+      const sv = $('[data-appsave]'); sv.classList.toggle('primary', !!S.appsDirty); sv.disabled = !n;
+      sv.textContent = S.appsHandle ? `Save to ${S.appsHandle.name}` : 'Save applications.json';
     };
     const alertBox = msg => { const r = $('[data-results]'); r.hidden = false; r.innerHTML = `<div class="out err">${esc(msg)}</div>`; };
-    $('[data-appsave]').onclick = () => { if (!appIds().length) return toast('No applications to save yet'); saveBlob(new Blob([JSON.stringify(S.apps, null, 2)], { type: 'application/json' }), 'applications.json'); };
-    $('[data-appedit]').onclick = () => { const ed = $('[data-apped]'); ed.hidden = !ed.hidden; if (!ed.hidden) paintAppEditor(); };
+    function loadAppsText(text, name) {
+      const map = SapCva.parseApplications(JSON.parse(text.replace(/^﻿/, '')));
+      S.apps = map; S.appsName = name; S.appsDirty = false; saveApps();
+      log(`Loaded ${Object.keys(map).length} application(s) from ${name}`); toast(`Loaded ${Object.keys(map).length} applications`);
+      paintAppCount(); paintAppEditor(); paintFiles();
+    }
+    const appErr = err => { toast('Applications JSON error'); log('Applications JSON error: ' + err.message.replace(/\n+/g, ' ')); alertBox(err.message); };
+    const fileInput = $('[data-appfile]');
+    if (fileInput) fileInput.onchange = async e => { const f = e.target.files[0]; e.target.value = ''; if (!f) return; try { loadAppsText(await f.text(), f.name); } catch (err) { appErr(err); } };
+    const openBtn = $('[data-appopen]');
+    if (openBtn) openBtn.onclick = async () => {   // Chrome/Edge: keep the file handle so Save writes back into the same file
+      try {
+        const [h] = await window.showOpenFilePicker({ id: 'sap-cva-apps', types: [{ description: 'Applications JSON', accept: { 'application/json': ['.json'] } }] });
+        const f = await h.getFile(); loadAppsText(await f.text(), f.name); S.appsHandle = h; appsFileStore.set(h); paintAppCount();
+      } catch (err) { if (err.name !== 'AbortError') appErr(err); }
+    };
+    if (canOpenFile() && !S.appsHandleLoaded) { S.appsHandleLoaded = true; appsFileStore.get().then(h => { if (h && !S.appsHandle && h.name === S.appsName) { S.appsHandle = h; paintAppCount(); } }); }
+    $('[data-appsave]').onclick = async () => {
+      if (!appIds().length) return toast('No applications to save yet');
+      const json = JSON.stringify(S.apps, null, 2) + '\n', name = S.appsName || 'applications.json';
+      if (S.appsHandle) {
+        try {
+          const o = { mode: 'readwrite' };
+          if ((await S.appsHandle.queryPermission(o)) !== 'granted' && (await S.appsHandle.requestPermission(o)) !== 'granted') throw new Error('permission');
+          const w = await S.appsHandle.createWritable(); await w.write(json); await w.close();
+          S.appsDirty = false; saveApps(); paintAppCount(); log(`Saved ${appIds().length} application(s) to ${S.appsHandle.name}`); toast(`Saved to ${S.appsHandle.name}`); return;
+        } catch (e) { log(`Could not write to ${S.appsHandle.name} — downloading a copy instead`); }
+      }
+      await saveBlob(new Blob([json], { type: 'application/json' }), name);
+      S.appsDirty = false; saveApps(); paintAppCount(); log(`Downloaded ${name} (${appIds().length} applications)`);
+    };
     function paintAppEditor() {
-      const ed = $('[data-apped]'), list = Object.entries(S.apps);
-      ed.innerHTML = `<div class="table-wrap"><table class="cva-apptable"><thead><tr><th>Application ID</th><th>System no.</th><th>System name</th><th>Business area</th><th></th></tr></thead><tbody>
-        ${list.map(([id, d]) => `<tr><td>${esc(id)}</td><td>${esc(d.system_no)}</td><td>${esc(d.system_name)}</td><td>${esc(d.business_area)}</td><td><button type="button" class="ghost danger" data-del="${esc(id)}" aria-label="Remove ${esc(id)}">✕</button></td></tr>`).join('')}
-        <tr class="cva-newapp"><td><input data-n="id" placeholder="APP003"></td><td><input data-n="system_no" placeholder="S4H300"></td><td><input data-n="system_name" placeholder="S/4HANA QA"></td><td><input data-n="business_area" placeholder="Finance"></td><td><button type="button" class="primary" data-addapp>Add</button></td></tr>
-        </tbody></table></div><p class="hint">Saved on this device. Use <b>Download applications.json</b> to share it with the desktop tool.</p>`;
-      $$('[data-del]', ed).forEach(b => b.onclick = () => { delete S.apps[b.dataset.del]; saveApps(); paintAppEditor(); paintAppCount(); paintFiles(); });
-      $('[data-addapp]', ed).onclick = () => {
+      const ed = $('[data-apped]'), list = Object.entries(S.apps), used = new Set(S.rows.map(r => r.app));
+      ed.innerHTML = `<div class="table-wrap cva-appwrap"><table class="cva-apptable"><thead><tr><th>Application ID</th><th>System no.</th><th>System name</th><th>Business area</th><th></th></tr></thead><tbody>
+        ${list.length ? list.map(([id, d]) => `<tr class="${S.appsNew && S.appsNew.has(id) ? 'cva-new' : ''}"><td class="mono"><b>${esc(id)}</b></td><td class="mono">${esc(d.system_no)}</td><td>${esc(d.system_name)}</td><td>${esc(d.business_area)}</td>
+          <td>${used.has(id) ? '<span class="hint">in use</span>' : `<button type="button" class="ghost danger cva-sm" data-del="${esc(id)}" aria-label="Remove ${esc(id)}">✕</button>`}</td></tr>`).join('')
+          : '<tr><td colspan="5" class="hint">No applications yet — open your applications.json, or add them below.</td></tr>'}
+        </tbody><tfoot><tr class="cva-newapp"><td><input data-n="id" placeholder="Application ID"></td><td><input data-n="system_no" placeholder="System no."></td><td><input data-n="system_name" placeholder="System name"></td><td><input data-n="business_area" placeholder="Business area"></td><td><button type="button" class="primary cva-sm" data-addapp>+ Add</button></td></tr></tfoot></table></div>
+        <p class="hint">Applications are remembered on this device. After adding or removing one, use <b>${S.appsHandle ? 'Save to ' + esc(S.appsHandle.name) : 'Save applications.json'}</b> to update the file${S.appsHandle ? '' : ' (it downloads a new copy)'}.</p>`;
+      $$('[data-del]', ed).forEach(b => b.onclick = () => { delete S.apps[b.dataset.del]; S.appsDirty = true; saveApps(); log(`Removed application ${b.dataset.del}`); paintAppEditor(); paintAppCount(); paintFiles(); });
+      const add = () => {
         const v = Object.fromEntries($$('[data-n]', ed).map(i => [i.dataset.n, i.value.trim()]));
         if (!v.id || !v.system_no || !v.system_name || !v.business_area) return toast('Fill in all four fields');
-        S.apps[v.id] = { system_no: v.system_no, system_name: v.system_name, business_area: v.business_area }; saveApps(); paintAppEditor(); paintAppCount(); paintFiles();
-        $('[data-n="id"]', ed).focus();
+        if (S.apps[v.id]) return toast(`${v.id} already exists`);
+        S.apps[v.id] = { system_no: v.system_no, system_name: v.system_name, business_area: v.business_area }; S.appsDirty = true;
+        (S.appsNew ||= new Set()).add(v.id); saveApps(); log(`Added application ${v.id} (${v.system_no} · ${v.system_name})`);
+        paintAppEditor(); paintAppCount(); paintFiles(); $('[data-n="id"]', ed).focus();
       };
+      $('[data-addapp]', ed).onclick = add;
+      $$('[data-n]', ed).forEach(i => i.onkeydown = e => { if (e.key === 'Enter') add(); });
     }
 
     // ---------- file rows ----------
@@ -144,9 +184,9 @@
         const r = S.rows[+tr.dataset.i];
         $('[data-pick]', tr).onchange = e => e.target.files[0] && loadInto(r, e.target.files[0]);
         $('[data-sheet]', tr).onchange = e => { r.sheet = e.target.value; };
-        $('[data-app]', tr).onchange = e => { r.app = e.target.value; paintFiles(); };
+        $('[data-app]', tr).onchange = e => { r.app = e.target.value; paintFiles(); paintAppEditor(); };
         $('[data-date]', tr).onchange = e => { r.date = e.target.value; check(); };
-        $('[data-rm]', tr).onclick = () => { S.rows.splice(S.rows.indexOf(r), 1); paintFiles(); };
+        $('[data-rm]', tr).onclick = () => { S.rows.splice(S.rows.indexOf(r), 1); paintFiles(); paintAppEditor(); };
       });
       check();
     }
@@ -177,7 +217,7 @@
     }
     $('[data-histfile]').onchange = async e => {
       const f = e.target.files[0]; e.target.value = ''; if (!f) return;
-      try { const d = JSON.parse((await f.text()).replace(/^﻿/, '')); if (!Array.isArray(d)) throw new Error('expected a JSON list of run records'); S.history = d; S.historyName = f.name; S.opts.historyName = f.name; $('[data-o="historyName"]').value = f.name; ls.set(LS_OPTS, S.opts); log(`History JSON: ${f.name} (${d.length} runs, will append)`); }
+      try { const d = JSON.parse((await f.text()).replace(/^﻿/, '')); if (!Array.isArray(d)) throw new Error('expected a JSON list of run records'); S.history = d; S.historyIn = d; S.historyName = f.name; S.opts.historyName = f.name; $('[data-o="historyName"]').value = f.name; ls.set(LS_OPTS, S.opts); log(`History JSON: ${f.name} (${d.length} runs, will append)`); }
       catch (err) { toast('History JSON error'); log(`History JSON error: ${err.message}`); }
       paintOpts();
     };
@@ -212,10 +252,13 @@
         : S.rows.some(r => !r.app || !S.apps[r.app]) ? 'Every row needs an Application ID.'
         : S.rows.some(r => !r.date) ? 'Every row needs a scan date.' : '';
       $('[data-run]').disabled = !!why || !!worker; $('[data-why]').textContent = worker ? 'Processing…' : why;
+      $('[data-rerun]').hidden = !S.results; $('[data-rerun]').disabled = !!why || !!worker;
+      $('[data-clearall]').disabled = !!worker || (!S.rows.length && !S.results && !S.log.length);
     }
     $('[data-run]').onclick = async () => {
       let outOk = false;   // ask for folder access now, while the click still counts as a user action
       if (S.outDir) { outOk = await folderAccess(S.outDir, true); if (!outOk) log(`No permission for folder "${S.outDir.name}" — files will be offered as downloads.`); }
+      if (S.historyIn === undefined) S.historyIn = S.history;   // the history as opened, before any run appended to it
       const prog = $('[data-prog]'), bar = $('.progress span', prog), res = $('[data-results]');
       prog.hidden = false; bar.style.width = '2%'; res.hidden = true; $('[data-logbox]').open = true;
       const jobs = [];
@@ -242,12 +285,31 @@
       };
       worker.onerror = e => { finish(); prog.hidden = true; log('ERROR | ' + (e.message || 'worker stopped')); alertBox('The background worker stopped. The files may be too large for this device’s memory.'); };
       log(`Run started: ${jobs.length} file(s).`);
-      worker.postMessage({ jobs, makeSummary: S.opts.summary, keepHistory: S.opts.keepHistory, subsequent: S.opts.subsequent, history: S.opts.subsequent ? S.history : null }, jobs.map(j => j.buffer));
+      worker.postMessage({ jobs, makeSummary: S.opts.summary, keepHistory: S.opts.keepHistory, subsequent: S.opts.subsequent, history: S.opts.subsequent ? S.historyIn : null }, jobs.map(j => j.buffer));
+    };
+
+    // ---------- re-run / clear ----------
+    function resetRun() {
+      S.results = null; S.log = []; logEl.textContent = ''; $('[data-logbox]').open = false;
+      const r = $('[data-results]'); r.hidden = true; r.innerHTML = ''; $('[data-prog]').hidden = true; $('.progress span', $('[data-prog]')).style.width = '0';
+      if (S.historyIn !== undefined) { S.history = S.historyIn; paintOpts(); }   // drop what the last run appended
+    }
+    $('[data-rerun]').onclick = () => { resetRun(); log('Re-run: results and log cleared; processing the same files again.'); $('[data-run]').click(); };
+    const clr = $('[data-clearall]');
+    clr.onclick = () => {
+      if (clr.dataset.armed !== '1') {   // two-step confirm without a browser dialog
+        clr.dataset.armed = '1'; clr.textContent = 'Click again to clear'; clr.classList.add('armed');
+        clearTimeout(clr._t); clr._t = setTimeout(() => { clr.dataset.armed = ''; clr.textContent = 'Clear all'; clr.classList.remove('armed'); }, 3000);
+        return;
+      }
+      clearTimeout(clr._t); clr.dataset.armed = ''; clr.textContent = 'Clear all'; clr.classList.remove('armed');
+      const n = S.rows.length; S.rows = []; resetRun(); paintFiles(); paintAppEditor();
+      toast(`Cleared ${n} file${n === 1 ? '' : 's'}, results and log — applications kept`);
     };
 
     // ---------- results ----------
     function paintResults() {
-      const R = S.results, res = $('[data-results]'); if (!R) return;
+      const R = S.results, res = $('[data-results]'); check(); if (!R) return;
       const all = [...R.files, R.summary, R.history].filter(Boolean);
       res.hidden = false;
       res.innerHTML = `<div class="result-head"><div><b>${R.files.length} report${R.files.length === 1 ? '' : 's'} ready</b><div class="hint">${(R.ms / 1000).toFixed(1)} s · ${fmtBytes(all.reduce((a, f) => a + f.blob.size, 0))} in total${R.savedTo ? ` · <b class="cva-saved">✓ saved to ${esc(R.savedTo)}</b>` : ''}</div></div>
@@ -277,7 +339,7 @@
       };
     }
 
-    paintAppCount(); paintFiles(); paintOpts(); paintOutDir(); paintResults();
+    paintAppCount(); paintAppEditor(); paintFiles(); paintOpts(); paintOutDir(); paintResults(); check();
     if (worker) { $('[data-prog]').hidden = false; }
   }
 
