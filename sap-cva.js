@@ -19,10 +19,19 @@
   // state survives switching tools during the session
   const S = window.__sapCvaState ||= {
     apps: ls.get(LS_APPS, {}), appsName: ls.get(LS_APPS + '-name', ''),
-    rows: [], history: null, historyName: '', results: null, log: [],
+    rows: [], outDir: null, outDirLoaded: false, history: null, historyName: '', results: null, log: [],
     opts: Object.assign({ summary: true, summaryName: 'SAP_CVA_Executive_Summary.xlsx', keepHistory: true, subsequent: true, historyName: 'SAP_CVA_History.json' }, ls.get(LS_OPTS, {}))
   };
   let worker = null;
+  // The chosen output folder (Chrome/Edge desktop) is kept in IndexedDB so it is remembered between visits.
+  const idb = (mode, fn) => new Promise((ok, no) => {
+    let rq; try { rq = indexedDB.open('dh-sapcva', 1); } catch (e) { return no(e); }
+    rq.onupgradeneeded = () => rq.result.createObjectStore('kv');
+    rq.onerror = () => no(rq.error);
+    rq.onsuccess = () => { try { const tx = rq.result.transaction('kv', mode), r = fn(tx.objectStore('kv')); tx.oncomplete = () => ok(r && r.result); tx.onerror = () => no(tx.error); } catch (e) { no(e); } };
+  });
+  const folderStore = { get: () => idb('readonly', s => s.get('outDir')).catch(() => null), set: h => idb('readwrite', s => s.put(h, 'outDir')).catch(() => {}), del: () => idb('readwrite', s => s.delete('outDir')).catch(() => {}) };
+  const canPickFolder = () => typeof window.showDirectoryPicker === 'function';
 
   function render(el, H) {
     const { esc, toast, saveBlob } = H, $ = (s, r = el) => r.querySelector(s), $$ = (s, r = el) => [...r.querySelectorAll(s)];
@@ -47,7 +56,12 @@
         </section>
 
         <section class="cva-card">
-          <header class="cva-card-h"><div><h3>3 · Outputs</h3><p class="hint">Each file gives a 13-sheet <code>…_CVA_Report.xlsx</code>. Optional extras below.</p></div></header>
+          <header class="cva-card-h"><div><h3>3 · Outputs</h3><p class="hint">Each file gives an 18-sheet <code>…_CVA_Report.xlsx</code> — a category Summary first. Optional extras below.</p></div></header>
+          <div class="cva-outdir">
+            <span class="cva-outdir-l">Output folder</span>
+            ${canPickFolder() ? `<button type="button" data-outpick>Choose folder…</button><span class="cva-outdir-name" data-outname></span><button type="button" class="ghost cva-sm" data-outclear hidden>Clear</button>`
+              : '<span class="hint">This browser saves to your <b>Downloads</b> folder. Open DevHub in Chrome or Edge on a computer to choose a folder.</span>'}
+          </div>
           <div class="cva-opts">
             <label class="check"><input type="checkbox" data-o="summary"> Create compact consolidated summary</label>
             <input type="text" data-o="summaryName" aria-label="Summary file name">
@@ -169,6 +183,27 @@
     };
     $('[data-tpldl]').onclick = () => { const t = SapCva.JSON_TEMPLATES[$('[data-tpl]').value]; saveBlob(new Blob([JSON.stringify(t.content, null, 2)], { type: 'application/json' }), t.filename); log(`Downloaded template: ${t.filename}`); };
 
+    // ---------- output folder ----------
+    function paintOutDir() {
+      const nm = $('[data-outname]'); if (!nm) return;
+      nm.innerHTML = S.outDir ? `<b>${esc(S.outDir.name)}</b> <span class="hint">· reports are saved here after each run</span>` : '<span class="hint">None chosen — files go to Downloads</span>';
+      $('[data-outclear]').hidden = !S.outDir; $('[data-outpick]').textContent = S.outDir ? 'Change…' : 'Choose folder…';
+    }
+    if (canPickFolder()) {
+      $('[data-outpick]').onclick = async () => {
+        try { const d = await window.showDirectoryPicker({ mode: 'readwrite', id: 'sap-cva-out', startIn: S.outDir || 'documents' }); S.outDir = d; folderStore.set(d); log(`Output folder: ${d.name}`); paintOutDir(); }
+        catch (e) { if (e.name !== 'AbortError') toast('Could not open that folder'); }
+      };
+      $('[data-outclear]').onclick = () => { S.outDir = null; folderStore.del(); log('Output folder cleared — files go to Downloads'); paintOutDir(); };
+      if (!S.outDirLoaded) { S.outDirLoaded = true; folderStore.get().then(h => { if (h && !S.outDir) { S.outDir = h; paintOutDir(); } }); }
+    }
+    async function folderAccess(dir, ask) {
+      try { const o = { mode: 'readwrite' }; if ((await dir.queryPermission(o)) === 'granted') return true; return ask ? (await dir.requestPermission(o)) === 'granted' : false; } catch { return false; }
+    }
+    async function writeToFolder(dir, files) {
+      for (const f of files) { const h = await dir.getFileHandle(f.name, { create: true }), w = await h.createWritable(); await w.write(f.blob); await w.close(); }
+    }
+
     // ---------- run ----------
     function check() {
       const why = !appIds().length ? 'Open or create an applications.json first.'
@@ -179,6 +214,8 @@
       $('[data-run]').disabled = !!why || !!worker; $('[data-why]').textContent = worker ? 'Processing…' : why;
     }
     $('[data-run]').onclick = async () => {
+      let outOk = false;   // ask for folder access now, while the click still counts as a user action
+      if (S.outDir) { outOk = await folderAccess(S.outDir, true); if (!outOk) log(`No permission for folder "${S.outDir.name}" — files will be offered as downloads.`); }
       const prog = $('[data-prog]'), bar = $('.progress span', prog), res = $('[data-results]');
       prog.hidden = false; bar.style.width = '2%'; res.hidden = true; $('[data-logbox]').open = true;
       const jobs = [];
@@ -196,7 +233,12 @@
           summary: m.summary ? { name: S.opts.summaryName || 'SAP_CVA_Executive_Summary.xlsx', blob: new Blob([m.summary], { type: XLSX_MIME }) } : null,
           history: m.history ? { name: S.opts.historyName || 'SAP_CVA_History.json', blob: new Blob([JSON.stringify(m.history, null, 2)], { type: 'application/json' }) } : null,
           ms: performance.now() - t0 };
-        paintResults(); toast('Processing completed');
+        paintResults();
+        const all = [...S.results.files, S.results.summary, S.results.history].filter(Boolean);
+        if (S.outDir && outOk) writeToFolder(S.outDir, all)
+          .then(() => { S.results.savedTo = S.outDir.name; log(`Saved ${all.length} file(s) to folder "${S.outDir.name}"`); toast(`Saved ${all.length} files to ${S.outDir.name}`); paintResults(); })
+          .catch(e => { log(`Could not write to "${S.outDir.name}": ${e.message}`); toast('Could not save to the output folder — use Download'); });
+        else toast('Processing completed');
       };
       worker.onerror = e => { finish(); prog.hidden = true; log('ERROR | ' + (e.message || 'worker stopped')); alertBox('The background worker stopped. The files may be too large for this device’s memory.'); };
       log(`Run started: ${jobs.length} file(s).`);
@@ -208,8 +250,8 @@
       const R = S.results, res = $('[data-results]'); if (!R) return;
       const all = [...R.files, R.summary, R.history].filter(Boolean);
       res.hidden = false;
-      res.innerHTML = `<div class="result-head"><div><b>${R.files.length} report${R.files.length === 1 ? '' : 's'} ready</b><div class="hint">${(R.ms / 1000).toFixed(1)} s · ${fmtBytes(all.reduce((a, f) => a + f.blob.size, 0))} in total</div></div>
-        <div class="row"><button class="primary" data-zip>Download all (.zip)</button>${window.showDirectoryPicker ? '<button data-folder>Save all to a folder…</button>' : ''}</div></div>
+      res.innerHTML = `<div class="result-head"><div><b>${R.files.length} report${R.files.length === 1 ? '' : 's'} ready</b><div class="hint">${(R.ms / 1000).toFixed(1)} s · ${fmtBytes(all.reduce((a, f) => a + f.blob.size, 0))} in total${R.savedTo ? ` · <b class="cva-saved">✓ saved to ${esc(R.savedTo)}</b>` : ''}</div></div>
+        <div class="row"><button class="primary" data-zip>Download all (.zip)</button>${window.showDirectoryPicker ? '<button data-folder>Save all to another folder…</button>' : ''}</div></div>
         <div class="table-wrap cva-rt"><table><thead><tr><th>File</th><th>Rows</th><th title="Code match / keyword match / unmapped">Code / kw / unmapped</th><th>Objects</th><th class="p1">P1</th><th class="p2">P2</th><th class="p3">P3</th><th class="p4">P4</th><th></th></tr></thead><tbody>
         ${R.files.map((f, i) => `<tr><td title="${esc(f.name)}">${esc(f.name)}</td><td>${f.stats.rows.toLocaleString()}</td><td>${f.stats.exact.toLocaleString()} / ${f.stats.keyword.toLocaleString()} / ${f.stats.unmapped.toLocaleString()}</td><td>${f.stats.objects.toLocaleString()}</td>
           <td class="p1">${f.compact['Priority 1']}</td><td class="p2">${f.compact['Priority 2']}</td><td class="p3">${f.compact['Priority 3']}</td><td class="p4">${f.compact['Priority 4']}</td><td><button type="button" class="cva-sm" data-dl="${i}" aria-label="Download ${esc(f.name)}">⬇ xlsx</button></td></tr>`).join('')}
@@ -235,7 +277,7 @@
       };
     }
 
-    paintAppCount(); paintFiles(); paintOpts(); paintResults();
+    paintAppCount(); paintFiles(); paintOpts(); paintOutDir(); paintResults();
     if (worker) { $('[data-prog]').hidden = false; }
   }
 

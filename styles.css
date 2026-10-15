@@ -984,3 +984,8 @@ button.cva-go:disabled { opacity: .45; cursor: not-allowed; }
 .tool-group.collapsed > button[data-id]:not(.active) { display: none; }   /* the open tool stays visible */
 .tool-list.filtering .tool-group.collapsed > button[data-id]:not([hidden]) { display: block; }
 .tool-list.filtering .tg-n { opacity: 0; }
+.cva-outdir { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; padding: 10px 12px; margin-bottom: 12px; border: 1px solid var(--line); border-radius: 10px; background: var(--paper); }
+.cva-outdir-l { font-weight: 600; font-size: .88rem; }
+.cva-outdir button { padding: 6px 12px; font-size: .85rem; }
+.cva-outdir-name { overflow-wrap: anywhere; }
+.cva-saved { color: var(--ok); }

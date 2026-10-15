@@ -1802,7 +1802,7 @@
       } }] }) }
   ];
   const SAP_TOOLS = [
-    { id: 'sap-cva', group: 'SAP tools', name: 'SAP CVA Orchestrator', desc: 'Map SAP Code Vulnerability Analyzer findings to CVA codes (exact code, then keyword match) for up to 11 systems at once. Builds the 13-sheet CVA report per system — priorities, P1/P2 backlog, RAG heatmap, unique objects — plus an executive summary and a trend-history JSON.',
+    { id: 'sap-cva', group: 'SAP tools', name: 'SAP CVA Orchestrator', desc: 'Map SAP Code Vulnerability Analyzer findings to CVA codes (exact code, then keyword match) for up to 11 systems at once. Builds an 18-sheet CVA report per system — a remediation-category summary, findings, unique objects and object names per code, an object scorecard, object × code counts, priorities, P1/P2 backlog, RAG heatmap, unique objects — plus an executive summary and a trend-history JSON.',
       render: el => window.DHSapCva ? window.DHSapCva.render(el, { esc, toast, saveBlob }) : (el.innerHTML = '<p class="out err">The SAP CVA module did not load. Reload the page.</p>') }
   ];
   const GROUPS = ['Formatters', 'Converters', 'SAP tools', 'Encode & decode', 'Text', 'Generators', 'Utilities'];

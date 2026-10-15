@@ -1,6 +1,6 @@
 // SAP CVA Orchestrator — browser port of SAP_CVA_Orchestrator_v2.pyw.
 // Maps SAP Code Vulnerability Analyzer findings to CVA codes, then builds the same
-// 13-sheet report workbook, the compact executive summary and the trend-history JSON.
+// 18-sheet report workbook (Summary by remediation category, findings + unique objects per code, object names per code, an object scorecard, object × code counts, plus the 13 desktop sheets), the compact executive summary and the trend-history JSON.
 // Runs as a Web Worker (new Worker('sap-cva-core.js')) and also loads on the page for helpers.
 (function (root) {
   'use strict';
@@ -151,6 +151,28 @@
   const prOrd = p => PRIORITY_ORDER[p] ?? 99;
   const priorityOf = sev => sev == null ? 'Unmapped' : (PRIORITY_MAP[String(sev).trim()] ?? 'P3');
 
+  // ---------- remediation categories (Summary sheet) ----------
+  // [name, remediation timeline, rationale, codes]
+  const CATEGORIES = [
+    ['SQL Injection & Dynamic SQL', 'Remediate before go-live', 'User-controlled information may be able to change what the system asks the database to do. This can lead directly to unauthorised reading or manipulation of business data.', 'section:1'],
+    ['ABAP / OS Command & Code Injection', 'Remediate before go-live', 'User input may influence commands or code executed by SAP. If exploitable, this can move beyond normal business functionality and potentially give control over the application or underlying system.', 'section:2,1106,1107'],
+    ['Authorization & Security Check Handling', 'Remediate before go-live where reachable by business/RFC users', 'These findings mean SAP may fail to properly enforce whether the user is actually allowed to perform an action. This is directly relevant to preventing users from doing more than their assigned role permits.', 'section:3'],
+    ['Dynamic Transactions / Functions / RFC Calls', 'Remediate before go-live where user/RFC controlled', 'A user may be able to reach a transaction or function indirectly that they should not normally be able to access. RFC-driven cases should be given highest priority.', 'section:4'],
+    ['Hard-coded passwords', 'Remediate before go-live', 'Credentials embedded in code can potentially be discovered and reused. Validate and remove them before Production.', '11K1,11K2,11K3'],
+    ['Sensitive database table access', 'Remediate high-risk subset', 'Findings are not equally risky. Fix before go-live where the code can access credentials, security/authorisation data, integration secrets or highly sensitive business data and is realistically reachable by a user/RFC interface. The rest can follow after go-live.', '11G0,11G1'],
+    ['Directory / File Traversal', 'Remediate exploitable subset', 'Prioritise cases where a user can control the file/path or where the weakness combines with command execution, upload or interface processing. Static/internal-only cases can follow after go-live.', '1104,1124,1126'],
+    ['Web Security – XSS/XSRF/uploads', 'Remediate after go-live', 'These remain real vulnerabilities, but have less connection to the demonstrated critical SAP attack path. Elevate any internet/external-facing or privileged-user-facing cases.', 'section:7'],
+    ['Hard-coded username / system ID / client', 'Remediate after go-live', 'These primarily expose information that can help an attacker understand the environment. By themselves they normally do not provide access or allow unauthorised actions. Review potential back doors (11SP) individually.', '0821,11S1,11S2,11S3,11S4,11SP'],
+    ['Repository Manipulation & System Communication', 'Review case by case', 'Deleting repository objects or using legacy COMMUNICATION statements can affect system integrity. Confirm each finding is intended and controlled.', '1110,11C1']
+  ];
+  const CATEGORY_OF = {};
+  for (const [name, timeline, rationale, spec] of CATEGORIES)
+    for (const part of spec.split(',')) {
+      if (part.startsWith('section:')) { const sid = +part.slice(8); for (const [c, m] of CVA_LIST) if (m.section_id === sid && !CATEGORY_OF[c]) CATEGORY_OF[c] = { name, timeline }; }
+      else CATEGORY_OF[part] = { name, timeline };
+    }
+  for (const [c] of CVA_LIST) if (!CATEGORY_OF[c]) CATEGORY_OF[c] = { name: 'Other CVA findings', timeline: 'Review case by case' };
+
   // ---------- small table model (keeps duplicate column names, like pandas) ----------
   // T = { cols: [..], rows: [[..], ..] }
   const lastIdx = (T, name) => T.cols.lastIndexOf(name);
@@ -246,6 +268,94 @@
       rows: [[app.id, app.system_no, app.system_name, app.business_area, c.P1, c.P2, c.P3, c.P4]] };
   }
 
+  // P1/P2 backlog with the remediation category in front (the Summary sheet counts over it)
+  function backlogWithCategory(B) {
+    const ci = B.cols.indexOf('CVA Code');
+    return { cols: ['CVA Category', 'Remediation Timeline', ...B.cols], rows: B.rows.map(r => { const k = CATEGORY_OF[r[ci]] || { name: 'Other CVA findings', timeline: 'Review case by case' }; return [k.name, k.timeline, ...r]; }) };
+  }
+  // One row per object + CVA code, with the number of findings
+  function objectCodeTable(M) {
+    const cols = ['Object Name', 'Object Type', 'CVA Category', 'CVA Code', 'CVA Description', 'Severity', 'Priority', 'RAG', 'Findings'];
+    const oi = colIdx(M, OBJ_NAMES), ti = colIdx(M, TYPE_NAMES), ci = lastIdx(M, 'CVA Code'), pi = lastIdx(M, 'Priority');
+    if (oi < 0 || ci < 0) return { cols, rows: [] };
+    const g = new Map();
+    for (const r of M.rows) {
+      const code = String(r[ci] ?? '').trim(), name = String(r[oi] ?? '').trim(); if (!code || !name) continue;
+      const kind = ti < 0 ? '' : String(r[ti] ?? '').trim(), k = name + '\u0000' + kind + '\u0000' + code;
+      const e = g.get(k); if (e) e[8]++; else { const m = CVA_MASTER[code] || {}; g.set(k, [name, kind, (CATEGORY_OF[code] || {}).name || '', code, m.description || '', m.severity || '', pi < 0 ? priorityOf(m.severity) : r[pi], m.rag || '', 1]); }
+    }
+    const rows = sortStable([...g.values()], (a, b) => prOrd(a[6]) - prOrd(b[6]) || b[8] - a[8] || cmpAny(a[0], b[0]) || cmpAny(a[3], b[3]));
+    return { cols, rows };
+  }
+
+  // One row per CVA code: number of findings and number of unique objects
+  function codeObjectsTable(M) {
+    const cols = ['CVA Code', 'CVA Description', 'CVA Category', 'Severity', 'Priority', 'RAG', 'Findings', 'Unique Objects'];
+    const oi = colIdx(M, OBJ_NAMES), ci = lastIdx(M, 'CVA Code'), pi = lastIdx(M, 'Priority');
+    if (ci < 0) return { cols, rows: [] };
+    const g = new Map(), allObjs = new Set();
+    for (const r of M.rows) {
+      const code = String(r[ci] ?? '').trim(); if (!code) continue;
+      let e = g.get(code); if (!e) { const m = CVA_MASTER[code] || {}; e = { row: [code, m.description || '', (CATEGORY_OF[code] || {}).name || '', m.severity || '', pi < 0 ? priorityOf(m.severity) : r[pi], m.rag || ''], n: 0, objs: new Set() }; g.set(code, e); }
+      e.n++; const o = oi < 0 ? '' : String(r[oi] ?? '').trim(); if (o) { e.objs.add(o); allObjs.add(o); }
+    }
+    const rows = sortStable([...g.values()].map(e => [...e.row, e.n, e.objs.size]), (a, b) => prOrd(a[4]) - prOrd(b[4]) || b[6] - a[6] || cmpAny(a[0], b[0]));
+    return { cols, rows, total: ['Total', '', '', '', '', '', rows.reduce((a, r) => a + r[6], 0), allObjs.size] };
+  }
+
+  // One row per CVA code with the object names that have it, e.g. "/DS1/UTL_SE16N (137), /DS1/MM_MRD (135)".
+  // Excel holds at most 32,767 characters per cell, so very long lists continue on extra rows for the same code.
+  const CELL_MAX = 32000;
+  function codeObjectListTable(M) {
+    const cols = ['CVA Code', 'CVA Description', 'CVA Category', 'Priority', 'Findings', 'Unique Objects', 'Part', 'Object Names (findings)'];
+    const oi = colIdx(M, OBJ_NAMES), ci = lastIdx(M, 'CVA Code'), pi = lastIdx(M, 'Priority');
+    if (ci < 0) return { cols, rows: [] };
+    const g = new Map();
+    for (const r of M.rows) {
+      const code = String(r[ci] ?? '').trim(); if (!code) continue;
+      let e = g.get(code); if (!e) { e = { p: pi < 0 ? priorityOf((CVA_MASTER[code] || {}).severity) : r[pi], n: 0, objs: new Map() }; g.set(code, e); }
+      e.n++; const o = oi < 0 ? '' : String(r[oi] ?? '').trim(); if (o) e.objs.set(o, (e.objs.get(o) || 0) + 1);
+    }
+    const codes = sortStable([...g.entries()], (a, b) => prOrd(a[1].p) - prOrd(b[1].p) || b[1].n - a[1].n || cmpAny(a[0], b[0]));
+    const rows = [];
+    for (const [code, e] of codes) {
+      const m = CVA_MASTER[code] || {}, cat = (CATEGORY_OF[code] || {}).name || '';
+      const items = sortStable([...e.objs.entries()], (a, b) => b[1] - a[1] || cmpAny(a[0], b[0])).map(([o, n]) => `${o} (${n})`);
+      const parts = []; let cur = '';
+      for (const it of items) { if (cur && cur.length + 2 + it.length > CELL_MAX) { parts.push(cur); cur = ''; } cur = cur ? cur + ', ' + it : it; }
+      parts.push(cur || '—');
+      parts.forEach((txt, i) => rows.push(i === 0 ? [code, m.description || '', cat, e.p, e.n, e.objs.size, parts.length > 1 ? `1 of ${parts.length}` : '', txt]
+        : [code, m.description || '', cat, e.p, '', '', `${i + 1} of ${parts.length}`, txt]));
+    }
+    return { cols, rows };
+  }
+
+  // Object scorecard: one row per object (name + type) — worst first — with P1–P4 counts and a code breakdown.
+  const PKG_NAMES = ['Package', 'Package Name', 'Development Package', 'DEVCLASS', 'Dev Class'];
+  function objectScorecardTable(M) {
+    const cols = ['Object Name', 'Object Type', 'Package', 'Highest Priority', 'P1', 'P2', 'P3', 'P4', 'Unmapped', 'Total Findings', 'CVA Codes', 'Code Breakdown', 'CVA Categories'];
+    const oi = colIdx(M, OBJ_NAMES), ti = colIdx(M, TYPE_NAMES), ki = colIdx(M, PKG_NAMES), ci = lastIdx(M, 'CVA Code'), pi = lastIdx(M, 'Priority');
+    if (oi < 0) return { cols, rows: [] };
+    const g = new Map(), str = (r, i) => i < 0 ? '' : String(r[i] ?? '').trim();
+    for (const r of M.rows) {
+      const name = str(r, oi); if (!name) continue;
+      const kind = str(r, ti), k = name + '\u0000' + kind;
+      let e = g.get(k); if (!e) { e = { name, kind, pkg: str(r, ki), c: { P1: 0, P2: 0, P3: 0, P4: 0, Unmapped: 0 }, codes: new Map() }; g.set(k, e); }
+      const p = pi < 0 ? 'Unmapped' : (r[pi] || 'Unmapped'); e.c[p in e.c ? p : 'Unmapped']++;
+      const code = str(r, ci); if (code) e.codes.set(code, (e.codes.get(code) || 0) + 1);
+    }
+    const rows = [...g.values()].map(e => {
+      const hi = ['P1', 'P2', 'P3', 'P4'].find(p => e.c[p] > 0) || 'Unmapped';
+      const codes = sortStable([...e.codes.entries()], (a, b) => prOrd(priorityOf((CVA_MASTER[a[0]] || {}).severity)) - prOrd(priorityOf((CVA_MASTER[b[0]] || {}).severity)) || b[1] - a[1] || cmpAny(a[0], b[0]));
+      const cats = [...new Set(codes.map(([c]) => (CATEGORY_OF[c] || {}).name).filter(Boolean))];
+      const total = e.c.P1 + e.c.P2 + e.c.P3 + e.c.P4 + e.c.Unmapped;
+      return [e.name, e.kind, e.pkg, hi, e.c.P1, e.c.P2, e.c.P3, e.c.P4, e.c.Unmapped, total, codes.length, codes.map(([c, n]) => `${c} (${n})`).join(', ').slice(0, CELL_MAX), cats.join('; ')];
+    });
+    const sorted = sortStable(rows, (a, b) => prOrd(a[3]) - prOrd(b[3]) || b[4] - a[4] || b[5] - a[5] || b[9] - a[9] || cmpAny(a[0], b[0]));
+    const sum = i => sorted.reduce((a, r) => a + r[i], 0);
+    return { cols, rows: sorted, total: [`Total (${sorted.length.toLocaleString()} objects)`, '', '', '', sum(4), sum(5), sum(6), sum(7), sum(8), sum(9), '', '', ''] };
+  }
+
   // ---------- Excel writing (xlsx-js-style) ----------
   const FILL = { red: 'FFC7CE', amber: 'FFEB9C', green: 'C6EFCE', blue: 'D9E1F2', p4: 'D9EAD3' };
   const RAG_FILL = { '🔴': FILL.red, '🟡': FILL.amber, '🟢': FILL.green, '⚪': FILL.blue };
@@ -273,19 +383,118 @@
     for (let r = 0; r < T.rows.length; r++) { const rgb = fn(T.rows[r][c], r); if (!rgb) continue; const a = X.utils.encode_cell({ r: r + 1, c }); ws[a] ||= { t: 's', v: '' }; ws[a].s = { fill: fill(rgb), ...(extra || {}) }; }
   };
 
+  const colLetter = i => { let s = ''; for (i++; i > 0; i = Math.floor((i - 1) / 26)) s = String.fromCharCode(65 + (i - 1) % 26) + s; return s; };
+  const NUMFMT = '#,##0;(#,##0);-';
+  function summarySheet(X, M, BL, app) {
+    const ci = lastIdx(M, 'CVA Code'), oi = colIdx(M, OBJ_NAMES);
+    const stats = new Map(CATEGORIES.map(([n]) => [n, { P1: 0, P2: 0, objs: new Set(), codes: new Map() }]));
+    const allObjs = new Set();
+    for (const r of M.rows) {                                       // codes present in this report (any priority)
+      const code = String(r[ci] ?? ''); if (!code) continue;
+      const st = stats.get((CATEGORY_OF[code] || {}).name); if (st) st.codes.set(code, (st.codes.get(code) || 0) + 1);
+    }
+    const bCat = 0, bPri = BL.cols.indexOf('Priority'), bObj = colIdx(BL, OBJ_NAMES);
+    for (const r of BL.rows) {
+      const st = stats.get(r[bCat]); if (!st) continue;
+      if (r[bPri] === 'P1' || r[bPri] === 'P2') st[r[bPri]]++;
+      if (bObj >= 0 && String(r[bObj] ?? '').trim()) { st.objs.add(String(r[bObj]).trim()); allObjs.add(String(r[bObj]).trim()); }
+    }
+    const used = CATEGORIES.filter(([n]) => { const s = stats.get(n); return s.P1 + s.P2 > 0 || s.codes.size > 0; });
+    const list = used.length ? used : CATEGORIES;
+    const title = `${app.system_name} (${app.system_no}) – CVA P1/P2 Findings by Remediation Category`;
+    const head = ['CVA Category', 'Main CVAs', 'Remediation Timeline', 'P1 Findings', 'P2 Findings', 'Total P1+P2', 'Unique Objects', 'Rationale'];
+    const n = Math.max(BL.rows.length + 1, 2), L = c => colLetter(c), catCol = `P1_P2_Backlog!$${L(bCat)}$2:$${L(bCat)}$${n}`, priCol = `P1_P2_Backlog!$${L(bPri)}$2:$${L(bPri)}$${n}`;
+    const aoa = [[title], [`Application ${app.id} · ${app.business_area}. Counts are live formulas over the P1_P2_Backlog sheet; Unique Objects are de-duplicated object names.`], [], head];
+    list.forEach(([name, timeline, rationale]) => { const s = stats.get(name); aoa.push([name, [...s.codes.entries()].sort((a, b) => b[1] - a[1]).map(x => x[0]).join(', ') || '—', timeline, s.P1, s.P2, s.P1 + s.P2, s.objs.size, rationale]); });
+    const first = 5, last = first + list.length - 1, tot = last + 1;
+    const T = { P1: 0, P2: 0 }; list.forEach(([nm]) => { T.P1 += stats.get(nm).P1; T.P2 += stats.get(nm).P2; });
+    aoa.push(['Total', '', '', T.P1, T.P2, T.P1 + T.P2, allObjs.size, '']);
+    const empty = list.filter(([nm]) => { const s = stats.get(nm); return s.P1 + s.P2 === 0; }).map(([nm]) => nm);
+    const notes = ['• Unique Objects is a count of distinct object names per category (an object can appear in more than one category, so the total is de-duplicated across all categories).',
+      empty.length ? `• No P1/P2 findings in: ${empty.join('; ')}. Their codes in this report are P3/P4 only.` : '• Every category listed has at least one P1/P2 finding.',
+      colIdx(M, ['Additional Info']) >= 0 ? "• 'Additional Info' holds the data source (e.g. USER_INPUT, RFC, INPUT PARAMETER) – use it to filter the 'where user/RFC controlled' subsets." : '• Main CVAs lists the codes found in this report for each category, most frequent first.'];
+    aoa.push([], ['Notes'], ...notes.map(t => [t]));
+    const ws = X.utils.aoa_to_sheet(aoa);
+    const cell = (r, c) => ws[X.utils.encode_cell({ r: r - 1, c })] ||= { t: 's', v: '' };
+    cell(1, 0).s = { font: { bold: true, sz: 14, color: { rgb: '1F2937' } } };
+    cell(2, 0).s = { font: { sz: 9, color: { rgb: '595959' } } };
+    head.forEach((h, c) => { cell(4, c).s = { fill: fill('404040'), font: { bold: true, color: { rgb: 'FFFFFF' } }, alignment: { wrapText: true, vertical: 'center', horizontal: c >= 3 && c <= 6 ? 'center' : 'left' }, border: { bottom: { style: 'thin', color: { rgb: '404040' } } } }; });
+    const bd = { bottom: { style: 'thin', color: { rgb: 'D9D9D9' } } };
+    for (let r = first; r <= last; r++) {
+      for (let c = 0; c < head.length; c++) cell(r, c).s = { font: { sz: 10, bold: c === 0 }, alignment: { wrapText: true, vertical: 'top', horizontal: c >= 3 && c <= 6 ? 'right' : 'left' }, border: bd, ...(c >= 3 && c <= 6 ? { numFmt: NUMFMT } : {}) };
+      cell(r, 3).f = `COUNTIFS(${catCol},A${r},${priCol},"P1")`; cell(r, 3).t = 'n';
+      cell(r, 4).f = `COUNTIFS(${catCol},A${r},${priCol},"P2")`; cell(r, 4).t = 'n';
+      cell(r, 5).f = `D${r}+E${r}`; cell(r, 5).t = 'n';
+      if (cell(r, 3).v > 0) cell(r, 3).s = { ...cell(r, 3).s, fill: fill(FILL.red) };
+      if (cell(r, 4).v > 0) cell(r, 4).s = { ...cell(r, 4).s, fill: fill(FILL.amber) };
+    }
+    for (let c = 0; c < head.length; c++) cell(tot, c).s = { font: { bold: true }, fill: fill('F2F2F2'), border: { top: { style: 'thin', color: { rgb: '404040' } } }, alignment: { horizontal: c >= 3 && c <= 6 ? 'right' : 'left' }, ...(c >= 3 && c <= 6 ? { numFmt: NUMFMT } : {}) };
+    ['D', 'E', 'F'].forEach(L2 => { const a = cell(tot, L2.charCodeAt(0) - 65); a.f = `SUM(${L2}${first}:${L2}${last})`; a.t = 'n'; });
+    cell(tot + 2, 0).s = { font: { bold: true } };
+    notes.forEach((t, i) => { cell(tot + 3 + i, 0).s = { font: { sz: 9, color: { rgb: '404040' } } }; });
+    ws['!cols'] = [34, 28, 30, 11, 11, 12, 12, 90].map(wch => ({ wch }));
+    ws['!rows'] = []; ws['!rows'][3] = { hpt: 30 };
+    for (let r = first; r <= last; r++) ws['!rows'][r - 1] = { hpt: 42 };
+    return ws;
+  }
+
   function buildReport(X, mapped, unmapped, app) {
     const M = withPriority(mapped), U = withPriority(unmapped);
     const [bySev, bySec, byRisk, byCode] = createSummaries(mapped);
     const uniq = uniqueObjectTable(M);
+    const backlog = backlogWithCategory(backlogTable(M));
     const sheets = [
+      ['Summary', null], ['Summary_By_Code_Objects', codeObjectsTable(M)], ['Summary_By_Code_ObjectList', codeObjectListTable(M)], ['Object_Scorecard', objectScorecardTable(M)], ['Summary_By_Object_Code', objectCodeTable(M)],
       ['Mapped_Data', M], ['Summary_By_Severity', bySev], ['Summary_By_Section', bySec], ['Summary_By_Risk', byRisk], ['Summary_By_Code', byCode],
-      ['Unmapped', U], ['CVA_Master', masterTable()], ['Code_Priority_Mapping', codePriorityTable()], ['P1_P2_Backlog', backlogTable(M)],
+      ['Unmapped', U], ['CVA_Master', masterTable()], ['Code_Priority_Mapping', codePriorityTable()], ['P1_P2_Backlog', backlog],
       ['RAG_vs_Priority_Heatmap', heatmapTable(M)], ['Unique_Object_Priority', uniq], ['Cannot_Map_To_CVA', cannotMapTable(U)],
       ['Application_System_Summary', appSummaryTable(uniq, app)]
     ];
-    const wb = X.utils.book_new(), tabs = {};
+    const wb = X.utils.book_new(), tabs = {}, freeze = {};
     for (const [name, T] of sheets) {
+      if (name === 'Summary') { tabs[name] = '404040'; freeze[name] = 4; X.utils.book_append_sheet(wb, summarySheet(X, M, backlog, app), name); continue; }
       const ws = makeSheet(X, T);
+      if (name === 'Summary_By_Code_Objects') {
+        tabs[name] = '7030A0';
+        paint(X, ws, T, 'Priority', v => PRIO_FILL[v]); paint(X, ws, T, 'RAG', v => RAG_FILL[v]);
+        [6, 7].forEach(c => { for (let r = 0; r < T.rows.length; r++) { const a = ws[X.utils.encode_cell({ r: r + 1, c })]; if (a) a.s = { font: { bold: true }, alignment: { horizontal: 'right' }, numFmt: '#,##0' }; } });
+        const tr = T.rows.length + 1;   // Total row (outside the filter range, so filtering doesn't hide it)
+        X.utils.sheet_add_aoa(ws, [T.total], { origin: { r: tr, c: 0 } });
+        T.total.forEach((v, c) => { const a = ws[X.utils.encode_cell({ r: tr, c })]; if (a) a.s = { font: { bold: true }, fill: fill('F2F2F2'), border: { top: { style: 'thin', color: { rgb: '404040' } } }, ...(c >= 6 ? { alignment: { horizontal: 'right' }, numFmt: '#,##0' } : {}) }; });
+        const fa = ws[X.utils.encode_cell({ r: tr, c: 6 })]; if (fa && T.rows.length) { fa.f = `SUM(G2:G${tr})`; fa.t = 'n'; }
+        ws['!cols'][1] = { wch: 66 }; ws['!cols'][2] = { wch: 42 };
+      }
+      if (name === 'Object_Scorecard') {
+        tabs[name] = 'C00000';
+        paint(X, ws, T, 'Highest Priority', v => PRIO_FILL[v]);
+        const pf = { 4: FILL.red, 5: FILL.amber, 6: FILL.green, 7: FILL.p4 };
+        for (let c = 4; c <= 10; c++) for (let r = 0; r < T.rows.length; r++) {
+          const a = ws[X.utils.encode_cell({ r: r + 1, c })]; if (!a) continue;
+          a.s = { alignment: { horizontal: c === 10 ? 'center' : 'right' }, numFmt: '#,##0;(#,##0);-', ...(c === 9 ? { font: { bold: true } } : {}), ...(pf[c] && a.v > 0 ? { fill: fill(pf[c]) } : {}) };
+        }
+        const tr = T.rows.length + 1;   // Total row below the filter range
+        X.utils.sheet_add_aoa(ws, [T.total], { origin: { r: tr, c: 0 } });
+        T.total.forEach((v, c) => { const a = ws[X.utils.encode_cell({ r: tr, c })]; if (a) a.s = { font: { bold: true }, fill: fill('F2F2F2'), border: { top: { style: 'thin', color: { rgb: '404040' } } }, ...(c >= 4 && c <= 9 ? { alignment: { horizontal: 'right' }, numFmt: '#,##0;(#,##0);-' } : {}) }; });
+        if (T.rows.length) [4, 5, 6, 7, 8, 9].forEach(c => { const a = ws[X.utils.encode_cell({ r: tr, c })], L = colLetter(c); a.f = `SUM(${L}2:${L}${tr})`; a.t = 'n'; });
+        Object.assign(ws['!cols'], { 3: { wch: 10 }, 4: { wch: 8 }, 5: { wch: 8 }, 6: { wch: 8 }, 7: { wch: 8 }, 8: { wch: 10 }, 9: { wch: 10 }, 10: { wch: 9 }, 11: { wch: 50 }, 12: { wch: 50 } });
+      }
+      if (name === 'Summary_By_Code_ObjectList') {
+        tabs[name] = '7030A0';
+        paint(X, ws, T, 'Priority', v => PRIO_FILL[v]);
+        [4, 5].forEach(c => { for (let r = 0; r < T.rows.length; r++) { const a = ws[X.utils.encode_cell({ r: r + 1, c })]; if (a && a.v !== '') a.s = { font: { bold: true }, alignment: { horizontal: 'right' }, numFmt: '#,##0' }; } });
+        ws['!cols'] = [{ wch: 10 }, { wch: 48 }, { wch: 36 }, { wch: 10 }, { wch: 11 }, { wch: 14 }, { wch: 9 }, { wch: 120 }];
+        // long lists wrap inside a fixed-height row instead of spilling across the sheet; the full list shows in the formula bar
+        ws['!rows'] = [{ hpt: 30 }];
+        for (let r = 0; r < T.rows.length; r++) {
+          ws['!rows'][r + 1] = { hpt: 48 };
+          for (let c = 0; c < T.cols.length; c++) { const a = ws[X.utils.encode_cell({ r: r + 1, c })]; if (a) a.s = { ...(a.s || {}), alignment: { ...((a.s || {}).alignment || {}), vertical: 'top', wrapText: c === 1 || c === 2 || c === 7 } }; }
+        }
+      }
+      if (name === 'Summary_By_Object_Code') {
+        tabs[name] = '7030A0';
+        paint(X, ws, T, 'Priority', v => PRIO_FILL[v]); paint(X, ws, T, 'RAG', v => RAG_FILL[v]);
+        const fi = T.cols.indexOf('Findings'); for (let r = 0; r < T.rows.length; r++) { const a = ws[X.utils.encode_cell({ r: r + 1, c: fi })]; if (a) a.s = { font: { bold: true }, alignment: { horizontal: 'right' }, numFmt: '#,##0' }; }
+      }
       if (name === 'Mapped_Data') {
         const ri = T.cols.lastIndexOf('RAG'), si = T.cols.lastIndexOf('Severity');
         paint(X, ws, T, 'RAG', v => RAG_FILL[v]);
@@ -317,17 +526,18 @@
       }
       X.utils.book_append_sheet(wb, ws, name);
     }
-    return { buf: finishWorkbook(X, wb, tabs), uniq };
+    return { buf: finishWorkbook(X, wb, tabs, freeze), uniq };
   }
 
   // SheetJS can't write frozen panes or tab colours, so patch the sheet XML inside the package.
-  function finishWorkbook(X, wb, tabs) {
+  function finishWorkbook(X, wb, tabs, freeze = {}) {
     const out = new Uint8Array(X.write(wb, { type: 'array', bookType: 'xlsx', compression: true, bookSST: true }));
     const z = X.CFB.read(out, { type: 'array' }), enc = new TextEncoder(), dec = new TextDecoder();
     wb.SheetNames.forEach((name, i) => {
       const fi = z.FullPaths.findIndex(p => p.endsWith(`xl/worksheets/sheet${i + 1}.xml`)); if (fi < 0) return;
       const e = z.FileIndex[fi]; let xml = dec.decode(e.content);
-      xml = xml.replace('<sheetView workbookViewId="0"/>', '<sheetView workbookViewId="0"><pane ySplit="1" topLeftCell="A2" activePane="bottomLeft" state="frozen"/><selection pane="bottomLeft" activeCell="A2" sqref="A2"/></sheetView>');
+      const fr = freeze[name] ?? 1, tl = 'A' + (fr + 1);
+      if (fr) xml = xml.replace('<sheetView workbookViewId="0"/>', `<sheetView workbookViewId="0"><pane ySplit="${fr}" topLeftCell="${tl}" activePane="bottomLeft" state="frozen"/><selection pane="bottomLeft" activeCell="${tl}" sqref="${tl}"/></sheetView>`);
       if (tabs[name]) {
         const tc = `<tabColor rgb="FF${tabs[name]}"/>`;
         xml = /<sheetPr[^>]*\/>/.test(xml) ? xml.replace(/<sheetPr([^>]*)\/>/, `<sheetPr$1>${tc}</sheetPr>`)
@@ -439,7 +649,7 @@
     return { results, history, summary };
   }
 
-  const api = { CVA_MASTER, JSON_TEMPLATES, parseApplications, mapText, keywordMatch, runBatch, safeName };
+  const api = { CVA_MASTER, CATEGORIES, CATEGORY_OF, JSON_TEMPLATES, parseApplications, mapText, keywordMatch, runBatch, safeName };
   root.SapCva = api;
 
   // ---------- worker entry ----------
