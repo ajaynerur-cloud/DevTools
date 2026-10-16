@@ -1,5 +1,5 @@
 // DevHub service worker: offline app shell, never caches GitHub API calls.
-const CACHE = 'devhub-v33';
+const CACHE = 'devhub-v34';
 const SHELL = ['./', 'index.html', 'styles.css', 'app.js', 'manifest.webmanifest',
   'favicon.ico', 'icons/icon.svg', 'icons/favicon-32.png', 'icons/apple-touch-icon.png', 'icons/icon-192.png', 'icons/icon-512.png', 'icons/icon-maskable-192.png', 'icons/icon-maskable-512.png', 'seed/links.json', 'config.js', 'tasks.js', 'notify.js', 'biolock.js', 'offline-db.js', 'adapter.js', 'worker.js', 'migrate.js', 'sap-cva.js', 'sap-cva-core.js', 'sap-delta.js', 'remediation-planner.html', 'remediation-planner.js', 'vendor/sql-wasm.js', 'vendor/sql-wasm.wasm',
   'vendor/papaparse.min.js', 'vendor/xlsx.full.min.js', 'vendor/fxp.min.js', 'vendor/js-yaml.min.js', 'vendor/beautifier.min.js', 'vendor/sql-formatter.min.js', 'vendor/xlsx-style.min.js'];

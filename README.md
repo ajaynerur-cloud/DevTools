@@ -69,11 +69,11 @@ The developer tools never need either; they always work without signing in.
 
 Tools → SAP tools → **SAP CVA Orchestrator** is the browser version of `SAP_CVA_Orchestrator_v2.pyw`. It runs entirely on the device, in a background worker.
 
-1. **Applications:** open your `applications.json` (same format as the desktop tool); the applications show as a table where you can add or remove entries. *Save* writes the changes back into the same file in Chrome/Edge (other browsers download an updated copy). They are remembered on this device.
+1. **Applications:** open your `applications.json` (same format as the desktop tool) every time you use the tool; the applications show as a table where you can add or remove entries. *Save* writes the changes back into the same file in Chrome/Edge (other browsers download an updated copy). For security nothing is remembered: the applications, the file and the output folder are not stored on the device, and anything stored by earlier versions is removed.
 2. **Source files:** up to 11 CVA findings workbooks, one row each, with worksheet, Application ID and scan date.
 3. **Outputs:** one `<System>_<SystemNo>_<AppId>_CVA_Report.xlsx` per file, with a **Summary** sheet (P1/P2 findings and unique objects by remediation category, as live COUNTIFS formulas), a **Summary_By_Code_Objects** sheet (per CVA code: number of findings and unique objects), a **Summary_By_Code_ObjectList** sheet (per CVA code, the object names that have it with their finding counts), an **Object_Scorecard** sheet (one row per object, worst first: package, highest priority, P1–P4 counts, total, and a code breakdown such as `11D1 (137), 11G0 (12)`), a **Summary_By_Object_Code** sheet (findings per object and CVA code), then the same 13 sheets as the desktop tool. P1_P2_Backlog gets CVA Category and Remediation Timeline columns in front. Optionally, the `SAP_CVA_Executive_Summary.xlsx` (Consolidated_View) and the trend history `SAP_CVA_History.json`. Open last run's history and tick *Subsequent run* to append.
 4. **Re-run / Clear all:** *Re-run* clears the results and log and processes the same files again (the history is not appended twice). *Clear all* removes the source files, created files and log; applications, settings and the output folder stay. Files already saved to the output folder are not deleted.
-5. **Output folder** (Chrome/Edge on a computer): choose it once in Outputs; it is remembered, and every run saves its reports straight into it. Other browsers save to Downloads. Each file can also be downloaded on its own, or all of them as a .zip.
+5. **Output folder** (Chrome/Edge on a computer): choose it in Outputs each visit; it is not remembered, and every run in that visit saves its reports straight into it. Other browsers save to Downloads. Each file can also be downloaded on its own, or all of them as a .zip.
 
 Mapping is identical to the desktop tool: an exact CVA code in any text column wins, otherwise the best keyword/description score (≥ 20). The engine is `sap-cva-core.js`; styled Excel output uses `vendor/xlsx-style.min.js` ([xlsx-js-style](https://github.com/gitbrent/xlsx-js-style), Apache-2.0).
 
@@ -92,6 +92,17 @@ Objects are counted once, at their highest priority. The module is `sap-delta.js
 ## SAP tools › Remediation Project Planner
 
 Tools → SAP tools → **Remediation Project Planner** estimates the effort, team size and timeline of an SAP remediation project from the findings per area. Enter object counts, rates and assumptions, read the live totals, results table and timeline, and export the plan to **Excel** or **PowerPoint**. It runs entirely on the device and keeps its plans in this browser (use *Open in a full window* for more room). The page is `remediation-planner.html` with its script in `remediation-planner.js` (the server's security policy only allows scripts from its own files, and lets only this one page be shown inside DevHub); its Excel and PowerPoint exports use the bundled `vendor/exceljs.min.js` and `vendor/pptxgen.bundle.js` (both MIT), so they work offline.
+
+## Run on Windows without installing anything
+
+`DevHub-Portable.exe` is a single file: copy it anywhere (a USB stick or a shared drive) and double-click it. It needs no installer, no administrator rights and no server. It opens DevHub in an Edge or Chrome app window, with all 35 tools and the Tasks tracker in offline mode.
+
+- The exe carries `DevHub.html` inside itself and writes it to `%LocalAppData%\DevHub-Portable`. Nothing else on the computer is changed. Delete that folder and the exe to remove it.
+- Everything runs on the computer. Online accounts and sync need the DevHub server, so they are not part of the portable build; use the offline database instead.
+- `DevHub.html` also works on its own: open it in Chrome or Edge by double-clicking.
+- Windows SmartScreen or a company policy may warn about an unsigned program. Have it signed by your IT team if your policy requires that.
+
+Build both files yourself (Python 3 and Go 1.21+, no Windows machine needed): `sh portable/build-windows-exe.sh` creates `dist/DevHub.html` and `dist/DevHub-Portable.exe`. `python3 portable/build-single-file.py` creates only the HTML.
 
 ## Text → JSON / XML mapper
 

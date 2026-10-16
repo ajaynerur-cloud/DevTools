@@ -1,27 +1,16 @@
-# DevHub delta: SAP Scope Delta + Remediation Project Planner
+# DevHub delta (git)
 
-Adds two tools under **Tools > SAP tools**:
+Two ways to apply it to your DevTools-main repo:
 
-- **SAP Scope Delta**: compare two ATC / CVA result sheets per system (common objects by priority, additional objects, additional %).
-- **Remediation Project Planner**: effort, team and timeline estimate with Excel and PowerPoint export, shown as an embedded page.
+1. **Git patch (recommended):** from the repo root run `git apply --index devhub-delta.patch` (or `git am devhub-delta.patch` to keep the commit message).
+2. **Files:** copy the files in this zip over the same paths in the repo (keep the `vendor/` and `portable/` folders), then commit.
 
-It also stops the app contacting the sync server (Render) when you only use the developer tools. The server is woken only on Tasks, Tool stores and Account.
+After merging, **redeploy the server (Render)**: `server.js` changed.
 
-## Why `server.js` is in this delta
-`server.js` used to send `X-Frame-Options: DENY` and `frame-ancestors 'none'` on every page, which made the planner appear as a blocked frame. It now allows only `remediation-planner.html` to be framed, and only by the same site. All other pages stay denied. **Redeploy the server** (Render) for this to take effect.
-
-## Apply
-Copy these files over the same paths in your DevTools-main folder (keep the `vendor/` subfolder), then redeploy.
-
-| File | Change |
-|---|---|
-| `sap-delta.js` | **New.** SAP Scope Delta. |
-| `remediation-planner.html`, `remediation-planner.js` | **New.** The planner page and its script (the server's policy only allows scripts from its own files). |
-| `vendor/exceljs.min.js`, `vendor/pptxgen.bundle.js` | **New.** Libraries for the planner's exports (MIT), plus `vendor/LICENSE-exceljs` and `vendor/LICENSE-pptxgenjs`. |
-| `server.js` | Lets the planner page be framed by DevHub only. |
-| `app.js` | Registers both tools; server wake-up and sync run only on Tasks, Tool stores and Account. |
-| `index.html` | Loads `sap-delta.js`; build 2026.10.16-6. |
-| `sw.js` | Caches the new files; cache version v33. |
-| `styles.css` | Styles for both tools. |
-| `package.json` | `npm run www` copies the new files (needed for the Android build). |
-| `README.md` | Documents both tools; tool count is now 35. |
+## What changed
+- New tools under SAP tools: **SAP Scope Delta** (`sap-delta.js`) and **Remediation Project Planner** (`remediation-planner.html`, `remediation-planner.js`, `vendor/exceljs.min.js`, `vendor/pptxgen.bundle.js`).
+- The sync server (Render) is woken only on Tasks, Tool stores and Account (`app.js`).
+- `server.js` lets only `remediation-planner.html` be framed, and only by the same site.
+- **SAP CVA Orchestrator keeps no history** (`sap-cva.js`): applications.json, its file handle and the output folder are no longer stored on the device, and earlier stored copies are removed. Users open applications.json each time.
+- **Portable build** (`portable/`): `sh portable/build-windows-exe.sh` makes `dist/DevHub.html` (the whole app in one file) and `dist/DevHub-Portable.exe` (no install, no admin rights). `dist/` is git-ignored.
+- `index.html` build 2026.10.16-7, `sw.js` cache v34, `package.json` (Android `www` copy list), `styles.css`, `README.md`.

@@ -18,12 +18,15 @@
 
   // state survives switching tools during the session
   const S = window.__sapCvaState ||= {
-    apps: ls.get(LS_APPS, {}), appsName: ls.get(LS_APPS + '-name', ''), appsDirty: ls.get(LS_APPS + '-dirty', false), appsHandle: null, appsHandleLoaded: false, historyIn: undefined,
+    apps: {}, appsName: '', appsDirty: false, appsHandle: null, appsHandleLoaded: false, historyIn: undefined,
     rows: [], outDir: null, outDirLoaded: false, history: null, historyName: '', results: null, log: [],
     opts: Object.assign({ summary: true, summaryName: 'SAP_CVA_Executive_Summary.xlsx', keepHistory: true, subsequent: true, historyName: 'SAP_CVA_History.json' }, ls.get(LS_OPTS, {}))
   };
+  // Remove what earlier versions stored on this device (applications, file name, folder handles)
+  try { [LS_APPS, LS_APPS + '-name', LS_APPS + '-dirty'].forEach(k => localStorage.removeItem(k)); } catch {}
+  setTimeout(() => { try { folderStore.del(); appsFileStore.del(); } catch {} }, 0);
   let worker = null;
-  // The chosen output folder (Chrome/Edge desktop) is kept in IndexedDB so it is remembered between visits.
+  // Nothing about applications or folders is kept between visits (security): the applications.json is opened every time and the output folder is chosen every time.
   const idb = (mode, fn) => new Promise((ok, no) => {
     let rq; try { rq = indexedDB.open('dh-sapcva', 1); } catch (e) { return no(e); }
     rq.onupgradeneeded = () => rq.result.createObjectStore('kv');
@@ -97,7 +100,7 @@
     $('[data-clearlog]').onclick = e => { e.preventDefault(); S.log = []; logEl.textContent = ''; };
 
     // ---------- applications ----------
-    const saveApps = () => { ls.set(LS_APPS, S.apps); ls.set(LS_APPS + '-name', S.appsName); ls.set(LS_APPS + '-dirty', S.appsDirty); };
+    const saveApps = () => {};   // in memory only
     const paintAppCount = () => {
       const n = appIds().length;
       $('[data-appcount]').textContent = n ? `${n} application${n === 1 ? '' : 's'}${S.appsName ? ' · ' + S.appsName : ''}` : 'None loaded';
@@ -119,10 +122,9 @@
     if (openBtn) openBtn.onclick = async () => {   // Chrome/Edge: keep the file handle so Save writes back into the same file
       try {
         const [h] = await window.showOpenFilePicker({ id: 'sap-cva-apps', types: [{ description: 'Applications JSON', accept: { 'application/json': ['.json'] } }] });
-        const f = await h.getFile(); loadAppsText(await f.text(), f.name); S.appsHandle = h; appsFileStore.set(h); paintAppCount();
+        const f = await h.getFile(); loadAppsText(await f.text(), f.name); S.appsHandle = h; paintAppCount();
       } catch (err) { if (err.name !== 'AbortError') appErr(err); }
     };
-    if (canOpenFile() && !S.appsHandleLoaded) { S.appsHandleLoaded = true; appsFileStore.get().then(h => { if (h && !S.appsHandle && h.name === S.appsName) { S.appsHandle = h; paintAppCount(); } }); }
     $('[data-appsave]').onclick = async () => {
       if (!appIds().length) return toast('No applications to save yet');
       const json = JSON.stringify(S.apps, null, 2) + '\n', name = S.appsName || 'applications.json';
@@ -144,7 +146,7 @@
           <td>${used.has(id) ? '<span class="hint">in use</span>' : `<button type="button" class="ghost danger cva-sm" data-del="${esc(id)}" aria-label="Remove ${esc(id)}">✕</button>`}</td></tr>`).join('')
           : '<tr><td colspan="5" class="hint">No applications yet — open your applications.json, or add them below.</td></tr>'}
         </tbody><tfoot><tr class="cva-newapp"><td><input data-n="id" placeholder="Application ID"></td><td><input data-n="system_no" placeholder="System no."></td><td><input data-n="system_name" placeholder="System name"></td><td><input data-n="business_area" placeholder="Business area"></td><td><button type="button" class="primary cva-sm" data-addapp>+ Add</button></td></tr></tfoot></table></div>
-        <p class="hint">Applications are remembered on this device. After adding or removing one, use <b>${S.appsHandle ? 'Save to ' + esc(S.appsHandle.name) : 'Save applications.json'}</b> to update the file${S.appsHandle ? '' : ' (it downloads a new copy)'}.</p>`;
+        <p class="hint">Applications are kept only while this page is open and are not stored on this device: open your applications.json each time. After adding or removing one, use <b>${S.appsHandle ? 'Save to ' + esc(S.appsHandle.name) : 'Save applications.json'}</b> to update the file${S.appsHandle ? '' : ' (it downloads a new copy)'}.</p>`;
       $$('[data-del]', ed).forEach(b => b.onclick = () => { delete S.apps[b.dataset.del]; S.appsDirty = true; saveApps(); log(`Removed application ${b.dataset.del}`); paintAppEditor(); paintAppCount(); paintFiles(); });
       const add = () => {
         const v = Object.fromEntries($$('[data-n]', ed).map(i => [i.dataset.n, i.value.trim()]));
@@ -231,11 +233,10 @@
     }
     if (canPickFolder()) {
       $('[data-outpick]').onclick = async () => {
-        try { const d = await window.showDirectoryPicker({ mode: 'readwrite', id: 'sap-cva-out', startIn: S.outDir || 'documents' }); S.outDir = d; folderStore.set(d); log(`Output folder: ${d.name}`); paintOutDir(); }
+        try { const d = await window.showDirectoryPicker({ mode: 'readwrite', id: 'sap-cva-out', startIn: S.outDir || 'documents' }); S.outDir = d; log(`Output folder: ${d.name}`); paintOutDir(); }
         catch (e) { if (e.name !== 'AbortError') toast('Could not open that folder'); }
       };
       $('[data-outclear]').onclick = () => { S.outDir = null; folderStore.del(); log('Output folder cleared — files go to Downloads'); paintOutDir(); };
-      if (!S.outDirLoaded) { S.outDirLoaded = true; folderStore.get().then(h => { if (h && !S.outDir) { S.outDir = h; paintOutDir(); } }); }
     }
     async function folderAccess(dir, ask) {
       try { const o = { mode: 'readwrite' }; if ((await dir.queryPermission(o)) === 'granted') return true; return ask ? (await dir.requestPermission(o)) === 'granted' : false; } catch { return false; }
