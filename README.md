@@ -102,7 +102,13 @@ Tools → SAP tools → **Remediation Project Planner** estimates the effort, te
 - `DevHub.html` also works on its own: open it in Chrome or Edge by double-clicking.
 - Windows SmartScreen or a company policy may warn about an unsigned program. Have it signed by your IT team if your policy requires that.
 
-Build both files yourself (Python 3 and Go 1.21+, no Windows machine needed): `sh portable/build-windows-exe.sh` creates `dist/DevHub.html` and `dist/DevHub-Portable.exe`. `python3 portable/build-single-file.py` creates only the HTML.
+Build both files when you need them:
+
+- **On GitHub (nothing to install):** Actions → *Windows portable exe* → *Run workflow*. Download `DevHub-Portable.exe`, `DevHub.html` and `SHA256SUMS.txt` from the run's Artifacts. Pushing a tag such as `portable-v1.0` also attaches them to a release.
+- **On Windows:** install Python 3 and Go 1.21+, then run `portable\build-windows-exe.bat`.
+- **On Linux or macOS:** `sh portable/build-windows-exe.sh`. `python3 portable/build-single-file.py` creates only the HTML.
+
+Both write to `dist/` (git-ignored).
 
 ## Text → JSON / XML mapper
 
