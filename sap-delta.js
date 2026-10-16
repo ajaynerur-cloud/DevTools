@@ -165,7 +165,7 @@
       el.innerHTML = `<div class="cva dlt">
         <section class="cva-card"><header class="cva-card-h"><div><h3>Settings</h3><p class="hint">Objects are matched on name and type and counted once, at their highest priority. Only the priorities ticked count.</p></div></header>
           <div class="dlt-set"><div class="dlt-prios"><span class="hint">Priorities in scope</span><div class="row">${prioritiesSeen().map(x => `<label class="chip dlt-pchip"><input type="checkbox" data-prio value="${esc(x)}" ${S.prios.includes(x) ? 'checked' : ''}> ${esc(x)}</label>`).join('')}</div></div>
-          <label>Exclude findings containing (comma-separated)<input type="text" data-exclude value="${esc(S.exclude)}"></label>
+          <label>Exclude findings containing<input type="text" data-exclude value="${esc(S.exclude)}" placeholder="words, comma-separated"></label>
           <label>False positives in B (%)<input type="number" data-fp min="0" max="100" step="1" value="${S.fp}"></label>
           <label>Match objects on<select data-keymode><option value="nt" ${S.keyMode === 'nt' ? 'selected' : ''}>Name + type</option><option value="n" ${S.keyMode === 'n' ? 'selected' : ''}>Name only</option></select></label></div></section>
         <section class="cva-card"><header class="cva-card-h"><div><h3>Comparisons</h3><p class="hint">One row per system: A is the baseline (e.g. RISE), B is compared against it (e.g. CVA). Drop a workbook on each side.</p></div>

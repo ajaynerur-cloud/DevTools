@@ -140,10 +140,11 @@
   }
 
   // Wake the (possibly sleeping) server, then sync. The app is already usable from the copy on this device.
-  let waking = false, wakeRetry;
+  let waking = false, wakeRetry, lastWake = 0;
   async function wakeAndSync() {
-    if (!session.user || !session.token || waking) return;
-    waking = true; clearTimeout(wakeRetry);
+    // The sync server (Render) is only needed for the signed-in data screens; the developer tools never contact it.
+    if (!session.user || !session.token || waking || !PRIVATE.has(document.body.dataset.route)) return;
+    waking = true; lastWake = Date.now(); clearTimeout(wakeRetry);
     try {
       setStatus('Connecting…', 'busy');
       let up = false;
@@ -2251,6 +2252,7 @@
     document.querySelectorAll('.nav a[data-route]').forEach(a => a.classList.toggle('active', a.dataset.route === route || (route === 'start' && a.dataset.route === 'account')));
     document.body.dataset.route = route;
     (routes[route] || routes.tools)(sub);
+    if (PRIVATE.has(route) && session.user && session.token && Date.now() - lastWake > 60000) wakeAndSync();   // opening Tasks / Tool stores / Account wakes the server
     if (offline.active()) offlineStatus();
   }
   window.addEventListener('hashchange', () => { render(); view().focus({ preventScroll: true }); window.scrollTo(0, 0); });
