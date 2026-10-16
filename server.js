@@ -308,7 +308,12 @@ async function serveStatic(req, res, url) {
     'Content-Type': MIME[ext], ETag: etag, 'X-Content-Type-Options': 'nosniff', 'Referrer-Policy': 'strict-origin-when-cross-origin',
     'Cache-Control': p.startsWith('/vendor/') || p.startsWith('/icons/') ? 'public, max-age=604800' : 'no-cache'
   };
-  if (ext === '.html') { headers['Content-Security-Policy'] = CSP; headers['X-Frame-Options'] = 'DENY'; }
+  if (ext === '.html') {
+    // The planner is shown inside DevHub's own page, so only that file may be framed (and only by this site)
+    const own = p === '/remediation-planner.html';
+    headers['Content-Security-Policy'] = own ? CSP.replace("frame-ancestors 'none'", "frame-ancestors 'self'") : CSP;
+    headers['X-Frame-Options'] = own ? 'SAMEORIGIN' : 'DENY';
+  }
   if (req.headers['if-none-match'] === etag) { res.writeHead(304, headers); return res.end(); }
   const gzip = /\bgzip\b/.test(req.headers['accept-encoding'] || '') && ext !== '.png' && st.size > 1024;
   if (gzip) { headers['Content-Encoding'] = 'gzip'; headers.Vary = 'Accept-Encoding'; } else headers['Content-Length'] = st.size;

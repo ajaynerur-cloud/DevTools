@@ -91,7 +91,7 @@ Objects are counted once, at their highest priority. The module is `sap-delta.js
 
 ## SAP tools › Remediation Project Planner
 
-Tools → SAP tools → **Remediation Project Planner** estimates the effort, team size and timeline of an SAP remediation project from the findings per area. Enter object counts, rates and assumptions, read the live totals, results table and timeline, and export the plan to **Excel** or **PowerPoint**. It runs entirely on the device and keeps its plans in this browser (use *Open in a full window* for more room). The page is `remediation-planner.html`; its Excel and PowerPoint exports use the bundled `vendor/exceljs.min.js` and `vendor/pptxgen.bundle.js` (both MIT), so they work offline.
+Tools → SAP tools → **Remediation Project Planner** estimates the effort, team size and timeline of an SAP remediation project from the findings per area. Enter object counts, rates and assumptions, read the live totals, results table and timeline, and export the plan to **Excel** or **PowerPoint**. It runs entirely on the device and keeps its plans in this browser (use *Open in a full window* for more room). The page is `remediation-planner.html` with its script in `remediation-planner.js` (the server's security policy only allows scripts from its own files, and lets only this one page be shown inside DevHub); its Excel and PowerPoint exports use the bundled `vendor/exceljs.min.js` and `vendor/pptxgen.bundle.js` (both MIT), so they work offline.
 
 ## Text → JSON / XML mapper
 
