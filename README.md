@@ -3,7 +3,7 @@
 A developer toolkit for phone, tablet and desktop, with private user accounts:
 
 - **Tasks:** a full task tracker with Today, Upcoming, Board, All tasks and Insights views.
-- **33 developer tools:** formatters, large-file converters, a data migrator, a text → JSON/XML mapper, encoders and generators. They run entirely in the browser and need no account.
+- **34 developer tools:** formatters, large-file converters, a data migrator, a text → JSON/XML mapper, encoders and generators. They run entirely in the browser and need no account.
 - **Tool store links:** your own list of registries and marketplaces.
 - **Accounts:** registration and sign-in, where every user sees only their own data.
 
@@ -76,6 +76,18 @@ Tools → SAP tools → **SAP CVA Orchestrator** is the browser version of `SAP_
 5. **Output folder** (Chrome/Edge on a computer): choose it once in Outputs; it is remembered, and every run saves its reports straight into it. Other browsers save to Downloads. Each file can also be downloaded on its own, or all of them as a .zip.
 
 Mapping is identical to the desktop tool: an exact CVA code in any text column wins, otherwise the best keyword/description score (≥ 20). The engine is `sap-cva-core.js`; styled Excel output uses `vendor/xlsx-style.min.js` ([xlsx-js-style](https://github.com/gitbrent/xlsx-js-style), Apache-2.0).
+
+## SAP tools › SAP Scope Delta
+
+Tools → SAP tools → **SAP Scope Delta** compares two ATC / CVA result workbooks per system and shows how much extra work the second one adds. It runs entirely on the device and works with the CVA Orchestrator's `Mapped_Data` sheet or any workbook that has object name, object type and priority columns.
+
+1. **Comparisons:** add one row per system (A vs B, A1 vs B1 …). **A** is the baseline (e.g. RISE) and **B** is the one compared against it (e.g. CVA). Drop or choose a workbook on each side. The sheet and the Object name, Object type, Priority, Check message, Check title and Package columns are detected; change them under *Columns* if a file uses other names.
+2. **Settings:** choose which priorities count (default P1 and P2), words that exclude a finding (default `syntax error`), an assumed false-positive rate for B (default 30%) and whether objects match on name + type or name only.
+3. **Compare:** press **Compare** to calculate. Changing a file, sheet or column keeps the previous result on screen, marked as out of date, until you press Compare again.
+4. **Results:** per system and in total: objects in A, in B, common, additional (B only), additional as a percentage of A, the same after the false-positive rate, and objects only in A. Each system also shows the common objects by priority (A priority against B priority) and the additional objects by type and priority, and notes how many additional objects exist in A only at a priority outside your scope.
+5. **Export to Excel:** `SAP_Scope_Delta.xlsx` with a Summary sheet and, per system, a priority-matrix sheet and a full object list (common, additional, only in A) with priorities, finding counts and package.
+
+Objects are counted once, at their highest priority. The module is `sap-delta.js` and uses `vendor/xlsx-style.min.js`.
 
 ## Text → JSON / XML mapper
 
