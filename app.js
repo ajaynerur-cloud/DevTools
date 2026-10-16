@@ -1806,7 +1806,13 @@
     { id: 'sap-cva', group: 'SAP tools', name: 'SAP CVA Orchestrator', desc: 'Map SAP Code Vulnerability Analyzer findings to CVA codes (exact code, then keyword match) for up to 11 systems at once. Builds an 18-sheet CVA report per system — a remediation-category summary, findings, unique objects and object names per code, an object scorecard, object × code counts, priorities, P1/P2 backlog, RAG heatmap, unique objects — plus an executive summary and a trend-history JSON.',
       render: el => window.DHSapCva ? window.DHSapCva.render(el, { esc, toast, saveBlob }) : (el.innerHTML = '<p class="out err">The SAP CVA module did not load. Reload the page.</p>') },
     { id: 'sap-delta', group: 'SAP tools', name: 'SAP Scope Delta', desc: 'Compare two ATC / CVA result workbooks per system (A = baseline such as RISE, B = compared such as CVA). Shows the objects common to both by priority, the additional objects B adds, the additional effort as a percentage (also after a false-positive rate), and exports the full object list to Excel. Add several comparisons (A vs B, A1 vs B1 …) to see all systems side by side.',
-      render: el => window.DHSapDelta ? window.DHSapDelta.render(el, { esc, toast, saveBlob }) : (el.innerHTML = '<p class="out err">The SAP Scope Delta module did not load. Reload the page.</p>') }
+      render: el => window.DHSapDelta ? window.DHSapDelta.render(el, { esc, toast, saveBlob }) : (el.innerHTML = '<p class="out err">The SAP Scope Delta module did not load. Reload the page.</p>') },
+    { id: 'sap-planner', group: 'SAP tools', name: 'Remediation Project Planner', desc: 'Estimate the effort, team size and timeline of an SAP remediation project from the findings per area. Enter object counts, rates and assumptions, see live totals, a results table and timeline, and export the plan to Excel or PowerPoint. Plans are kept on this device.',
+      render: el => {
+        el.innerHTML = '<div class="planner-bar"><span class="hint">The planner keeps its plans on this device. </span><a href="remediation-planner.html" target="_blank" rel="noopener">Open in a full window</a></div><iframe class="planner-frame" src="remediation-planner.html" title="Remediation Project Planner"></iframe>';
+        const f = el.querySelector('iframe'), fit = () => { try { const d = f.contentDocument; f.style.height = Math.max(640, d.documentElement.scrollHeight) + 'px'; } catch {} };
+        f.addEventListener('load', () => { fit(); try { new ResizeObserver(fit).observe(f.contentDocument.documentElement); } catch {} });
+      } }
   ];
   const GROUPS = ['Formatters', 'Converters', 'SAP tools', 'Encode & decode', 'Text', 'Generators', 'Utilities'];
   const TOOLS = [...FILE_TOOLS, ...SAP_TOOLS, ...BASIC_TOOLS].sort((a, b) => GROUPS.indexOf(a.group) - GROUPS.indexOf(b.group));

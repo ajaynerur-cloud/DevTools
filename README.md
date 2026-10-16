@@ -3,7 +3,7 @@
 A developer toolkit for phone, tablet and desktop, with private user accounts:
 
 - **Tasks:** a full task tracker with Today, Upcoming, Board, All tasks and Insights views.
-- **34 developer tools:** formatters, large-file converters, a data migrator, a text → JSON/XML mapper, encoders and generators. They run entirely in the browser and need no account.
+- **35 developer tools:** formatters, large-file converters, a data migrator, a text → JSON/XML mapper, encoders and generators. They run entirely in the browser and need no account.
 - **Tool store links:** your own list of registries and marketplaces.
 - **Accounts:** registration and sign-in, where every user sees only their own data.
 
@@ -88,6 +88,10 @@ Tools → SAP tools → **SAP Scope Delta** compares two ATC / CVA result workbo
 5. **Export to Excel:** `SAP_Scope_Delta.xlsx` with a Summary sheet and, per system, a priority-matrix sheet and a full object list (common, additional, only in A) with priorities, finding counts and package.
 
 Objects are counted once, at their highest priority. The module is `sap-delta.js` and uses `vendor/xlsx-style.min.js`.
+
+## SAP tools › Remediation Project Planner
+
+Tools → SAP tools → **Remediation Project Planner** estimates the effort, team size and timeline of an SAP remediation project from the findings per area. Enter object counts, rates and assumptions, read the live totals, results table and timeline, and export the plan to **Excel** or **PowerPoint**. It runs entirely on the device and keeps its plans in this browser (use *Open in a full window* for more room). The page is `remediation-planner.html`; its Excel and PowerPoint exports use the bundled `vendor/exceljs.min.js` and `vendor/pptxgen.bundle.js` (both MIT), so they work offline.
 
 ## Text → JSON / XML mapper
 
