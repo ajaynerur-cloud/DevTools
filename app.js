@@ -1913,9 +1913,9 @@
       <div class="links-bar"><input id="q" type="search" placeholder="Search links" value="${esc(linkQuery)}" aria-label="Search links">
         <select id="cf" aria-label="Category"><option value="">All categories</option>${cats.map(c => `<option ${c === linkCat ? 'selected' : ''}>${esc(c)}</option>`).join('')}</select>
         <button class="primary" id="new">Add link</button></div>
-      ${Object.keys(groups).sort().map(c => `<section class="cat"><h2>${esc(c)} <span class="hint">${groups[c].length}</span></h2><div class="link-grid">${groups[c].map(l => `
+      ${Object.keys(groups).sort().map(c => `<section class="cat"><h2 class="cat-head"><span>${esc(c)} <span class="hint">${groups[c].length}</span></span><button type="button" class="ghost cat-move" data-move-cat="${esc(c)}" title="Move every link in “${esc(c)}” to the Links page">Move all to Links →</button></h2><div class="link-grid">${groups[c].map(l => `
         <div class="link"><a href="${esc(/^https?:\/\//i.test(l.url) ? l.url : '#')}" target="_blank" rel="noopener">${esc(l.name)}</a><span class="u">${esc(l.url.replace(/^https?:\/\//, ''))}</span>${l.notes ? `<span class="n">${esc(l.notes)}</span>` : ''}
-        <div class="acts"><button data-edit="${l.id}">Edit</button><button class="danger" data-rm="${l.id}">Delete</button></div></div>`).join('')}</div></section>`).join('')
+        <div class="acts"><button data-edit="${l.id}">Edit</button><button data-move="${l.id}" title="Move to the Links page">Move to Links</button><button class="danger" data-rm="${l.id}">Delete</button></div></div>`).join('')}</div></section>`).join('')
       || `<p class="empty">${links.length ? 'No links match that search.' : 'No links yet. Add your first tool store.'}</p>`}
       <dialog id="dlg"><form method="dialog" id="lf"><h2 id="dt">Add link</h2>
         <label for="ln">Name</label><input id="ln" required><label for="lu">URL</label><input id="lu" type="url" required placeholder="https://">
@@ -1932,6 +1932,20 @@
       saveLinks(editing ? all.map(x => x.id === editing.id ? { ...x, ...v } : x) : [...all, { id: uid(), ...v }]);
       renderLinks(); toast(editing ? 'Link updated' : 'Link added'); };
     view().querySelectorAll('[data-edit]').forEach(b => b.onclick = () => open(links.find(l => l.id === b.dataset.edit)));
+    // Move to the Links page: the link keeps its name, address, notes and category (as its group) and leaves Tool stores
+    const moveToWork = (ids, label) => {
+      const set = new Set(ids), at = new Date().toISOString();
+      saveLinks((data.get('links') || []).map(x => set.has(x.id) ? { ...x, list: 'work', updatedAt: at } : x));
+      if (linkCat && !(data.get('links') || []).some(x => !x.deleted && x.list !== 'work' && (x.category || 'Other') === linkCat)) linkCat = '';
+      renderLinks();
+      toast(`Moved ${label} to Links`, { label: 'Undo', fn: () => { const at2 = new Date().toISOString(); saveLinks((data.get('links') || []).map(x => set.has(x.id) ? { ...x, list: undefined, updatedAt: at2 } : x)); renderLinks(); } });
+    };
+    view().querySelectorAll('[data-move]').forEach(b => b.onclick = () => { const l = links.find(x => x.id === b.dataset.move); moveToWork([l.id], `“${l.name}”`); });
+    view().querySelectorAll('[data-move-cat]').forEach(b => b.onclick = () => {
+      const c = b.dataset.moveCat, ids = links.filter(l => (l.category || 'Other') === c).map(l => l.id);
+      if (ids.length > 1 && !confirm(`Move all ${ids.length} links in “${c}” to Links? They will no longer be listed in Tool stores.`)) return;
+      moveToWork(ids, ids.length === 1 ? '1 link' : `${ids.length} links from “${c}”`);
+    });
     view().querySelectorAll('[data-rm]').forEach(b => b.onclick = () => {
       const all = data.get('links') || [], l = all.find(x => x.id === b.dataset.rm);
       saveLinks(all.map(x => x === l ? { ...x, deleted: true, updatedAt: new Date().toISOString() } : x)); renderLinks();

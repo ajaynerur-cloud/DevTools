@@ -1080,3 +1080,5 @@ button.cva-go:disabled { opacity: .45; cursor: not-allowed; }
   .nav a { padding: 8px 4px; }
   .wl-grid { grid-template-columns: 1fr; }
 }
+.cat-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; flex-wrap: wrap; }
+.cat-move { font-size: .78rem; padding: 3px 9px; min-height: 0 !important; color: var(--accent); font-weight: 600; }

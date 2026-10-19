@@ -31,6 +31,7 @@ The **Links** menu (below Tool stores) keeps the links you open every day.
 
 - **Paste and press Enter** to add a link; DevHub names it from the address (press Edit to rename it). *Add with details…* sets the name, group, notes and pin.
 - **Pin** (☆/★) keeps a link in the *Pinned* section at the top. Other links are listed by group, and search covers name, address, group and notes.
+- **Move from Tool stores:** on the Tool stores page, *Move to Links* on a link, or *Move all to Links →* on a category, moves it here (the category becomes its group) and removes it from Tool stores. Undo is offered right after.
 - **Copy** puts the address on the clipboard; Delete can be undone from the message that appears.
 - Links are stored with your tool stores (same `links.json` / `links` table, marked `list: "work"`), so they follow your account or your offline database, backups and exports. SQLite databases get two extra columns, `list` and `pinned`; older files open unchanged.
 
