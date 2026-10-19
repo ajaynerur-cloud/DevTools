@@ -1,5 +1,5 @@
 // DevHub service worker: offline app shell, never caches GitHub API calls.
-const CACHE = 'devhub-v34';
+const CACHE = 'devhub-v35';
 const SHELL = ['./', 'index.html', 'styles.css', 'app.js', 'manifest.webmanifest',
   'favicon.ico', 'icons/icon.svg', 'icons/favicon-32.png', 'icons/apple-touch-icon.png', 'icons/icon-192.png', 'icons/icon-512.png', 'icons/icon-maskable-192.png', 'icons/icon-maskable-512.png', 'seed/links.json', 'config.js', 'tasks.js', 'notify.js', 'biolock.js', 'offline-db.js', 'adapter.js', 'worker.js', 'migrate.js', 'sap-cva.js', 'sap-cva-core.js', 'sap-delta.js', 'remediation-planner.html', 'remediation-planner.js', 'vendor/sql-wasm.js', 'vendor/sql-wasm.wasm',
   'vendor/papaparse.min.js', 'vendor/xlsx.full.min.js', 'vendor/fxp.min.js', 'vendor/js-yaml.min.js', 'vendor/beautifier.min.js', 'vendor/sql-formatter.min.js', 'vendor/xlsx-style.min.js'];
@@ -15,6 +15,16 @@ self.addEventListener('activate', e => {
     await self.clients.claim();
   })());
 });
+// Is this response really DevHub (and not a hosting provider's wake-up / error page)?
+async function isOurs(req, res) {
+  if (!res || !res.ok || res.type === 'opaqueredirect') return false;
+  const ct = res.headers.get('content-type') || '', html = /text\/html/i.test(ct);
+  const wantsHtml = req.mode === 'navigate' || /(\.html|\/)$/.test(new URL(req.url).pathname);
+  if (!wantsHtml) return !html;   // scripts, styles and data never come back as an HTML page
+  if (!html) return false;
+  const t = await res.clone().text();
+  return t.includes('<main id="view"') || t.includes('remediation-planner.js');
+}
 self.addEventListener('fetch', e => {
   const url = new URL(e.request.url);
   // Account API calls always go to the network, never the cache
@@ -25,8 +35,14 @@ self.addEventListener('fetch', e => {
   e.respondWith(caches.open(CACHE).then(async cache => {
     const cached = () => cache.match(e.request, { ignoreSearch: url.origin === location.origin }).then(r => r || (e.request.mode === 'navigate' ? cache.match('index.html') : undefined));
     if (appFile) {
-      try { const res = await fetch(e.request, { cache: 'no-cache' }); if (res.ok) cache.put(e.request, res.clone()); return res; }
-      catch { return (await cached()) || Response.error(); }
+      // Network first, but never wait on a sleeping host and never show its "starting up" page: if the network is slow (3 s)
+      // or answers with something that isn't DevHub, the copy on this device is used and the new version is stored for next time.
+      const net = fetch(e.request, { cache: 'no-cache' }).then(async res => { if (await isOurs(e.request, res)) { await cache.put(e.request, res.clone()); return res; } return null; }).catch(() => null);
+      const have = await cached();
+      if (!have) return (await net) || fetch(e.request).catch(() => Response.error());   // first visit: nothing stored yet
+      e.waitUntil(net);
+      const quick = await Promise.race([net, new Promise(r => setTimeout(() => r(null), 3000))]);
+      return quick || have;
     }
     const hit = await cached();
     const network = fetch(e.request).then(res => { if (res.ok || res.type === 'opaque') cache.put(e.request, res.clone()); return res; }).catch(() => hit || Response.error());

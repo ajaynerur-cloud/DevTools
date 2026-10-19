@@ -18,7 +18,7 @@
       deleted INTEGER NOT NULL DEFAULT 0, extra TEXT);
     CREATE INDEX idx_tasks_due ON tasks(due);
     CREATE INDEX idx_tasks_status ON tasks(status);
-    CREATE TABLE links (id TEXT PRIMARY KEY, name TEXT NOT NULL, url TEXT, category TEXT, notes TEXT, updated_at TEXT, deleted INTEGER NOT NULL DEFAULT 0);
+    CREATE TABLE links (id TEXT PRIMARY KEY, name TEXT NOT NULL, url TEXT, category TEXT, notes TEXT, updated_at TEXT, deleted INTEGER NOT NULL DEFAULT 0, list TEXT, pinned INTEGER NOT NULL DEFAULT 0);
     CREATE TABLE settings (key TEXT PRIMARY KEY, value TEXT);
     CREATE VIEW open_tasks AS SELECT id, title, due, priority, status, project_id, tags FROM tasks WHERE deleted = 0 AND status <> 'done' ORDER BY due IS NULL, due, priority;`;
   const TASK_COLS = { id: 'id', title: 'title', notes: 'notes', due: 'due', priority: 'priority', status: 'status', project: 'project_id', tags: 'tags', estimate: 'estimate', spent: 'spent', timerStart: 'timer_start', subtasks: 'subtasks', repeat: 'repeat', createdAt: 'created_at', updatedAt: 'updated_at', completedAt: 'completed_at', deleted: 'deleted' };
@@ -74,8 +74,8 @@
           x.repeat || null, x.createdAt || null, x.updatedAt || null, x.completedAt || null, x.deleted ? 1 : 0, Object.keys(extra).length ? JSON.stringify(extra) : null]);
       }
       ts.free();
-      const l = db.prepare('INSERT OR REPLACE INTO links VALUES (?, ?, ?, ?, ?, ?, ?)');
-      (docs.links || []).forEach(x => l.run([x.id, x.name || '', x.url || '', x.category || 'Other', x.notes || '', x.updatedAt || null, x.deleted ? 1 : 0]));
+      const l = db.prepare('INSERT OR REPLACE INTO links (id, name, url, category, notes, updated_at, deleted, list, pinned) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)');   // list: null = Tool stores, 'work' = Links page
+      (docs.links || []).forEach(x => l.run([x.id, x.name || '', x.url || '', x.category || 'Other', x.notes || '', x.updatedAt || null, x.deleted ? 1 : 0, x.list || null, x.pinned ? 1 : 0]));
       l.free();
       const st = db.prepare('INSERT INTO settings VALUES (?, ?)');
       Object.entries(t.settings || {}).forEach(([k, v]) => st.run(['tasks.' + k, JSON.stringify(v)]));
@@ -111,7 +111,7 @@
           return { ...parseJson(r.extra, {}), ...o };
         });
         const projects = rows(db, 'SELECT * FROM projects').map(r => ({ id: r.id, name: r.name, color: r.color, updatedAt: r.updated_at, ...(r.deleted ? { deleted: true } : {}) }));
-        const links = tables.has('links') ? rows(db, 'SELECT * FROM links').map(r => ({ id: r.id, name: r.name, url: r.url, category: r.category, notes: r.notes, updatedAt: r.updated_at, ...(r.deleted ? { deleted: true } : {}) })) : [];
+        const links = tables.has('links') ? rows(db, 'SELECT * FROM links').map(r => ({ id: r.id, name: r.name, url: r.url, category: r.category, notes: r.notes, updatedAt: r.updated_at, ...(r.list ? { list: r.list } : {}), ...(r.pinned ? { pinned: true } : {}), ...(r.deleted ? { deleted: true } : {}) })) : [];
         return { format: 'sqlite', name: meta.name || file.name.replace(/\.[^.]+$/, ''), createdAt: meta.created_at, docs: normalize({ tasks: { tasks, projects, settings: { dailyGoal: 5, ...taskSettings } }, links, prefs: settings.prefs || {} }) };
       } finally { db.close(); }
     }

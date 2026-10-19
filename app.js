@@ -51,11 +51,14 @@
     api('/config').then(c => { serverConfig = c; if (document.body.dataset.route === 'register') render(); }).catch(() => { configAsked = false; });
   }
 
-  async function api(path, { method = 'GET', body } = {}) {
+  async function api(path, { method = 'GET', body } = {}, tries = 0) {
     let r;
     try {
-      r = await fetch(API + '/api' + path, { method, headers: { 'Content-Type': 'application/json', ...(session.token ? { Authorization: 'Bearer ' + session.token } : {}) }, body: body === undefined ? undefined : JSON.stringify(body), cache: 'no-store' });
+      r = await fetch(API + '/api' + path, { method, headers: { 'Content-Type': 'application/json', Accept: 'application/json', ...(session.token ? { Authorization: 'Bearer ' + session.token } : {}) }, body: body === undefined ? undefined : JSON.stringify(body), cache: 'no-store' });
     } catch { const e = new Error('Can’t reach the server. Check your connection.'); e.offline = true; throw e; }
+    // A sleeping host can answer with its own HTML "starting up" page instead of the API: treat that as "not reachable yet", never show it
+    if (/text\/html/i.test(r.headers.get('content-type') || '') && tries < 12) { await new Promise(ok => setTimeout(ok, 5000)); return api(path, { method, body }, tries + 1); }   // host still starting: wait quietly
+    if (/text\/html/i.test(r.headers.get('content-type') || '')) { const e = new Error('The sync server isn’t ready yet. Your changes are safe on this device.'); e.offline = true; throw e; }
     let j = {}; try { j = await r.json(); } catch {}
     if (!r.ok) {
       const e = new Error(j.error || `Request failed (${r.status})`); e.status = r.status; e.body = j;
@@ -112,14 +115,16 @@
     return local;
   }
 
+  let lastStatus = null;   // kept so the sidebar can be redrawn without losing it
   const setStatus = (text, cls = '') => {
+    lastStatus = { text, cls };
     const el = $('#syncStatus'); if (el) { el.textContent = text; el.className = 'sync ' + cls; }
     document.querySelectorAll('.mobile-sync .ms-text').forEach(m => m.textContent = text);
   };
   const stamp = () => new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
 
-  async function pull() {
-    if (!session.user || !session.token) return;
+  async function pull({ thenPush = true } = {}) {
+    if (!session.user || !session.token) return false;
     setStatus('Syncing…', 'busy');
     try {
       let changed = false;
@@ -134,44 +139,80 @@
       }
       data.persist();
       if (changed) data.changed();
-      setStatus(`Synced ${stamp()}`, 'ok');
-      if (data.hasUnsynced()) await push();
-    } catch (e) { setStatus(e.offline ? 'Offline — changes saved on this device' : 'Sync paused — ' + e.message, e.offline ? '' : 'err'); }
+      lastSync = Date.now(); setStatus(`Synced ${stamp()}`, 'ok');
+      if (thenPush && data.hasUnsynced()) return await push();
+      if (data.hasUnsynced()) setStatus(pendingText(), '');
+      return true;
+    } catch (e) { setStatus(failText(e), e.offline ? '' : 'err'); return false; }
   }
 
-  // Wake the (possibly sleeping) server, then sync. The app is already usable from the copy on this device.
-  let waking = false, wakeRetry, lastWake = 0;
-  async function wakeAndSync() {
-    // The sync server (Render) is only needed for the signed-in data screens; the developer tools never contact it.
-    if (!session.user || !session.token || waking || !PRIVATE.has(document.body.dataset.route)) return;
-    waking = true; lastWake = Date.now(); clearTimeout(wakeRetry);
-    try {
-      setStatus('Connecting…', 'busy');
-      let up = false;
-      for (let i = 0; i < 10 && session.token; i++) {
-        const ctl = new AbortController(), to = setTimeout(() => ctl.abort(), 15000);
-        try { const r = await fetch(API + '/api/health', { cache: 'no-store', signal: ctl.signal }); if (r.ok) up = true; } catch {}
-        clearTimeout(to);
-        if (up || !navigator.onLine) break;
-        setStatus(i < 2 ? 'Waking the server… your tasks are ready on this device' : 'Server is still waking up…', 'busy');
-        await new Promise(r => setTimeout(r, 3000));
-      }
-      if (!session.token) return;
-      if (up) { await pull(); api('/auth/me').then(r => { session.setUser(r.user); renderNavUser(); }).catch(() => {}); }
-      else if (!navigator.onLine) setStatus('Offline — changes saved on this device');
-      else { setStatus('Server is asleep — changes saved on this device'); wakeRetry = setTimeout(wakeAndSync, 60000); }
-    } finally { waking = false; }
+  // ---------- sync: Render is contacted ONLY for a signed-in user, either automatically every 5 minutes or when Pull / Push is pressed ----------
+  // Nothing about the server starting up is ever shown: the app works from the copy on this device and the status line only says
+  // "Syncing…", "Synced 10:32" or "Saved on this device". The developer tools, the sign-in page and offline databases never contact it.
+  const SYNC_EVERY = 5 * 60 * 1000;
+  const syncPref = {
+    get mode() { return store.get('devhub:syncmode', 'auto') === 'manual' ? 'manual' : 'auto'; },
+    set mode(m) { store.set('devhub:syncmode', m === 'manual' ? 'manual' : 'auto'); scheduleAuto(); renderNavUser(); }
+  };
+  const isAuto = () => syncPref.mode === 'auto';
+  let lastSync = 0, syncBusy = false, autoTimer, connected = 0;
+  const pendingText = () => isAuto() ? 'Saved on this device · syncs automatically within 5 min' : 'Saved on this device · press Push to upload';
+  const failText = e => e && e.offline ? (navigator.onLine ? `Not synced yet — saved on this device${isAuto() ? ' · next try in 5 min' : ''}` : 'Offline — changes saved on this device') : 'Sync paused — ' + (e && e.message);
+  // Quietly make sure the server answers (a sleeping free instance can take up to a minute); never navigates, never shows its page.
+  async function reachServer() {
+    if (Date.now() - connected < 4 * 60 * 1000) return true;   // it answered recently
+    for (let i = 0; i < 6 && session.token && navigator.onLine; i++) {
+      const ctl = new AbortController(), to = setTimeout(() => ctl.abort(), 20000);
+      try {
+        const r = await fetch(API + '/api/health', { cache: 'no-store', signal: ctl.signal, headers: { Accept: 'application/json' } });
+        const j = r.ok && /json/i.test(r.headers.get('content-type') || '') ? await r.json().catch(() => null) : null;
+        if (j && j.ok) { connected = Date.now(); return true; }
+      } catch {} finally { clearTimeout(to); }
+      await sleep(4000);
+    }
+    return false;
   }
+  // what: 'both' (pull then push) | 'pull' | 'push'
+  async function syncNow({ what = 'both', manual = false } = {}) {
+    if (!session.user || !session.token) return false;
+    if (syncBusy) { if (manual) toast('Sync is already running'); return false; }
+    syncBusy = true; clearTimeout(pushTimer); renderSyncButtons();
+    try {
+      if (!navigator.onLine) { setStatus('Offline — changes saved on this device'); if (manual) toast('You’re offline — try again when you’re connected'); return false; }
+      setStatus('Syncing…', 'busy');
+      if (!(await reachServer())) { setStatus(failText({ offline: true })); if (manual) toast('Couldn’t reach the sync server — your changes are safe on this device. Try again in a minute.'); return false; }
+      let ok;
+      if (what === 'push') ok = await push();
+      else ok = await pull({ thenPush: what === 'both' });
+      if (ok && what !== 'pull') api('/auth/me').then(r => { session.setUser(r.user); renderNavUser(); }).catch(() => {});
+      if (manual && ok) toast(what === 'pull' ? 'Pulled the latest from your account' : what === 'push' ? (data.hasUnsynced() ? 'Some changes are still waiting' : 'Pushed your changes') : 'Synced');
+      return ok;
+    } finally { syncBusy = false; renderSyncButtons(); scheduleAuto(); }
+  }
+  function scheduleAuto() {
+    clearTimeout(autoTimer);
+    if (!session.user || !session.token || !isAuto()) return;
+    autoTimer = setTimeout(() => {
+      if (document.hidden) { if (data.hasUnsynced()) syncNow({ what: 'push' }); else scheduleAuto(); }   // in the background: only send changes
+      else syncNow();
+    }, Math.max(5000, lastSync + SYNC_EVERY - Date.now()));
+  }
+  const wakeAndSync = () => isAuto() ? syncNow() : (setStatus(data.hasUnsynced() ? pendingText() : 'Manual sync · press Pull for the latest'), false);
+  // Pull / Push buttons (sidebar, phone status line, Account)
+  const syncCtlHtml = () => session.user ? `<div class="sync-ctl"><span class="sc-mode" title="Change this in Account → Sync">${isAuto() ? 'Auto · every 5 min' : 'Manual sync'}</span><button type="button" class="ghost" data-sync="pull" title="Get the latest tasks and links from your account">↓ Pull</button><button type="button" class="ghost" data-sync="push" title="Upload the changes made on this device">↑ Push</button></div>` : '';
+  function renderSyncButtons() { document.querySelectorAll('[data-sync]').forEach(b => { b.disabled = syncBusy; }); }
+  document.addEventListener('click', e => { const b = e.target.closest('[data-sync]'); if (b) { e.preventDefault(); syncNow({ what: b.dataset.sync, manual: true }); } });
+
   // Fingerprint unlock: the token comes out of the Keystore, the local data opens first, the server is contacted last
   function unlockApp(token) {
     session.token = token; data.ns = session.user.id; data.load(); autoBackup.load();
     renderNavUser(); render(); wakeAndSync();
   }
-  function relockApp() { session.token = null; clearTimeout(pushTimer); clearTimeout(wakeRetry); document.querySelectorAll('dialog[open]').forEach(d => d.close()); }
+  function relockApp() { session.token = null; clearTimeout(pushTimer); clearTimeout(autoTimer); document.querySelectorAll('dialog[open]').forEach(d => d.close()); }
 
   let pushing = false, pushTimer;
   async function push() {
-    if (!session.user || !session.token || pushing) return;
+    if (!session.user || !session.token || pushing) return false;
     pushing = true; setStatus('Saving…', 'busy');
     try {
       for (const name of DOCS) {
@@ -186,12 +227,15 @@
           }
         }
       }
-      data.persist();
-      setStatus(`Saved ${stamp()}`, 'ok'); autoBackup.schedule();
-    } catch (e) { setStatus(e.offline ? 'Offline — changes saved on this device' : 'Not saved — ' + e.message, e.offline ? '' : 'err'); }
+      data.persist(); lastSync = Date.now(); connected = Date.now();
+      setStatus(`Synced ${stamp()}`, 'ok'); autoBackup.schedule();
+      return true;
+    } catch (e) { setStatus(failText(e), e.offline ? '' : 'err'); return false; }
     finally { pushing = false; }
   }
-  function schedulePush() { if (offline.active()) return markOfflineDirty(); setStatus('Unsaved changes…', 'busy'); clearTimeout(pushTimer); pushTimer = setTimeout(push, 1200); }
+  // An edit is saved on this device at once. It reaches the account at the next automatic sync (every 5 minutes, and when you
+  // leave the page), or when you press Push in manual mode.
+  function schedulePush() { if (offline.active()) return markOfflineDirty(); if (session.user) setStatus(pendingText()); }
 
   function startSession(token, user, remember) {
     let carried = null;   // tasks, projects and links from the offline database this device was using
@@ -213,7 +257,7 @@
       data.persist();
       if (added) setTimeout(() => toast(`${added} task${added === 1 ? '' : 's'} from your offline database added to your account`), 600);
     }
-    renderNavUser(); pull(); autoBackup.load();
+    renderNavUser(); connected = Date.now(); lastSync = 0; syncNow(); autoBackup.load();   // signing in just reached the server, so get this account's data now (in both sync modes)
     setTimeout(() => window.DHBio && window.DHBio.offer(), 1500);
   }
   function sessionExpired() {
@@ -221,13 +265,14 @@
     if (had) { toast('Your session ended. Sign in again.'); location.hash = 'login'; }
   }
   async function signOut() {
-    if (data.hasUnsynced()) { await push(); if (data.hasUnsynced() && !confirm('Some changes haven’t reached the server yet and will be lost. Sign out anyway?')) return; }
+    clearTimeout(autoTimer);
+    if (data.hasUnsynced()) { await syncNow({ what: 'push' }); if (data.hasUnsynced() && !confirm('Some changes haven’t reached the server yet and will be lost. Sign out anyway?')) return; }
     const id = session.user.id; data.wipe(id); session.clear(); renderNavUser(); location.hash = 'login'; toast('Signed out');
   }
   function renderNavUser() {
     const el = $('#navUser'); if (!el) return;
     const u = session.user;
-    el.innerHTML = u ? `<a href="#account" class="user-chip" data-route="account"><span class="avatar" aria-hidden="true">${esc((u.name || u.username).trim().split(/\s+/).map(w => w[0]).slice(0, 2).join('').toUpperCase())}</span><span class="uc-text"><b>${esc(u.name || u.username)}</b><span class="sync" id="syncStatus">Synced</span></span></a>`
+    el.innerHTML = u ? `<a href="#account" class="user-chip" data-route="account"><span class="avatar" aria-hidden="true">${esc((u.name || u.username).trim().split(/\s+/).map(w => w[0]).slice(0, 2).join('').toUpperCase())}</span><span class="uc-text"><b>${esc(u.name || u.username)}</b><span class="sync ${lastStatus ? lastStatus.cls : ''}" id="syncStatus">${esc(lastStatus ? lastStatus.text : isAuto() ? 'Saved on this device' : 'Manual sync')}</span></span></a>${syncCtlHtml()}`
       : offline.meta ? `<a href="#account" class="user-chip" data-route="account"><span class="avatar db" aria-hidden="true">DB</span><span class="uc-text"><b>${esc(offline.meta.name)}</b><span class="sync" id="syncStatus">Offline</span></span></a><button type="button" class="db-save primary" data-save-db hidden>Save file</button>`
       : `<a href="#start" class="user-chip signin" data-route="start">Sign in or use offline</a>`;
     const acc = $('.nav a[data-route="account"].nav-link'); if (acc) acc.textContent = u ? 'Account' : offline.meta ? 'Database' : 'Start';
@@ -384,8 +429,10 @@
     save(c) { const m = offline.meta; if (!m) return; m.cloud = c; offline.setMeta(m); },
     async call(path, { method = 'GET', body, token } = {}) {
       let r; const t = token || this.link()?.token;
-      try { r = await fetch(API + '/api' + path, { method, headers: { 'Content-Type': 'application/json', ...(t ? { Authorization: 'Bearer ' + t } : {}) }, body: body === undefined ? undefined : JSON.stringify(body), cache: 'no-store' }); }
+      try { r = await fetch(API + '/api' + path, { method, headers: { 'Content-Type': 'application/json', Accept: 'application/json', ...(t ? { Authorization: 'Bearer ' + t } : {}) }, body: body === undefined ? undefined : JSON.stringify(body), cache: 'no-store' }); }
       catch { const e = new Error('Can’t reach the server — the online copy will be updated when you’re back online.'); e.offline = true; throw e; }
+      if (/text\/html/i.test(r.headers.get('content-type') || '') && tries < 12) { await new Promise(ok => setTimeout(ok, 5000)); return api(path, { method, body }, tries + 1); }   // host still starting: wait quietly
+    if (/text\/html/i.test(r.headers.get('content-type') || '')) { const e = new Error('The online copy will be updated in a few minutes.'); e.offline = true; throw e; }   // host still starting: never show its page
       let j = {}; try { j = await r.json(); } catch {}
       if (!r.ok) { const e = new Error(j.error || `Request failed (${r.status})`); e.status = r.status; e.body = j; if (r.status === 401 && this.link()) this.save({ ...this.link(), expired: true }); throw e; }
       return j;
@@ -1819,7 +1866,7 @@
 
   // ---------- views ----------
   const view = () => $('#view');
-  const syncLine = () => session.user || offline.meta ? `<div class="mobile-sync"><span class="ms-text">${esc($('#syncStatus')?.textContent || '')}</span>${!session.user && offline.meta ? '<button type="button" class="ghost" data-save-db hidden>Save file</button>' : ''}</div>` : '';
+  const syncLine = () => session.user || offline.meta ? `<div class="mobile-sync"><span class="ms-text">${esc($('#syncStatus')?.textContent || '')}</span>${!session.user && offline.meta ? '<button type="button" class="ghost" data-save-db hidden>Save file</button>' : syncCtlHtml()}</div>` : '';
 
   const headCollapsed = () => { try { return localStorage.getItem('dh-head-collapsed') === '1'; } catch { return false; } };
   // each tool remembers whether its own header (title + description) is collapsed
@@ -1856,7 +1903,7 @@
   // ---------- tool store links (per user) ----------
   let linkQuery = '', linkCat = '';
   function renderLinks() {
-    const links = (data.get('links') || []).filter(l => !l.deleted);
+    const links = (data.get('links') || []).filter(l => !l.deleted && l.list !== 'work');   // work links live on the Links page
     const saveLinks = next => data.set('links', next);
     const cats = [...new Set(links.map(l => l.category || 'Other'))].sort();
     const q = linkQuery.toLowerCase();
@@ -1889,6 +1936,66 @@
       const all = data.get('links') || [], l = all.find(x => x.id === b.dataset.rm);
       saveLinks(all.map(x => x === l ? { ...x, deleted: true, updatedAt: new Date().toISOString() } : x)); renderLinks();
       toast(`Deleted “${l.name}”`, { label: 'Undo', fn: () => { saveLinks((data.get('links') || []).map(x => x.id === l.id ? { ...x, deleted: false, updatedAt: new Date().toISOString() } : x)); renderLinks(); } });
+    });
+  }
+
+  // ---------- work links: everyday quick-access links (per user, stored with the tool stores as list: 'work') ----------
+  let wlQuery = '', wlGroup = '';
+  const safeUrl = u => /^https?:\/\//i.test(u) ? u : '#';
+  const fixUrl = u => { u = String(u || '').trim(); if (!u) return ''; return /^[a-z][a-z0-9+.-]*:/i.test(u) ? u : 'https://' + u; };
+  const nameFromUrl = u => { try { const x = new URL(u); const h = x.hostname.replace(/^www\./, ''); const seg = x.pathname.split('/').filter(Boolean)[0]; const base = h.split('.')[0] || h; return base.charAt(0).toUpperCase() + base.slice(1) + (seg && seg.length < 25 ? ' · ' + decodeURIComponent(seg) : ''); } catch { return u; } };
+  function renderWorkLinks() {
+    const all = () => data.get('links') || [];
+    const links = all().filter(l => !l.deleted && l.list === 'work');
+    const save = next => data.set('links', next);
+    const now = () => new Date().toISOString();
+    const groups = [...new Set(links.map(l => l.category || 'General'))].sort((a, b) => a.localeCompare(b));
+    const q = wlQuery.toLowerCase();
+    const shown = links.filter(l => (!wlGroup || (l.category || 'General') === wlGroup) && (!q || [l.name, l.url, l.notes, l.category].join(' ').toLowerCase().includes(q)))
+      .sort((a, b) => String(a.name).localeCompare(String(b.name)));
+    const pinned = shown.filter(l => l.pinned);
+    const byGroup = {}; shown.filter(l => !l.pinned).forEach(l => (byGroup[l.category || 'General'] ||= []).push(l));
+    const initials = n => esc(String(n || '?').trim().split(/\s+/).filter(w => /^[\p{L}\p{N}]/u.test(w)).map(w => w[0]).slice(0, 2).join('').toUpperCase());
+    const card = l => `<div class="wl${l.pinned ? ' pinned' : ''}"><span class="wl-ico" aria-hidden="true">${initials(l.name)}</span>
+        <div class="wl-body"><a href="${esc(safeUrl(l.url))}" target="_blank" rel="noopener" title="${esc(l.url)}">${esc(l.name)}</a><span class="u">${esc(String(l.url).replace(/^https?:\/\//, ''))}</span>${l.notes ? `<span class="n">${esc(l.notes)}</span>` : ''}</div>
+        <div class="wl-acts"><button type="button" class="ghost" data-pin="${l.id}" title="${l.pinned ? 'Unpin' : 'Pin to top'}" aria-pressed="${!!l.pinned}">${l.pinned ? '★' : '☆'}<span class="sr">${l.pinned ? 'Unpin' : 'Pin'}</span></button><button type="button" class="ghost" data-copy="${l.id}" title="Copy link">Copy</button><button type="button" class="ghost" data-edit="${l.id}">Edit</button><button type="button" class="ghost danger" data-rm="${l.id}">Delete</button></div></div>`;
+    view().innerHTML = `${syncLine()}<h1>Links</h1><p class="lede">Your everyday work links, one click away. Only you can see them — they're kept with your tasks${session.user ? ' and synced with your account' : ' in your offline database'}.</p>
+      <form class="wl-quick" id="wlq" autocomplete="off"><input id="wlqUrl" type="text" inputmode="url" placeholder="Paste a link and press Enter to add it" aria-label="New link URL"><button class="primary">Add</button><button type="button" id="wlNew">Add with details…</button></form>
+      <div class="links-bar"><input id="q" type="search" placeholder="Search links" value="${esc(wlQuery)}" aria-label="Search links">
+        <select id="gf" aria-label="Group"><option value="">All groups</option>${groups.map(c => `<option ${c === wlGroup ? 'selected' : ''}>${esc(c)}</option>`).join('')}</select></div>
+      ${pinned.length ? `<section class="cat"><h2>Pinned <span class="hint">${pinned.length}</span></h2><div class="wl-grid">${pinned.map(card).join('')}</div></section>` : ''}
+      ${Object.keys(byGroup).sort((a, b) => a.localeCompare(b)).map(c => `<section class="cat"><h2>${esc(c)} <span class="hint">${byGroup[c].length}</span></h2><div class="wl-grid">${byGroup[c].map(card).join('')}</div></section>`).join('')}
+      ${shown.length ? '' : `<p class="empty">${links.length ? 'No links match that search.' : 'No links yet. Paste one above — your intranet, Jira board, SAP Fiori launchpad, timesheet, dashboards…'}</p>`}
+      <dialog id="dlg"><form method="dialog" id="lf"><h2 id="dt">Add link</h2>
+        <label for="ln">Name</label><input id="ln" required><label for="lu">URL</label><input id="lu" required placeholder="https://">
+        <label for="lc">Group</label><input id="lc" list="gl" placeholder="e.g. Daily, Project X, HR"><datalist id="gl">${groups.map(c => `<option value="${esc(c)}">`).join('')}</datalist>
+        <label for="lnotes">Notes</label><input id="lnotes">
+        <label class="wl-pin-opt"><input type="checkbox" id="lpin"> Pin to the top</label>
+        <div class="row" style="margin-top:16px;justify-content:flex-end"><button value="cancel" formnovalidate>Cancel</button><button class="primary" value="ok">Save link</button></div></form></dialog>`;
+    $('#q').oninput = e => { wlQuery = e.target.value; const pos = e.target.selectionStart; renderWorkLinks(); const i = $('#q'); i.focus(); i.setSelectionRange(pos, pos); };
+    $('#gf').onchange = e => { wlGroup = e.target.value; renderWorkLinks(); };
+    $('#wlq').onsubmit = e => { e.preventDefault(); const url = fixUrl($('#wlqUrl').value); if (!url) return $('#wlqUrl').focus();
+      if (!/^https?:\/\//i.test(url)) return toast('Use a web link (http or https)');
+      if (links.some(l => l.url === url)) return toast('That link is already in your list');
+      save([...all(), { id: uid(), list: 'work', name: nameFromUrl(url), url, category: wlGroup || 'General', notes: '', updatedAt: now() }]);
+      renderWorkLinks(); toast('Link added — press Edit to rename it'); $('#wlqUrl').focus(); };
+    const dlg = $('#dlg'); let editing = null;
+    const open = (l, url) => { editing = l; $('#dt').textContent = l ? 'Edit link' : 'Add link'; $('#ln').value = l?.name || ''; $('#lu').value = l?.url || url || ''; $('#lc').value = l?.category || wlGroup || ''; $('#lnotes').value = l?.notes || ''; $('#lpin').checked = !!l?.pinned; dlg.showModal(); };
+    $('#wlNew').onclick = () => open(null, fixUrl($('#wlqUrl').value));
+    $('#lu').onblur = () => { const u = fixUrl($('#lu').value); $('#lu').value = u; if (u && !$('#ln').value.trim()) $('#ln').value = nameFromUrl(u); };
+    dlg.onclose = () => { if (dlg.returnValue !== 'ok') return;
+      const url = fixUrl($('#lu').value); if (!/^https?:\/\//i.test(url)) return toast('Not saved — use a web link (http or https)');
+      const v = { name: $('#ln').value.trim() || nameFromUrl(url), url, category: $('#lc').value.trim() || 'General', notes: $('#lnotes').value.trim(), pinned: $('#lpin').checked, updatedAt: now() };
+      save(editing ? all().map(x => x.id === editing.id ? { ...x, ...v } : x) : [...all(), { id: uid(), list: 'work', ...v }]);
+      renderWorkLinks(); toast(editing ? 'Link updated' : 'Link added'); };
+    const byId = id => links.find(l => l.id === id);
+    view().querySelectorAll('[data-edit]').forEach(b => b.onclick = () => open(byId(b.dataset.edit)));
+    view().querySelectorAll('[data-copy]').forEach(b => b.onclick = () => copy(byId(b.dataset.copy).url));
+    view().querySelectorAll('[data-pin]').forEach(b => b.onclick = () => { const id = b.dataset.pin; save(all().map(x => x.id === id ? { ...x, pinned: !x.pinned, updatedAt: now() } : x)); renderWorkLinks(); });
+    view().querySelectorAll('[data-rm]').forEach(b => b.onclick = () => {
+      const l = byId(b.dataset.rm);
+      save(all().map(x => x.id === l.id ? { ...x, deleted: true, updatedAt: now() } : x)); renderWorkLinks();
+      toast(`Deleted “${l.name}”`, { label: 'Undo', fn: () => { save(all().map(x => x.id === l.id ? { ...x, deleted: false, updatedAt: now() } : x)); renderWorkLinks(); } });
     });
   }
 
@@ -1987,8 +2094,11 @@
           <button class="primary">Change password</button></form></section>
         ${window.DHBio ? window.DHBio.panelHtml() : ''}
         <section class="panel"><h2>Sync and data</h2>
-          <p class="hint" id="acctSync">${data.hasUnsynced() ? 'Some changes are waiting to sync.' : 'Everything is synced.'}</p>
-          <div class="row"><button id="syncNow">Sync now</button><button id="bkOpen" class="primary">Backup &amp; import…</button><button id="ex">Export JSON</button><button id="exq">Export SQLite</button></div>
+          <div class="sync-mode-opts" role="radiogroup" aria-label="Sync">
+            <label><input type="radio" name="syncmode" value="auto" ${isAuto() ? 'checked' : ''}><span>Automatic<small>Pulls and pushes every 5 minutes while DevHub is open, and pushes when you leave it. Edits are always saved on this device first.</small></span></label>
+            <label><input type="radio" name="syncmode" value="manual" ${isAuto() ? '' : 'checked'}><span>Manual<small>The sync server is contacted only when you press Pull or Push.</small></span></label></div>
+          <p class="hint" id="acctSync">${data.hasUnsynced() ? 'Some changes on this device haven’t been pushed yet.' : 'Everything is synced.'}</p>
+          <div class="row"><button id="syncPull" data-sync-btn>↓ Pull</button><button id="syncPush" data-sync-btn>↑ Push</button><button id="bkOpen" class="primary">Backup &amp; import…</button><button id="ex">Export JSON</button><button id="exq">Export SQLite</button></div>
           <p class="hint" style="margin-top:10px">Backups are offline databases too — open one with “Use offline” on any device. Import accepts DevHub backups and any .db / .json / .xml task file.</p></section>
         <section class="panel"><h2>Sessions</h2>
           <div class="row"><button id="so">Sign out</button><button id="soa">Sign out on all devices</button></div>
@@ -2005,13 +2115,16 @@
       if (pwf.next.value.length < 8) return fieldErrors(pwf, { next: 'Use at least 8 characters.' });
       try { const r = await api('/auth/password', { method: 'POST', body: { current: pwf.current.value, next: pwf.next.value } }); session.save(r.token, r.user, !!localStorage.getItem('devhub:token')); if (window.DHBio) await window.DHBio.refresh(r.token, r.user); pwf.reset(); toast('Password changed'); }
       catch (x) { fieldErrors(pwf, x.body?.fields); if (!x.body?.fields) toast(x.message); } };
-    $('#syncNow').onclick = async () => { await pull(); await push(); $('#acctSync').textContent = data.hasUnsynced() ? 'Some changes are waiting to sync.' : 'Everything is synced.'; };
+    const acctSync = () => { const el = $('#acctSync'); if (el) el.textContent = data.hasUnsynced() ? 'Some changes on this device haven’t been pushed yet.' : `Everything is synced${lastSync ? ' (last sync ' + new Date(lastSync).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) + ')' : ''}.`; };
+    view().querySelectorAll('input[name="syncmode"]').forEach(r => r.onchange = () => { syncPref.mode = r.value; toast(r.value === 'auto' ? 'Automatic sync on — every 5 minutes' : 'Manual sync — use Pull and Push'); if (r.value === 'auto') syncNow(); });
+    $('#syncPull').onclick = async () => { await syncNow({ what: 'pull', manual: true }); acctSync(); };
+    $('#syncPush').onclick = async () => { await syncNow({ what: 'push', manual: true }); acctSync(); };
     const dbMeta = { name: `${u.name || u.username}'s tasks` };
     $('#ex').onclick = async () => saveBlob(await DevHubDB.encode('json', data.docs, dbMeta), `devhub-${u.username}-${dayKey(new Date())}.json`);
     $('#exq').onclick = async () => { try { saveBlob(await DevHubDB.encode('sqlite', data.docs, dbMeta), `devhub-${u.username}-${dayKey(new Date())}.sqlite`); } catch (x) { toast(x.message); } };
     $('#bkOpen').onclick = () => showBackupDialog();
     $('#so').onclick = signOut;
-    $('#soa').onclick = async () => { if (!confirm('Sign out on every device, including this one?')) return; try { await push(); await api('/auth/logout-all', { method: 'POST' }); } catch (x) { return toast(x.message); } const id = session.user.id; data.wipe(id); session.clear(); renderNavUser(); location.hash = 'login'; toast('Signed out on all devices'); };
+    $('#soa').onclick = async () => { if (!confirm('Sign out on every device, including this one?')) return; try { await syncNow({ what: 'push' }); await api('/auth/logout-all', { method: 'POST' }); } catch (x) { return toast(x.message); } const id = session.user.id; data.wipe(id); session.clear(); renderNavUser(); location.hash = 'login'; toast('Signed out on all devices'); };
     $('#del').onclick = async () => { const pw = prompt('This permanently deletes your account and data. Enter your password to confirm:'); if (!pw) return;
       try { await api('/auth/account', { method: 'DELETE', body: { password: pw } }); const id = session.user.id; data.wipe(id); session.clear(); renderNavUser(); location.hash = 'register'; toast('Your account was deleted'); } catch (x) { toast(x.message); } };
   }
@@ -2248,8 +2361,8 @@
   }
 
   // ---------- router ----------
-  const routes = { tools: sub => renderTools(sub), links: renderLinks, account: () => offline.active() ? renderOfflineDb() : renderAccount(), login: renderLogin, register: renderRegister, start: renderStart, mapfile: renderMapFile };
-  const PRIVATE = new Set(['tasks', 'links', 'account']);
+  const routes = { tools: sub => renderTools(sub), links: renderLinks, worklinks: renderWorkLinks, account: () => offline.active() ? renderOfflineDb() : renderAccount(), login: renderLogin, register: renderRegister, start: renderStart, mapfile: renderMapFile };
+  const PRIVATE = new Set(['tasks', 'links', 'worklinks', 'account']);
   function render() {
     if (window.DHBio && window.DHBio.locked()) return;   // nothing is shown until the fingerprint is accepted
     let [route, sub] = (location.hash.slice(1).split('?')[0] || 'tools').split('/');
@@ -2258,14 +2371,23 @@
     document.querySelectorAll('.nav a[data-route]').forEach(a => a.classList.toggle('active', a.dataset.route === route || (route === 'start' && a.dataset.route === 'account')));
     document.body.dataset.route = route;
     (routes[route] || routes.tools)(sub);
-    if (PRIVATE.has(route) && session.user && session.token && Date.now() - lastWake > 60000) wakeAndSync();   // opening Tasks / Tool stores / Account wakes the server
     if (offline.active()) offlineStatus();
   }
   window.addEventListener('hashchange', () => { render(); view().focus({ preventScroll: true }); window.scrollTo(0, 0); });
-  window.addEventListener('online', () => { if (session.user && session.token) wakeAndSync(); else if (offline.active()) cloud.schedule(); });
-  document.addEventListener('visibilitychange', () => { if (document.visibilityState !== 'visible') return; if (session.user && session.token && !pushing) wakeAndSync(); else if (offline.active()) cloud.schedule(); });
+  // Automatic sync (signed in only): every 5 minutes while the app is open, when you come back to it after 5 minutes or more,
+  // and once when you leave it with changes not yet sent. Manual sync: only the Pull / Push buttons contact the server.
+  window.addEventListener('online', () => { if (session.user && session.token) { if (isAuto() && data.hasUnsynced()) syncNow({ what: 'push' }); } else if (offline.active()) cloud.schedule(); });
+  document.addEventListener('visibilitychange', () => {
+    if (session.user && session.token) {
+      if (!isAuto()) return;
+      if (document.visibilityState === 'hidden') { if (data.hasUnsynced() && !pushing) syncNow({ what: 'push' }); }
+      else if (Date.now() - lastSync >= SYNC_EVERY) syncNow();
+      return;
+    }
+    if (document.visibilityState === 'visible' && offline.active()) cloud.schedule();
+  });
   setInterval(() => { if (!document.hidden && offline.active()) cloud.schedule(); }, 300000);
-  data.listeners.add(() => { const r = document.body.dataset.route; if ((r === 'tasks' || r === 'links') && !document.querySelector('dialog[open]')) render(); });
+  data.listeners.add(() => { const r = document.body.dataset.route; if ((r === 'tasks' || r === 'links' || r === 'worklinks') && !document.querySelector('dialog[open]')) render(); });
 
   // Shared with tasks.js
   // What the task tracker needs to adapt to your own file (null for DevHub databases and online accounts)
@@ -2292,7 +2414,7 @@
     }
     renderNavUser();
     if (bioLocked) window.DHBio.lock();
-    else { render(); if (session.user && session.token) wakeAndSync(); }
+    else { render(); if (session.user && session.token) wakeAndSync(); }   // automatic: sync now and every 5 min · manual: wait for Pull / Push
     if ('serviceWorker' in navigator && !isNative()) {
       const hadController = !!navigator.serviceWorker.controller; let reloaded = false;
       // A new version was deployed: its service worker takes over, then reload once so every file is the new one

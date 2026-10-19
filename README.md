@@ -5,6 +5,7 @@ A developer toolkit for phone, tablet and desktop, with private user accounts:
 - **Tasks:** a full task tracker with Today, Upcoming, Board, All tasks and Insights views.
 - **35 developer tools:** formatters, large-file converters, a data migrator, a text → JSON/XML mapper, encoders and generators. They run entirely in the browser and need no account.
 - **Tool store links:** your own list of registries and marketplaces.
+- **Links:** your everyday work links (intranet, boards, dashboards, timesheets…) with groups, pinning, search and one-click copy.
 - **Accounts:** registration and sign-in, where every user sees only their own data.
 
 It's installable as a PWA, and an Android APK is built by GitHub Actions.
@@ -24,9 +25,36 @@ The GitHub token lives only on the server. Every data request carries a signed s
 
 **Offline:** each user's data is cached on the device, so the app keeps working offline and syncs when it reconnects. If two devices edit at once, changes merge per task, and the most recent edit to each task wins. Signing out wipes that user's data from the device.
 
+## Links (everyday work links)
+
+The **Links** menu (below Tool stores) keeps the links you open every day.
+
+- **Paste and press Enter** to add a link; DevHub names it from the address (press Edit to rename it). *Add with details…* sets the name, group, notes and pin.
+- **Pin** (☆/★) keeps a link in the *Pinned* section at the top. Other links are listed by group, and search covers name, address, group and notes.
+- **Copy** puts the address on the clipboard; Delete can be undone from the message that appears.
+- Links are stored with your tool stores (same `links.json` / `links` table, marked `list: "work"`), so they follow your account or your offline database, backups and exports. SQLite databases get two extra columns, `list` and `pinned`; older files open unchanged.
+
+## Sync with the server (signed-in users only)
+
+The server on Render is contacted **only when you are signed in**. The developer tools, the sign-in screen until you press *Sign in*, the portable Windows build and offline databases never contact it. Every edit is saved on the device first.
+
+Choose the mode in **Account → Sync and data** (remembered per device):
+
+| | Automatic (default) | Manual |
+|---|---|---|
+| Pull (get the latest from the account) | when you open DevHub, then every 5 minutes while it's open, and when you come back to it after 5 minutes or more | only when you press **↓ Pull** |
+| Push (send this device's changes) | at the next 5-minute sync, and when you leave the page | only when you press **↑ Push** |
+
+**↓ Pull** and **↑ Push** are always available: under your name in the sidebar, in the status line on phones, and on the Account page. Signing in fetches your data once in both modes.
+
+**No wake-up screen.** A free Render instance sleeps when idle and shows its own "starting up" page to a browser that opens it. DevHub never shows it:
+- sync requests ask for JSON, and if the host answers with an HTML page instead DevHub waits quietly and retries; the status line only ever says *Syncing…*, *Synced 10:32* or *Saved on this device*;
+- when the app itself is served from Render, the service worker opens the copy stored on the device if the server takes more than 3 seconds or returns anything that isn't DevHub, and stores the new version in the background. (Only the very first visit on a device has nothing stored yet.)
+- For desktop use, the **GitHub Pages** address (Render used only for sync) or **DevHub-Portable.exe** (no server at all) avoid Render for opening the app entirely. For Pages, set the repository variable `API_BASE_URL` to your Render URL and Render's `CORS_ORIGINS` to your Pages origin.
+
 ## Online or offline
 
-Opening **Tasks** or **Tool stores** asks how you want to keep your data:
+Opening **Tasks**, **Tool stores** or **Links** asks how you want to keep your data:
 
 | | Online | Offline |
 |---|---|---|
