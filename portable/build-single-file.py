@@ -1,9 +1,9 @@
-# Builds dist/DevHub.html: the whole DevHub app (all tools, libraries, workers) in ONE file that runs by double-click, offline.
+# Builds dist/ToolboxPlus.html: the whole Toolbox+ app (all tools, libraries, workers) in ONE file that runs by double-click, offline.
 # Usage: python3 portable/build-single-file.py [output.html]
 import base64,json,re,os
 import sys
 R=os.path.abspath(os.path.join(os.path.dirname(os.path.abspath(__file__)),'..'))+'/'
-OUT=sys.argv[1] if len(sys.argv)>1 else os.path.join(R,'dist','DevHub.html')
+OUT=sys.argv[1] if len(sys.argv)>1 else os.path.join(R,'dist','ToolboxPlus.html')
 rd=lambda p:open(R+p,encoding='utf-8').read()
 rb=lambda p:open(R+p,'rb').read()
 VER=re.search(r'Build ([\d.\-]+)',rd('index.html')).group(1)
@@ -75,13 +75,13 @@ assert "const fit = () =>" in app or "fit = () =>" in app
 sw_old="if ('serviceWorker' in navigator && !isNative())"; assert sw_old in app
 app=app.replace(sw_old,"if ('serviceWorker' in navigator && !isNative() && location.protocol !== 'file:')")
 off=patch_locate(rd('offline-db.js'))
-order=[('config.js',rd('config.js')),('offline-db.js',off),('adapter.js',rd('adapter.js')),('sap-cva-core.js',rd('sap-cva-core.js')),('sap-cva.js',rd('sap-cva.js')),('sap-delta.js',rd('sap-delta.js')),('app.js',app),('tasks.js',rd('tasks.js')),('notify.js',rd('notify.js')),('biolock.js',rd('biolock.js'))]
+order=[('config.js',rd('config.js')),('offline-db.js',off),('adapter.js',rd('adapter.js')),('sap-cva-core.js',rd('sap-cva-core.js')),('sap-cva.js',rd('sap-cva.js')),('sap-delta.js',rd('sap-delta.js')),('app.js',app),('tasks.js',rd('tasks.js')),('insurance.js',rd('insurance.js')),('home.js',rd('home.js')),('notify.js',rd('notify.js')),('biolock.js',rd('biolock.js'))]
 css=rd('styles.css')
 idx=rd('index.html')
 body=re.search(r'<body>(.*?)<script src="config\.js',idx,re.S).group(1)
 icon=base64.b64encode(rb('icons/icon.svg')).decode()
 esc=lambda s:s.replace('</script','<\\/script')
-out=['<!doctype html>\n<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">\n<title>DevHub — developer toolkit</title>\n<meta name="theme-color" content="#3346D3">\n<link rel="icon" href="data:image/svg+xml;base64,%s">\n'%icon,
+out=['<!doctype html>\n<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">\n<title>Toolbox+ — tools, tasks, links &amp; policies</title>\n<meta name="theme-color" content="#3346D3">\n<link rel="icon" href="data:image/svg+xml;base64,%s">\n'%icon,
  '<link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin><link href="https://fonts.googleapis.com/css2?family=Instrument+Sans:wght@400;500;600;700&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet">\n',
  '<style>\n'+css+'\n</style>\n</head>\n<body>'+body,
  '<script>'+esc(vfs_js)+'</script>\n<script>'+shim+'</script>\n<script>'+esc(planner)+'</script>\n']

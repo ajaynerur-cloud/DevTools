@@ -1,0 +1,24 @@
+// Windows resources for ToolboxPlus-Portable.exe: the Toolbox+ icon and version details.
+// Rebuild rsrc_windows_amd64.syso after changing icons/app.ico (scripts/make-icons.py):
+//   llvm-windres --target=pe-x86-64 -O coff -i app.rc -o rsrc_windows_amd64.syso      (or: windres -O coff …)
+1 ICON "../../icons/app.ico"
+1 VERSIONINFO
+FILEVERSION 3,1,0,0
+PRODUCTVERSION 3,1,0,0
+BEGIN
+  BLOCK "StringFileInfo"
+  BEGIN
+    BLOCK "040904B0"
+    BEGIN
+      VALUE "FileDescription", "Toolbox+ portable"
+      VALUE "ProductName", "Toolbox+"
+      VALUE "FileVersion", "3.1.0"
+      VALUE "ProductVersion", "3.1.0"
+      VALUE "OriginalFilename", "ToolboxPlus-Portable.exe"
+    END
+  END
+  BLOCK "VarFileInfo"
+  BEGIN
+    VALUE "Translation", 0x409, 1200
+  END
+END
