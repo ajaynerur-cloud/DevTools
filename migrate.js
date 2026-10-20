@@ -1,4 +1,4 @@
-/* DevHub migrate engine — merges records from one .db/.sqlite, .json or .xml file into an EXISTING
+/* Toolbox+ migrate engine — merges records from one .db/.sqlite, .json or .xml file into an EXISTING
  * .db/.sqlite, .json or .xml file (any combination). Loaded on demand by worker.js, so it shares
  * worker.js globals: need(), progress(), infer(), xmlName(), sqlType(), MIME.
  *
@@ -29,7 +29,7 @@ async function detectKind(blob, name) {
     if (SQLITE_EXT.test(name)) return 'sqlite';
     if (/\.xml$/i.test(name)) return 'xml';
     if (/\.json$/i.test(name)) return 'json';
-    throw new Error(`${name} is empty. Give it a .db, .json or .xml name so DevHub knows what to create.`);
+    throw new Error(`${name} is empty. Give it a .db, .json or .xml name so Toolbox+ knows what to create.`);
   }
   const head = new Uint8Array(await blob.slice(0, 16).arrayBuffer());
   if (String.fromCharCode(...head) === 'SQLite format 3\u0000') return 'sqlite';
@@ -119,7 +119,7 @@ async function openStore(blob, name) {
   const st = { kind, name, tree, decl, indent, collections, rootArray: Array.isArray(tree) };
   if (kind === 'json' && isObj(tree) && (tree.app === 'devhub' || tree.type === 'devhub-database')) {
     st.profile = 'devhub';
-    // older/odd DevHub files: make sure tasks is { tasks: [], projects: [], settings }
+    // older/odd Toolbox+ files: make sure tasks is { tasks: [], projects: [], settings }
     if (!isObj(tree.tasks)) { const list = Array.isArray(tree.tasks) ? tree.tasks.filter(x => isObj(x) && !('tasks' in x && 'projects' in x)) : []; tree.tasks = { tasks: list, projects: [], settings: { dailyGoal: 5 } }; }
     if (!Array.isArray(tree.tasks.tasks)) tree.tasks.tasks = [];
     if (!Array.isArray(tree.tasks.projects)) tree.tasks.projects = [];
@@ -131,11 +131,11 @@ async function openStore(blob, name) {
   return st;
 }
 
-/* ---------- DevHub database profile: known fields and allowed values, even when the target is empty ---------- */
+/* ---------- Toolbox+ database profile: known fields and allowed values, even when the target is empty ---------- */
 const DH_STATUS = [['todo', 'To do'], ['doing', 'In progress'], ['done', 'Done']];
 const DH_PRIO = [[1, 'Urgent'], [2, 'High'], [3, 'Medium'], [4, 'Low']];
 const DH_TASK = [['id', 'string'], ['title', 'string'], ['notes', 'string'], ['due', 'string', 'date YYYY-MM-DD'], ['priority', 'number', null, DH_PRIO], ['status', 'string', null, DH_STATUS],
-  ['project', 'string', 'project name — linked to a DevHub project automatically'], ['tags', 'array', 'list, or text separated by commas'], ['estimate', 'number', 'minutes'], ['spent', 'number', 'seconds'],
+  ['project', 'string', 'project name — linked to a Toolbox+ project automatically'], ['tags', 'array', 'list, or text separated by commas'], ['estimate', 'number', 'minutes'], ['spent', 'number', 'seconds'],
   ['repeat', 'string'], ['createdAt', 'string'], ['updatedAt', 'string'], ['completedAt', 'string']];
 const DH_LINK = [['id', 'string'], ['name', 'string'], ['url', 'string'], ['category', 'string'], ['notes', 'string']];
 const DH_PROJECT = [['id', 'string'], ['name', 'string'], ['color', 'string']];
@@ -149,7 +149,7 @@ function applyProfile(st) {
     c.devhub = which.endsWith('projects') ? 'projects' : which.endsWith('links') ? 'links' : 'tasks';
     if (st.kind === 'sqlite') {
       for (const col of c.columns) { col.known = true; const f = spec.find(x => x[0] === (DH_SQL[col.name] || col.name)); if (f) { if (f[2]) col.hint = f[2]; if (f[3]) col.choices = f[3]; } }
-      if (c.devhub === 'tasks') { const pc = c.columns.find(x => x.name === 'project_id'); if (pc) pc.hint = 'project name — linked to a DevHub project automatically'; }
+      if (c.devhub === 'tasks') { const pc = c.columns.find(x => x.name === 'project_id'); if (pc) pc.hint = 'project name — linked to a Toolbox+ project automatically'; }
     } else {
       const have = new Map(c.columns.map(x => [x.name, x]));
       c.columns = spec.map(([n, t, hint, choices]) => ({ ...(have.get(n) || {}), name: n, type: t, known: true, ...(hint ? { hint } : {}), ...(choices ? { choices } : {}) }))
@@ -161,7 +161,7 @@ const devhubUid = () => (self.crypto && crypto.randomUUID ? crypto.randomUUID() 
 const PROJECT_COLORS = ['#3346D3', '#1F8A5B', '#D97706', '#C23B3B', '#7C3AED', '#0E7490', '#BE185D', '#4D7C0F'];
 const isoDay = v => { if (v == null || v === '') return null; const s = String(v).trim(); if (/^\d{4}-\d{2}-\d{2}/.test(s)) return s.slice(0, 10); const d = new Date(s); return isNaN(d) ? s : d.toISOString().slice(0, 10); };
 const isoTime = v => { if (v == null || v === '') return null; const s = String(v).trim(); const d = new Date(/^\d+$/.test(s) ? +s * (s.length <= 10 ? 1000 : 1) : s); return isNaN(d) ? s : d.toISOString(); };
-// Make a record look like what DevHub's task tracker writes. `o` uses logical DevHub names. insert=true fills defaults.
+// Make a record look like what Toolbox+'s task tracker writes. `o` uses logical Toolbox+ names. insert=true fills defaults.
 function devhubTask(o, insert, projectId, existing) {
   if ('status' in o) { const v = String(o.status ?? '').toLowerCase(); o.status = ['todo', 'doing', 'done'].includes(v) ? v : 'todo'; }
   if ('priority' in o) { const n = +o.priority; o.priority = [1, 2, 3, 4].includes(n) ? n : 3; }
@@ -183,7 +183,7 @@ function devhubTask(o, insert, projectId, existing) {
   if (!insert && !('updatedAt' in o)) o.updatedAt = new Date().toISOString();
   return o;
 }
-// Returns fn(name) → project id, creating DevHub projects for names it hasn't seen.
+// Returns fn(name) → project id, creating Toolbox+ projects for names it hasn't seen.
 function projectResolver(T) {
   let list, add;
   if (T.kind === 'sqlite') {

@@ -1,4 +1,4 @@
-/* DevHub offline database files — read and write the same data as JSON or SQLite.
+/* Toolbox+ offline database files — read and write the same data as JSON or SQLite.
  *
  * JSON file:   { app: "devhub", type: "devhub-database", version: 1, name, createdAt, updatedAt,
  *                tasks: { tasks: [...], projects: [...], settings: {...} }, links: [...], prefs: {...} }
@@ -52,7 +52,7 @@
   async function encode(format, docs, meta = {}) {
     const now = new Date().toISOString();
     if (format === 'json') {
-      const body = { app: 'devhub', type: 'devhub-database', version: VERSION, name: meta.name || 'DevHub', createdAt: meta.createdAt || now, updatedAt: now, tasks: docs.tasks, links: docs.links || [], prefs: docs.prefs || {} };
+      const body = { app: 'devhub', type: 'devhub-database', version: VERSION, name: meta.name || 'Toolbox+', createdAt: meta.createdAt || now, updatedAt: now, tasks: docs.tasks, links: docs.links || [], prefs: docs.prefs || {} };
       return new Blob([JSON.stringify(body, null, 2) + '\n'], { type: 'application/json' });
     }
     const SQL = await loadSql(), db = new SQL.Database();
@@ -60,7 +60,7 @@
       db.run(SCHEMA);
       db.run('BEGIN');
       const m = db.prepare('INSERT INTO meta VALUES (?, ?)');
-      [['app', 'devhub'], ['type', 'devhub-database'], ['version', String(VERSION)], ['name', meta.name || 'DevHub'], ['created_at', meta.createdAt || now], ['updated_at', now]].forEach(r => m.run(r));
+      [['app', 'devhub'], ['type', 'devhub-database'], ['version', String(VERSION)], ['name', meta.name || 'Toolbox+'], ['created_at', meta.createdAt || now], ['updated_at', now]].forEach(r => m.run(r));
       m.free();
       const t = docs.tasks || {};
       const p = db.prepare('INSERT OR REPLACE INTO projects VALUES (?, ?, ?, ?, ?)');
@@ -99,9 +99,9 @@
       catch { throw new Error('This SQLite file is damaged or encrypted and can’t be opened.'); }
       try {
         const tables = new Set(rows(db, "SELECT name FROM sqlite_master WHERE type = 'table'").map(r => r.name));
-        if (!tables.has('tasks') || !tables.has('meta')) throw new Error('This SQLite file isn’t a DevHub database. Create a new database instead, or open one made by DevHub.');
+        if (!tables.has('tasks') || !tables.has('meta')) throw new Error('This SQLite file isn’t a Toolbox+ database. Create a new database instead, or open one made by Toolbox+.');
         const meta = Object.fromEntries(rows(db, 'SELECT key, value FROM meta').map(r => [r.key, r.value]));
-        if (+meta.version > VERSION) throw new Error('This database was made by a newer version of DevHub. Update the app to open it.');
+        if (+meta.version > VERSION) throw new Error('This database was made by a newer version of Toolbox+. Update the app to open it.');
         const settings = Object.fromEntries(rows(db, 'SELECT key, value FROM settings').map(r => [r.key, parseJson(r.value, null)]));
         const taskSettings = {}; for (const [k, v] of Object.entries(settings)) if (k.startsWith('tasks.')) taskSettings[k.slice(6)] = v;
         const tasks = rows(db, 'SELECT * FROM tasks').map(r => {
@@ -117,9 +117,9 @@
     }
     let j;
     try { j = JSON.parse((await file.text()).replace(/^\uFEFF/, '')); }
-    catch { throw new Error('This file isn’t valid JSON or SQLite. Choose a DevHub database (.json, .sqlite or .db).'); }
-    if (!j || typeof j !== 'object' || (j.app !== 'devhub' && !j.tasks && !j.links)) throw new Error('This JSON file isn’t a DevHub database.');
-    if (+j.version > VERSION) throw new Error('This database was made by a newer version of DevHub. Update the app to open it.');
+    catch { throw new Error('This file isn’t valid JSON or SQLite. Choose a Toolbox+ database (.json, .sqlite or .db).'); }
+    if (!j || typeof j !== 'object' || (j.app !== 'devhub' && !j.tasks && !j.links)) throw new Error('This JSON file isn’t a Toolbox+ database.');
+    if (+j.version > VERSION) throw new Error('This database was made by a newer version of Toolbox+. Update the app to open it.');
     return { format: 'json', name: j.name || file.name.replace(/\.[^.]+$/, ''), createdAt: j.createdAt, docs: normalize(j) };
   }
 

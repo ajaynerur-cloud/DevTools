@@ -11,6 +11,7 @@ services:
       ignoredPaths:
         - .github/workflows/android.yml
         - android-res/**
+        - android-src/**
         - scripts/**
         - README.md
     envVars:

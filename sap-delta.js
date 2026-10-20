@@ -1,4 +1,4 @@
-// DevHub › SAP tools › SAP Scope Delta (UI). Compares two ATC / CVA result sheets per system and shows what is common (by priority),
+// Toolbox+ › SAP tools › SAP Scope Delta (UI). Compares two ATC / CVA result sheets per system and shows what is common (by priority),
 // what B adds on top of A, and the additional effort as a percentage. Runs entirely in the browser; the Excel export uses the bundled xlsx library.
 (function () {
   'use strict';

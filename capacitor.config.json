@@ -1,6 +1,6 @@
 {
   "appId": "io.github.devhub",
-  "appName": "DevHub",
+  "appName": "Toolbox+",
   "webDir": "www",
   "server": { "androidScheme": "https" },
   "android": { "backgroundColor": "#EEF1F6", "allowMixedContent": false }

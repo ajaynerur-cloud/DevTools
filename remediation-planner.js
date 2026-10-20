@@ -1,4 +1,4 @@
-// DevHub › SAP tools › Remediation Project Planner (page script; kept in its own file because the server only allows scripts from 'self').
+// Toolbox+ › SAP tools › Remediation Project Planner (page script; kept in its own file because the server only allows scripts from 'self').
 const GROUPS=[{"name":"SQL injection (dynamic Open/Native SQL)","cat":"T","pfx":["Potential SQL injection"],"codes":["1101","110A","110B","1112","1114","1116","1117","1118","1120","1122","1128","1130","11D1"],"k94":232,"real":[0,4.82,0,1.36],"cons":[0,4.82,0,2.27]},
 {"name":"Code injection via dynamic WHERE","cat":"T","pfx":["Dynamic WHERE condition"],"codes":["1190"],"k94":3,"real":[0,11,0,1.4],"cons":[0,11,0,2.33]},
 {"name":"Authority-check result handling (sy-subrc, SY-UNAME)","cat":"T","pfx":["AUTHORITY-CHECK without sy-subrc","Security-relevant function call","AUTHORITY-CHECK for SY-UNAME"],"codes":["1161","1165","1181"],"k94":66,"real":[0,1,0,0.84],"cons":[0,1,0,1.39]},
@@ -370,7 +370,7 @@ function loadScript(urls,globalName){
     const s=document.createElement("script");s.src=urls[i++];s.onload=()=>window[globalName]?res():next();s.onerror=()=>{s.remove();next();};document.head.appendChild(s);};next();});
 }
 async function saveFile(name,blob){
-  // Inside DevHub the host saves the file (browser download, or the Android share sheet)
+  // Inside Toolbox+ the host saves the file (browser download, or the Android share sheet)
   let host=null;try{host=window.parent!==window&&window.parent.DH&&window.parent.DH.saveBlob;}catch(e){}
   if(host){try{await host(blob,name);toast("Saved "+name);}catch(e){toast("Could not save the file ("+(e&&e.message||"error")+")");}return;}
   if(DL){try{await DL.save({filename:name,data:blob});toast("Saved "+name);return;}

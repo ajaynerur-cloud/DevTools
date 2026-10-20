@@ -1,13 +1,13 @@
-/* DevHub file adapter — lets the offline task tracker work directly on YOUR OWN .db/.sqlite, .json or .xml file.
+/* Toolbox+ file adapter — lets the offline task tracker work directly on YOUR OWN .db/.sqlite, .json or .xml file.
  *
  *  inspect(file)                 → { kind, collections: [{ id, label, count, columns: [{ name, type, pk, values? }] }] }
  *  guess(info)                   → a mapping (which collection holds tasks, which field is title/status/…, value maps)
- *  read(file, mapping)           → DevHub docs { tasks: { tasks, projects, settings }, links, prefs }
+ *  read(file, mapping)           → Toolbox+ docs { tasks: { tasks, projects, settings }, links, prefs }
  *  write(srcBlob, docs, mapping) → Blob of the same file with the changes applied, in its own layout
  *
  * Only fields that changed are written back, so values you didn't touch keep their exact original form.
- * Fields DevHub has no place for (e.g. "rag", "reminder") are shown as extra fields on each task.
- * DevHub-only data your file has no column for (subtasks, timers, repeat…) is kept on this device.
+ * Fields Toolbox+ has no place for (e.g. "rag", "reminder") are shown as extra fields on each task.
+ * Toolbox+-only data your file has no column for (subtasks, timers, repeat…) is kept on this device.
  */
 (() => {
   'use strict';
@@ -20,7 +20,7 @@
   let fxpP;
   const loadFxp = () => fxpP ||= window.fxp ? Promise.resolve() : new Promise((res, rej) => { const s = document.createElement('script'); s.src = 'vendor/fxp.min.js'; s.onload = res; s.onerror = () => rej(new Error('The XML reader could not be loaded.')); document.head.appendChild(s); });
 
-  /* ---------- the fields DevHub understands ---------- */
+  /* ---------- the fields Toolbox+ understands ---------- */
   const ROLES = [
     ['title', 'Title', ['title', 'name', 'subject', 'summary', 'task', 'taskname', 'text', 'todo', 'item']],
     ['status', 'Status', ['status', 'state', 'stage', 'done', 'completed', 'iscompleted', 'isdone', 'complete', 'finished', 'checked']],
@@ -55,7 +55,7 @@
   }
   const hexOf = u => [...u].map(b => b.toString(16).padStart(2, '0')).join(' ');
   const asciiOf = u => [...u].map(b => b >= 32 && b < 127 ? String.fromCharCode(b) : '·').join('');
-  // Work out what a file is; explain clearly when it isn't something DevHub can read
+  // Work out what a file is; explain clearly when it isn't something Toolbox+ can read
   async function kindOf(file) {
     if (!file.size) throw new Error(`${file.name} is empty (0 bytes). If it’s the database of another app, that app may keep its data somewhere else — look for a bigger .db/.sqlite file next to it.`);
     const head = new Uint8Array(await file.slice(0, 64).arrayBuffer()), h16 = String.fromCharCode(...head.subarray(0, 16));
@@ -71,7 +71,7 @@
       [0x13579ace, 0x13579acd, 0x13579acf].includes(new DataView(head.buffer).getUint32(0, false)) || [0xce9a5713, 0xcd9a5713, 0xcf9a5713].includes(new DataView(head.buffer).getUint32(0, false)) ? 'is a GDBM file (for example Python “shelve”), not SQLite — the other app needs to export it' :
       new DataView(head.buffer).getUint32(12, false) === 0x00061561 || new DataView(head.buffer).getUint32(12, true) === 0x00061561 || new DataView(head.buffer).getUint32(12, false) === 0x00053162 ? 'is a Berkeley DB file (for example Python “shelve”), not SQLite — the other app needs to export it' :
       /^SQLite format/.test(h16) ? 'is a SQLite file with an unsupported header' :
-      file.size % 512 === 0 && entropy(head) > 5 ? 'looks like an ENCRYPTED SQLite database (e.g. SQLCipher) — DevHub can’t open encrypted databases; the other app must export it unencrypted' :
+      file.size % 512 === 0 && entropy(head) > 5 ? 'looks like an ENCRYPTED SQLite database (e.g. SQLCipher) — Toolbox+ can’t open encrypted databases; the other app must export it unencrypted' :
       /^[^\n]*[,;\t][^\n]*\n/.test(t) ? 'looks like CSV — convert it to JSON first with Tools → JSON ⇄ CSV, then open the JSON' :
       null;
     return bad(why || `isn’t a SQLite database, JSON or XML file. It starts with: ${asciiOf(head.subarray(0, 24))} (${hexOf(head.subarray(0, 16))})`);
@@ -182,7 +182,7 @@
     }
     return map;
   }
-  // DevHub value → what to write in the file (first file value mapped to it, else a sensible default)
+  // Toolbox+ value → what to write in the file (first file value mapped to it, else a sensible default)
   function outMap(inMap, values, keys, labels) {
     const out = {};
     for (const k of keys) {
@@ -246,7 +246,7 @@
     return m;
   }
 
-  /* ---------- value conversion file ⇄ DevHub ---------- */
+  /* ---------- value conversion file ⇄ Toolbox+ ---------- */
   const pad = n => String(n).padStart(2, '0');
   function fromFileDate(v, fmt, dateOnly) {
     if (v == null || v === '') return null;
@@ -279,11 +279,11 @@
   const tagsOut = (tags, style) => style === 'array' ? tags : style === 'json' ? JSON.stringify(tags) : tags.join(', ');
   const projectId = name => 'proj:' + String(name).trim().toLowerCase();
 
-  // DevHub task → the value written for each mapped role (compared to _base to find changes)
+  // Toolbox+ task → the value written for each mapped role (compared to _base to find changes)
   function fileValues(t, m, projects) {
     const r = m.roles, out = {};
     if (r.title) out.title = t.title;
-    if (r.status) out.status = m.statusOut[t.status] ?? m.statusOut[{ review: 'doing', blocked: 'doing', hold: 'doing' }[t.status]]; // extra DevHub statuses fall back to 'in progress' in files that only know three
+    if (r.status) out.status = m.statusOut[t.status] ?? m.statusOut[{ review: 'doing', blocked: 'doing', hold: 'doing' }[t.status]]; // extra Toolbox+ statuses fall back to 'in progress' in files that only know three
     if (r.priority) out.priority = m.prioOut[t.priority];
     if (r.due) out.due = toFileDate(t.due, m.formats.due);
     if (r.project) { const p = projects.find(x => x.id === t.project && !x.deleted); out.project = p ? p.name : ''; }
@@ -314,7 +314,7 @@
         delete rec.__rowid;
         const t = { id: m.key ? String(key) : 'row:' + key, title: '', notes: '', due: null, priority: 3, status: 'todo', project: null, tags: [], estimate: null, spent: 0, timerStart: null, subtasks: [], repeat: null, createdAt: null, updatedAt: null, completedAt: null };
         if (r.title) t.title = rec[r.title] == null ? '' : String(rec[r.title]);
-        if (r.status) { const v = String(rec[r.status] ?? ''); t.status = m.statusMap[v] || guessStatusMap([{ s: v }])[v] || 'todo'; } // values added later (e.g. by DevHub) are recognised too
+        if (r.status) { const v = String(rec[r.status] ?? ''); t.status = m.statusMap[v] || guessStatusMap([{ s: v }])[v] || 'todo'; } // values added later (e.g. by Toolbox+) are recognised too
         if (r.priority) { const v = String(rec[r.priority] ?? ''); t.priority = +(m.prioMap[v] ?? guessPrioMap([{ s: v }])[v]) || 3; }
         if (r.due) t.due = fromFileDate(rec[r.due], m.formats.due, true);
         if (r.notes) t.notes = rec[r.notes] == null ? '' : String(rec[r.notes]);
@@ -416,7 +416,7 @@
           var blob = new Blob([(st.decl || '<?xml version="1.0" encoding="UTF-8"?>') + '\n' + b.build(st.tree).replace(/^\n+/, '')], { type: 'application/xml' });
         }
       }
-      // keep DevHub-only data on this device
+      // keep Toolbox+-only data on this device
       const keep = {};
       for (const t of d.tasks) if (!t.deleted && t._key != null) {
         const x = {}; for (const f of DH_ONLY) { if (f === 'estimate' && r.estimate) continue; if (f === 'tags' && r.tags) continue; if (f === 'notes' && r.notes) continue; if (f === 'completedAt' && r.completedAt) continue; if (f === 'completedAt' && !r.status) continue;

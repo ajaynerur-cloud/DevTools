@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Status-bar icon for Toolbox+ reminders: toolbox with a "+" (white silhouette; Android tints it). Made by scripts/make-icons.py -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android" android:width="24dp" android:height="24dp" android:viewportWidth="100" android:viewportHeight="100">
+    <path android:strokeColor="#FFFFFFFF" android:strokeWidth="7" android:strokeLineCap="round" android:pathData="M31.5,36.5V29.5a5,5 0 0,1 5,-5h18a5,5 0 0,1 5,5v7"/>
+    <path android:fillColor="#FFFFFFFF" android:pathData="M17.5,35.5h55v18h-55z M9.5,43.5a8,8 0 0,1 8,-8v18h-8z M72.5,35.5a8,8 0 0,1 8,8v10h-8z M9.5,58.5h71v19a8,8 0 0,1 -8,8h-55a8,8 0 0,1 -8,-8z"/>
+    <path android:fillColor="#FFFFFFFF" android:pathData="M80,6h5v9h9v5h-9v9h-5v-9h-9v-5h9z"/>
+</vector>

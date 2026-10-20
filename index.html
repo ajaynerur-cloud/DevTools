@@ -3,47 +3,51 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-  <title>DevHub — developer toolkit</title>
-  <meta name="description" content="Formatters, file converters, developer tools, a task tracker, tool store links and quick work links with private user accounts.">
+  <title>Toolbox+ — tools, tasks, links &amp; policies</title>
+  <meta name="description" content="Toolbox+: developer tools and converters, a task tracker, work links and insurance policies with renewal reminders — online or fully offline.">
   <meta name="theme-color" content="#3346D3">
   <meta name="mobile-web-app-capable" content="yes">
   <meta name="apple-mobile-web-app-capable" content="yes">
-  <meta name="apple-mobile-web-app-title" content="DevHub">
+  <meta name="apple-mobile-web-app-title" content="Toolbox+">
   <meta name="format-detection" content="telephone=no">
   <link rel="manifest" href="manifest.webmanifest">
-  <link rel="icon" href="favicon.ico" sizes="48x48">
-  <link rel="icon" href="icons/icon.svg" type="image/svg+xml">
-  <link rel="icon" href="icons/favicon-32.png" type="image/png" sizes="32x32">
-  <link rel="apple-touch-icon" href="icons/apple-touch-icon.png">
+  <link rel="icon" href="favicon.ico?v=tb1" sizes="48x48">
+  <link rel="icon" href="icons/icon.svg?v=tb1" type="image/svg+xml">
+  <link rel="icon" href="icons/favicon-32.png?v=tb1" type="image/png" sizes="32x32">
+  <link rel="apple-touch-icon" href="icons/apple-touch-icon.png?v=tb1">
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Instrument+Sans:wght@400;500;600;700&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet">
-  <link rel="stylesheet" href="styles.css?v=2026.10.19-2">
+  <link rel="stylesheet" href="styles.css?v=2026.10.20-7">
 </head>
 <body>
   <div class="shell">
     <nav class="nav" aria-label="Main">
-      <div class="brand"><span class="brand-mark">{ }</span><span>DevHub</span></div>
+      <div class="brand"><span class="brand-mark"><svg viewBox="0 0 100 100" width="28" height="28" aria-hidden="true"><rect width="100" height="100" rx="22" fill="#3346D3"/><g transform="translate(50,50) scale(0.8) translate(-50,-50)"><g transform="translate(-4.5,5.5)"><path d="M36 31V24a5 5 0 0 1 5-5h18a5 5 0 0 1 5 5v7" fill="none" stroke="#FFFFFF" stroke-width="7" stroke-linecap="round"/><rect x="14" y="30" width="72" height="50" rx="8" fill="#FFFFFF"/><rect x="14" y="48" width="72" height="5" fill="#3346D3"/><rect x="43" y="44" width="14" height="13" rx="3" fill="#F2C94C"/><circle cx="80" cy="24" r="17" fill="#3346D3"/><circle cx="80" cy="24" r="14" fill="#F2C94C"/><rect x="73" y="21.5" width="14" height="5" rx="1.5" fill="#3346D3"/><rect x="77.5" y="17" width="5" height="14" rx="1.5" fill="#3346D3"/></g></g></svg></span><span>Toolbox+</span></div>
+      <a href="#home" data-route="home">Home</a>
       <a href="#tools" data-route="tools">Tools</a>
       <a href="#tasks" data-route="tasks">Tasks</a>
       <a href="#links" data-route="links">Tool stores</a>
       <a href="#worklinks" data-route="worklinks">Links</a>
+      <a href="#insurance" data-route="insurance">Insurance</a>
       <a href="#account" data-route="account" class="nav-link">Account</a>
       <div class="nav-user" id="navUser" role="status" aria-live="polite"></div>
-      <div class="build" title="DevHub build">Build 2026.10.19-2</div>
+      <div class="build" title="Toolbox+ build">Build 2026.10.20-7</div>
     </nav>
     <main id="view" tabindex="-1"></main>
   </div>
   <div class="toast" id="toast" role="status" aria-live="polite"></div>
-  <script src="config.js?v=2026.10.19-2"></script>
-  <script src="offline-db.js?v=2026.10.19-2"></script>
-  <script src="adapter.js?v=2026.10.19-2"></script>
-  <script src="sap-cva-core.js?v=2026.10.19-2"></script>
-  <script src="sap-cva.js?v=2026.10.19-2"></script>
-  <script src="sap-delta.js?v=2026.10.19-2"></script>
-  <script src="app.js?v=2026.10.19-2"></script>
-  <script src="tasks.js?v=2026.10.19-2"></script>
-  <script src="notify.js?v=2026.10.19-2"></script>
-  <script src="biolock.js?v=2026.10.19-2"></script>
+  <script src="config.js?v=2026.10.20-7"></script>
+  <script src="offline-db.js?v=2026.10.20-7"></script>
+  <script src="adapter.js?v=2026.10.20-7"></script>
+  <script src="sap-cva-core.js?v=2026.10.20-7"></script>
+  <script src="sap-cva.js?v=2026.10.20-7"></script>
+  <script src="sap-delta.js?v=2026.10.20-7"></script>
+  <script src="app.js?v=2026.10.20-7"></script>
+  <script src="tasks.js?v=2026.10.20-7"></script>
+  <script src="home.js?v=2026.10.20-7"></script>
+  <script src="insurance.js?v=2026.10.20-7"></script>
+  <script src="notify.js?v=2026.10.20-7"></script>
+  <script src="biolock.js?v=2026.10.20-7"></script>
 </body>
 </html>

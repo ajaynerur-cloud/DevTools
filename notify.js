@@ -1,16 +1,20 @@
-/* DevHub notifications -- reminders on desktop browsers and the Android app.
+/* Toolbox+ notifications -- reminders on desktop browsers and the Android app.
  *
  *  Android app : @capacitor/local-notifications. Notifications are scheduled with the OS alarm manager, so they
  *                arrive even when the app is closed. The app REQUIRES the notification permission (Android 13+) and
  *                the exact-alarm permission (Android 12+): a blocking prompt stays up until both are granted.
  *  Desktop/web : the Web Notifications API. Permission is requested from a button click (browsers ignore or punish
- *                prompts that appear without a user gesture). Reminders fire while DevHub is open in a tab or
+ *                prompts that appear without a user gesture). Reminders fire while Toolbox+ is open in a tab or
  *                installed as an app; browsers cannot wake a closed page, so the Android app is the choice for that.
  *
  * What triggers a notification
  *   - a task's own "Remind me" date and time (task.remind, local "YYYY-MM-DDTHH:mm")
  *   - a daily summary at a time you choose: tasks due today and overdue tasks
  *   - a heads-up when a task is due today but has no reminder time (part of the daily summary)
+ *   - other modules' reminders (e.g. Insurance renewals), registered in window.DHNotifySources:
+ *       async () => [{ id, key, group, at, title, body, route, ref, snooze }]   (snooze: true adds Snooze buttons;
+ *       a pressed button is sent to the page as the window event 'dh-notify-action' with { action, ref })
+ *     They work without an account or offline database, and never contact the server.
  */
 (() => {
   'use strict';
@@ -32,6 +36,16 @@
   const live = d => d.tasks.filter(t => !t.deleted && t.status !== 'done');
   const hash = s => { let h = 5381; for (let i = 0; i < s.length; i++) h = ((h << 5) + h + s.charCodeAt(i)) | 0; return 1000 + (Math.abs(h) % 2000000000); }; // ids 1..DIGEST_DAYS are the summaries
   const when = r => { const t = new Date(r); return isNaN(t) ? null : t; };
+  const locked = () => !!(window.DHBio && window.DHBio.locked && window.DHBio.locked());
+  // Snooze buttons on a reminder. Android: up to 3 buttons (the app opens briefly to reschedule); desktop Chrome/Edge: 2 buttons.
+  const SNOOZE_TYPE = 'DH_SNOOZE';
+  const WEB_ACTIONS = [{ action: 'snooze60', title: 'Snooze 1 hour' }, { action: 'tomorrow', title: 'Tomorrow' }];
+  const fireAction = (action, ref) => window.dispatchEvent(new CustomEvent('dh-notify-action', { detail: { action, ref } }));
+  async function extraItems() {   // reminders from other modules (Insurance…)
+    let out = [];
+    for (const src of window.DHNotifySources || []) { try { out = out.concat(await src() || []); } catch (e) { console.warn('Reminder source failed', e); } }
+    return out;
+  }
 
   /* ---------------- permission ---------------- */
   // 'granted' | 'denied' | 'default' | 'unsupported'
@@ -60,21 +74,22 @@
   }
 
   /* ---------------- showing a notification now ---------------- */
-  async function show(title, body, { tag, taskId, urgent } = {}) {
+  async function show(title, body, { tag, taskId, urgent, route, ref, snooze } = {}) {
     if ((await permission()) !== 'granted') return false;
     const sound = prefs().sound;
     if (isNative()) {
       const p = LN();
-      try { await p.schedule({ notifications: [{ id: hash('now:' + (tag || title) + Date.now()), title, body, channelId: CHANNEL, extra: { taskId: taskId || null } }] }); return true; } catch { return false; }
+      try { await p.schedule({ notifications: [{ id: hash('now:' + (tag || title) + Date.now()), title, body, channelId: CHANNEL, ...(snooze ? { actionTypeId: SNOOZE_TYPE } : {}), extra: { taskId: taskId || null, route: route || null, ref: ref || null } }] }); return true; } catch { return false; }
     }
-    const opts = { body, tag, icon: 'icons/icon-192.png', badge: 'icons/favicon-32.png', data: { taskId: taskId || null }, requireInteraction: !!urgent, silent: !sound };
+    const opts = { body, tag, icon: 'icons/icon-192.png', badge: 'icons/favicon-32.png', data: { taskId: taskId || null, route: route || null, ref: ref || null }, requireInteraction: !!urgent, silent: !sound, ...(snooze ? { actions: WEB_ACTIONS } : {}) };
     try {
       const reg = 'serviceWorker' in navigator ? await navigator.serviceWorker.getRegistration() : null;
       if (reg && reg.showNotification) { await reg.showNotification(title, opts); return true; }
-      const n = new Notification(title, opts); n.onclick = () => { window.focus(); openTask(taskId); n.close(); }; return true;
+      const n = new Notification(title, opts); n.onclick = () => { window.focus(); openTask(taskId, route); n.close(); }; return true;
     } catch { return false; }
   }
-  function openTask(id) {
+  function openTask(id, route) {
+    if (route) { location.hash = route; return; }
     if (location.hash.split('?')[0] !== '#tasks') location.hash = 'tasks';
     if (id) setTimeout(() => window.DHTasks && window.DHTasks.openTask(id), 350);
   }
@@ -87,7 +102,7 @@
     const parts = [];
     if (due.length) parts.push(`${due.length} due today${names ? ': ' + names + (due.length > 3 ? ' ...' : '') : ''}`);
     if (over.length) parts.push(`${over.length} overdue`);
-    return { title: 'DevHub: your day', body: parts.join(' - ') };
+    return { title: 'Toolbox+: your day', body: parts.join(' - ') };
   }
   const remindBody = (t, d) => {
     const p = d.projects && d.projects.find(x => x.id === t.project && !x.deleted);
@@ -97,12 +112,21 @@
   /* ---------------- Android: schedule with the OS ---------------- */
   let syncing = Promise.resolve();
   async function syncNative(d, p) {
-    const ln = LN(); if (!ln || !d || (await permission()) !== 'granted') return;   // no data yet (app locked): leave the scheduled reminders alone
+    const ln = LN(); if (!ln || locked() || (await permission()) !== 'granted') return;   // app locked: leave the scheduled reminders alone
     try {
       await ln.createChannel({ id: CHANNEL, name: 'Task reminders', description: 'Reminders and your daily summary', importance: 5, visibility: 1, vibration: true, lights: true });
     } catch {}
     try { const pend = await ln.getPending(); if (pend.notifications && pend.notifications.length) await ln.cancel({ notifications: pend.notifications.map(n => ({ id: n.id })) }); } catch {}
     const list = [], now = Date.now(), exact = (await exactAlarm()) === 'granted';
+    const pw = PW(), nativeRem = !!(pw && pw.setReminders);
+    if (nativeRem) await takeNativeState();   // Snooze buttons pressed while Toolbox+ was closed → into the data first
+    const extra = await extraItems();
+    const ext = extra.filter(x => x.at && x.at.getTime() > now).slice(0, 350);   // Android keeps at most 500 alarms per app
+    // Toolbox+'s native engine (android-src/Reminders.java): notification-bar Snooze buttons work in the background, no app window.
+    // Older builds without it fall back to the Local Notifications plugin (Snooze buttons open the app for a moment).
+    if (nativeRem) { try { await pw.setReminders({ reminders: ext.map(x => ({ id: x.id, at: x.at.getTime(), title: x.title, body: x.body, ref: x.ref || '', route: x.route || '' })) }); } catch (e) { console.warn('Native reminders failed', e); } }
+    else for (const x of ext) list.push({ id: x.id, title: x.title, body: x.body, channelId: CHANNEL, ...(x.snooze ? { actionTypeId: SNOOZE_TYPE } : {}), schedule: { at: x.at, allowWhileIdle: exact }, extra: { taskId: null, route: x.route || null, ref: x.ref || null } });
+    const nExtra = list.length;
     if (p.on && d) {
       for (const t of live(d)) {
         const at = t.remind && when(t.remind); if (!at || at.getTime() <= now) continue;
@@ -118,25 +142,31 @@
         }
       }
     }
-    if (list.length) { try { await ln.schedule({ notifications: list.slice(0, 60) }); } catch (e) { console.warn('Could not schedule notifications', e); } }
+    if (list.length) { try { await ln.schedule({ notifications: list.slice(0, nExtra + 100) }); } catch (e) { console.warn('Could not schedule notifications', e); } }
   }
 
   /* ---------------- desktop / web: check while the page is open ---------------- */
   const fired = () => read(FIRED, {});
   async function tickWeb() {
-    const p = prefs(), d = tasksDoc(); if (!p.on || !d || (await permission()) !== 'granted') return;
+    const p = prefs(), d = tasksDoc(); if (locked() || (await permission()) !== 'granted') return;
     const f = fired(), now = new Date(), nowMs = now.getTime(), keep = {};
     for (const [k, v] of Object.entries(f)) if (nowMs - v < 3 * 864e5) keep[k] = v;
     let changed = false;
-    for (const t of live(d)) {
+    const latest = new Map();   // Insurance etc.: only the most recent due reminder of each item, even if Toolbox+ was opened late
+    for (const x of await extraItems()) { const at = x.at.getTime(); if (at <= nowMs && nowMs - at < 20 * 36e5) latest.set(x.group || x.key, x); }
+    for (const x of latest.values()) {
+      if (keep[x.key]) continue;
+      keep[x.key] = nowMs; changed = true; await show(x.title, x.body, { tag: x.group || x.key, route: x.route, ref: x.ref, snooze: x.snooze, urgent: true });
+    }
+    if (p.on && d) for (const t of live(d)) {
       const at = t.remind && when(t.remind); if (!at) continue;
       const k = `r:${t.id}:${t.remind}`;
       if (at.getTime() <= nowMs && nowMs - at.getTime() < 12 * 36e5 && !keep[k]) { keep[k] = nowMs; changed = true; await show(t.title, remindBody(t, d), { tag: k, taskId: t.id, urgent: true }); }
     }
-    if (p.digest) {
+    if (p.on && d && p.digest) {
       const [h, m] = p.digestTime.split(':').map(Number), at = new Date(); at.setHours(h, m, 0, 0);
       const k = 'digest:' + dayKey(now);
-      if (nowMs >= at.getTime() && !keep[k]) {                  // once per day, even if DevHub was opened after the usual time
+      if (nowMs >= at.getTime() && !keep[k]) {                  // once per day, even if Toolbox+ was opened after the usual time
         keep[k] = nowMs; changed = true;
         const g = digestFor(d, dayKey(now)); if (g) await show(g.title, g.body, { tag: k });
       }
@@ -155,7 +185,7 @@
   async function checkGate() {
     if (!isNative() || !LN() || document.querySelector('dialog.bio-lock[open]')) return;   // after the fingerprint unlock, not on top of it
     const [perm, exact] = await Promise.all([permission(), exactAlarm()]);
-    if (perm === 'granted' && exact === 'granted') { if (gate) { gate.close(); gate.remove(); gate = null; sync(); } return; }
+    if (perm === 'granted' && exact === 'granted') { if (gate) { gate.close(); gate.remove(); gate = null; sync(); } reliability({ auto: true }); return; }
     if (!gate) {
       gate = document.createElement('dialog'); gate.className = 'nt-gate'; gate.setAttribute('aria-label', 'Permissions required');
       gate.addEventListener('cancel', e => e.preventDefault());                // Back button and Esc cannot dismiss it
@@ -166,18 +196,78 @@
       <div class="nt-bell" aria-hidden="true">&#128276;</div>
       <h2>${needNotif ? 'Allow notifications' : 'Allow exact reminders'}</h2>
       <p>${needNotif
-        ? 'DevHub needs notification permission to remind you about tasks when the app is closed. This is required to use the app.'
-        : 'Android needs one more switch so reminders arrive at the exact minute: turn on <b>Alarms &amp; reminders</b> for DevHub. This is required to use the app.'}</p>
-      ${needNotif && blocked ? '<p class="nt-steps">Android no longer shows the prompt. Open <b>Settings &rarr; Apps &rarr; DevHub &rarr; Notifications</b> and switch them on, then come back here. This screen closes by itself.</p>' : ''}
+        ? 'Toolbox+ needs notification permission to remind you about tasks when the app is closed. This is required to use the app.'
+        : 'Android needs one more switch so reminders arrive at the exact minute: turn on <b>Alarms &amp; reminders</b> for Toolbox+. This is required to use the app.'}</p>
+      ${needNotif && blocked ? '<p class="nt-steps">Android no longer shows the prompt. Open <b>Settings &rarr; Apps &rarr; Toolbox+ &rarr; Notifications</b> and switch them on, then come back here. This screen closes by itself.</p>' : ''}
       <button type="button" class="primary" id="ntAllow">${needNotif ? (blocked ? 'I turned them on - check again' : 'Allow notifications') : 'Open alarm settings'}</button>
       <p class="hint" id="ntMsg" role="status"></p></form>`;
     $('#ntAllow', gate).onclick = async () => {
       if (needNotif) {
         const r = await request();
-        if (r !== 'granted') { $('#ntMsg', gate).textContent = 'Still not allowed. DevHub cannot run without notifications.'; }
+        if (r !== 'granted') { $('#ntMsg', gate).textContent = 'Still not allowed. Toolbox+ cannot run without notifications.'; }
       } else { try { await LN().changeExactNotificationSetting(); } catch {} }
       setTimeout(checkGate, 400);
     };
+  }
+
+  /* ---------------- Android: keep reminders working while Toolbox+ is closed ----------------
+   * Asked right after notifications + exact alarms are allowed, and again on every start (at most once a day after
+   * "Later") until done: battery optimisation off (Unrestricted), background usage not restricted, and on phones whose maker
+   * adds its own "Auto-start" switch (Xiaomi, Oppo, Vivo, Huawei, Samsung…), that switch. Uses the DevHubPower native plugin
+   * (android-src/DevHubPower.java); older builds without it get the steps as text. */
+  const PW = () => window.Capacitor && window.Capacitor.Plugins && window.Capacitor.Plugins.DevHubPower;
+  // Snoozes pressed in the notification bar and the page a tapped reminder should open (kept natively while Toolbox+ was closed)
+  async function takeNativeState() {
+    const p = PW(); if (!p || !p.takeState) return;
+    let st; try { st = await p.takeState(); } catch { return; }
+    for (const x of (st && st.snoozes) || []) { if (x.ref && window.DHNotifyOnSnoozed) { try { await window.DHNotifyOnSnoozed(x.ref, +x.until); } catch {} } }
+    if (st && st.route) openTask(null, st.route);
+  }
+  const REL = 'devhub:reliability';
+  async function powerStatus() {
+    const p = PW(); if (!p || !p.status) return null;
+    try { return await p.status(); } catch { return null; }
+  }
+  let rel = null;
+  async function reliability({ auto = false } = {}) {
+    if (!isNative()) return;
+    if (document.querySelector('dialog.bio-lock[open]') || (gate && gate.open)) return;
+    const st = await powerStatus(), saved = read(REL, {});
+    const oplus = !!(st && /oneplus|oppo|realme/i.test(st.manufacturer || ''));
+    const autoOk = !!saved.autostart, need = st ? (!st.batteryUnrestricted || st.backgroundRestricted || (st.autostart && !autoOk) || !st.exactAlarms || !st.notifications) : !saved.manual;
+    if (auto && (!need || (saved.later && Date.now() - saved.later < 864e5))) { if (!need && rel) { rel.close(); rel.remove(); rel = null; } return; }
+    if (!rel) { rel = document.createElement('dialog'); rel.className = 'nt-gate nt-rel'; rel.setAttribute('aria-label', 'Background permissions'); document.body.appendChild(rel); rel.addEventListener('close', () => { rel && rel.remove(); rel = null; }); rel.showModal(); }
+    const row = (ok, title, text, btn, id) => `<li class="${ok ? 'ok' : 'todo'}"><span class="rel-mark" aria-hidden="true">${ok ? '&#10003;' : '!'}</span><span><b>${title}</b><small>${text}</small></span>${ok ? '<span class="rel-done">Done</span>' : `<button type="button" class="primary" data-rel="${id}">${btn}</button>`}</li>`;
+    rel.innerHTML = `<form method="dialog" class="nt-gate-in" onsubmit="return false">
+      <div class="nt-bell" aria-hidden="true">&#128267;</div>
+      <h2>Keep reminders working</h2>
+      <p>So insurance and task reminders arrive when Toolbox+ is closed, allow these once:</p>
+      ${st ? `<ul class="rel-list">
+        ${row(st.notifications, 'Notifications', 'Show reminders.', 'Allow', 'notif')}
+        ${row(st.exactAlarms, 'Alarms &amp; reminders', 'Ring at the exact time.', 'Allow', 'exact')}
+        ${row(st.batteryUnrestricted, 'Battery: Unrestricted', 'Stop Android from putting Toolbox+ to sleep. Choose <b>Allow</b> in the dialog.', 'Allow', 'battery')}
+        ${row(!st.backgroundRestricted, 'Background usage', 'In App info → Battery, allow background usage.', 'Open', 'app')}
+        ${st.autostart ? (oplus ? row(autoOk, `Auto launch &amp; background activity (${esc(st.manufacturer)})`, 'Opens App info. Tap <b>Battery usage</b> and turn on <b>Allow auto launch</b> and <b>Allow background activity</b>, then tick below.', 'Open', 'autostart')
+          : row(autoOk, `Auto-start (${esc(st.manufacturer || 'this phone')})`, 'Your phone has its own switch that blocks apps from starting in the background. Turn it on for Toolbox+, then tick below.', 'Open', 'autostart')) : ''}
+      </ul>${st.autostart && !autoOk ? `<label class="rel-confirm"><input type="checkbox" id="relAuto"> ${oplus ? 'I turned on Allow auto launch and Allow background activity' : 'I turned on Auto-start for Toolbox+'}</label>` : ''}`
+      : `<ol class="rel-steps"><li>Settings → Apps → Toolbox+ → <b>Battery</b> → <b>Unrestricted</b> (or “Don’t optimise”).</li><li>Same screen: allow <b>background usage</b>.</li><li>Xiaomi / Oppo / Vivo / Huawei: also turn on <b>Auto-start</b> for Toolbox+.</li><li>Don’t use “Force stop” — it cancels all reminders.</li></ol><label class="rel-confirm"><input type="checkbox" id="relManual"> I’ve done these</label>`}
+      <p class="hint">${oplus ? 'OnePlus tips: in Recent apps tap <b>⋮</b> on Toolbox+’s card → <b>Lock</b>. If reminders still come late, open Settings → Battery → <b>Advanced settings</b> and turn off <b>Sleep standby optimisation</b>.' : 'Tip: also lock Toolbox+ in the recent-apps screen if your phone offers it.'}</p>
+      <div class="row rel-foot"><button type="button" id="relLater">Later</button><button type="button" id="relCheck" class="primary">${st && !need ? 'All set — close' : 'Check again'}</button></div></form>`;
+    const p = PW();
+    rel.querySelectorAll('[data-rel]').forEach(b => b.onclick = async () => {
+      const k = b.dataset.rel;
+      try {
+        if (k === 'notif') { const r = await request(); if (r !== 'granted' && p) await p.openNotificationSettings(); }
+        else if (k === 'exact') { if (p) await p.openExactAlarmSettings(); else await LN().changeExactNotificationSetting(); }
+        else if (k === 'battery') await p.requestBatteryExemption();
+        else if (k === 'app') await p.openAppSettings();
+        else if (k === 'autostart') await p.openAutostart();
+      } catch {}
+    });
+    const a = $('#relAuto', rel); if (a) a.onchange = () => { write(REL, { ...read(REL, {}), autostart: a.checked }); reliability(); };
+    const m = $('#relManual', rel); if (m) m.onchange = () => write(REL, { ...read(REL, {}), manual: m.checked });
+    $('#relLater', rel).onclick = () => { write(REL, { ...read(REL, {}), later: Date.now() }); rel.close(); };
+    $('#relCheck', rel).onclick = async () => { const s2 = await powerStatus(), r2 = read(REL, {}); const still = s2 ? (!s2.batteryUnrestricted || s2.backgroundRestricted || (s2.autostart && !r2.autostart) || !s2.exactAlarms || !s2.notifications) : !r2.manual; if (!still) { write(REL, { ...r2, later: 0 }); rel.close(); sync(); } else reliability(); };
   }
 
   /* ---------------- settings dialog ---------------- */
@@ -190,19 +280,21 @@
       dlg.innerHTML = `<form method="dialog" class="nt-form">
         <header class="tk-dlg-head"><h2>Notifications</h2><button class="ghost dr-x" value="close" aria-label="Close">&#10005;</button></header>
         <p class="nt-perm">${status}${perm === 'default' ? '<button type="button" class="primary" id="ntAsk">Allow notifications</button>' : ''}</p>
-        ${perm === 'denied' ? `<p class="hint">${native ? 'Open Settings &rarr; Apps &rarr; DevHub &rarr; Notifications and switch them on.' : 'Your browser is blocking notifications for this site. Click the lock icon next to the address bar, set Notifications to Allow, then reload.'}</p>` : ''}
-        ${perm === 'unsupported' ? '<p class="hint">This browser cannot show notifications. Try Chrome, Edge, Firefox or Safari 16.4+ (on iPhone, add DevHub to the Home Screen first), or use the Android app.</p>' : ''}
+        ${perm === 'denied' ? `<p class="hint">${native ? 'Open Settings &rarr; Apps &rarr; Toolbox+ &rarr; Notifications and switch them on.' : 'Your browser is blocking notifications for this site. Click the lock icon next to the address bar, set Notifications to Allow, then reload.'}</p>` : ''}
+        ${perm === 'unsupported' ? '<p class="hint">This browser cannot show notifications. Try Chrome, Edge, Firefox or Safari 16.4+ (on iPhone, add Toolbox+ to the Home Screen first), or use the Android app.</p>' : ''}
         <label class="nt-row"><input type="checkbox" id="ntOn" ${p.on ? 'checked' : ''}> <span><b>Task reminders</b><br><small>Notify at the time set under "Remind me" on a task.</small></span></label>
         <label class="nt-row"><input type="checkbox" id="ntDigest" ${p.digest ? 'checked' : ''}> <span><b>Daily summary</b><br><small>Tasks due today and overdue ones.</small></span><input type="time" id="ntTime" value="${esc(p.digestTime)}" aria-label="Daily summary time"></label>
         <label class="nt-row"><input type="checkbox" id="ntSound" ${p.sound ? 'checked' : ''}> <span><b>Sound</b></span></label>
-        <p class="hint">${native ? 'Reminders are scheduled with Android, so they arrive even when DevHub is closed.' : 'Reminders fire while DevHub is open in a tab or installed as an app. Your browser cannot wake a closed page, so for reminders with the app closed use the Android app.'} Settings apply to this device only.</p>
+        <p class="hint">${native ? 'Reminders are scheduled with Android, so they arrive even when Toolbox+ is closed.' : 'Reminders fire while Toolbox+ is open in a tab or installed as an app. Your browser cannot wake a closed page, so for reminders with the app closed use the Android app.'} Settings apply to this device only.</p>
+        ${native ? '<p><button type="button" id="ntRel">Battery &amp; background permissions…</button></p>' : ''}
         <footer class="nt-foot"><button type="button" id="ntTest" ${perm === 'granted' ? '' : 'disabled'}>Send a test notification</button><button class="primary" value="close">Done</button></footer></form>`;
       const ask = $('#ntAsk', dlg); if (ask) ask.onclick = async () => { await request(); draw(); sync(); };
       $('#ntOn', dlg).onchange = e => { setPrefs({ on: e.target.checked }); };
       $('#ntDigest', dlg).onchange = e => { setPrefs({ digest: e.target.checked }); };
       $('#ntTime', dlg).onchange = e => { if (e.target.value) setPrefs({ digestTime: e.target.value }); };
       $('#ntSound', dlg).onchange = e => { setPrefs({ sound: e.target.checked }); };
-      $('#ntTest', dlg).onclick = async () => { const ok = await show('DevHub test', 'Notifications are working on this device.', { tag: 'test' }); if (!ok) $('#ntTest', dlg).textContent = 'Could not send - check permission'; };
+      const nr = $('#ntRel', dlg); if (nr) nr.onclick = () => { dlg.close(); reliability(); };
+      $('#ntTest', dlg).onclick = async () => { const ok = await show('Toolbox+ test', 'Notifications are working on this device.', { tag: 'test' }); if (!ok) $('#ntTest', dlg).textContent = 'Could not send - check permission'; };
     };
     await draw(); if (!dlg.open) dlg.showModal();
   }
@@ -221,11 +313,17 @@
   function init() {
     if (isNative()) {
       const ln = LN();
-      if (ln && ln.addListener) ln.addListener('localNotificationActionPerformed', e => { const id = e && e.notification && e.notification.extra && e.notification.extra.taskId; openTask(id); });
-      const A = window.Capacitor.Plugins.App; if (A && A.addListener) A.addListener('appStateChange', s => { if (s.isActive) { checkGate(); sync(); } });
+      if (ln && ln.addListener) ln.addListener('localNotificationActionPerformed', e => {
+        const x = (e && e.notification && e.notification.extra) || {}, a = e && e.actionId;
+        if (a && a !== 'tap' && x.ref) { fireAction(a, x.ref); try { ln.removeDeliveredNotifications({ notifications: [e.notification] }); } catch {} return; }
+        openTask(x.taskId, x.route);
+      });
+      // Snooze buttons on reminders (registered once per start; Android keeps them with the scheduled alarms)
+      if (ln.registerActionTypes) ln.registerActionTypes({ types: [{ id: SNOOZE_TYPE, actions: [{ id: 'snooze15', title: 'Snooze 15 min' }, { id: 'snooze60', title: 'Snooze 1 hour' }, { id: 'tomorrow', title: 'Tomorrow' }] }] }).catch(() => {});
+      const A = window.Capacitor.Plugins.App; if (A && A.addListener) A.addListener('appStateChange', s => { if (s.isActive) { checkGate(); sync(); if (rel) reliability(); } });   // back from a Settings screen: refresh the checklist
       checkGate();
     } else if ('serviceWorker' in navigator) {
-      navigator.serviceWorker.addEventListener('message', e => { if (e.data && e.data.type === 'notify-open') openTask(e.data.taskId); });
+      navigator.serviceWorker.addEventListener('message', e => { if (e.data && e.data.type === 'notify-open') openTask(e.data.taskId, e.data.route); if (e.data && e.data.type === 'notify-action') fireAction(e.data.action, e.data.ref); });
       setInterval(tickWeb, 20000);
     }
     document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') { if (isNative()) checkGate(); sync(); } });
@@ -233,6 +331,6 @@
     setTimeout(sync, 1500);
     const q = new URLSearchParams(location.hash.split('?')[1] || '').get('open'); if (q) setTimeout(() => openTask(q), 800); // opened from a notification while the app was closed
   }
-  window.DHNotify = { permission, request, show, sync, openSettings, banner, prefs, setPrefs, isNative, checkGate };
+  window.DHNotify = { permission, request, show, sync, openSettings, banner, prefs, setPrefs, isNative, checkGate, reliability, powerStatus };
   if (document.readyState === 'loading') window.addEventListener('DOMContentLoaded', () => setTimeout(init, 0)); else setTimeout(init, 0);
 })();

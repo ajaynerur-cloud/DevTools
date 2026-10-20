@@ -1,4 +1,4 @@
-/* DevHub fingerprint unlock (Android app).
+/* Toolbox+ fingerprint unlock (Android app).
  *
  * Opt-in. When it is on:
  *   - the sign-in token lives only in Android's hardware-backed Keystore, protected by the fingerprint
@@ -81,12 +81,12 @@
     const d = DH(); d.relock();
     document.body.classList.add('bio-locked');
     if (!dlg) {
-      dlg = document.createElement('dialog'); dlg.className = 'bio-lock'; dlg.setAttribute('aria-label', 'DevHub is locked');
+      dlg = document.createElement('dialog'); dlg.className = 'bio-lock'; dlg.setAttribute('aria-label', 'Toolbox+ is locked');
       dlg.addEventListener('cancel', e => e.preventDefault());       // the Back button must not dismiss it
       document.body.appendChild(dlg);
     }
     const u = d.session.user;
-    dlg.innerHTML = `<div class="bl-in"><div class="bl-ico">${FP}</div><h2>DevHub is locked</h2>
+    dlg.innerHTML = `<div class="bl-in"><div class="bl-ico">${FP}</div><h2>Toolbox+ is locked</h2>
       <p>Signed in as <b>${esc(u.name || u.username)}</b>. Use your fingerprint to open your tasks.</p>
       <button type="button" class="primary wide" id="blGo">Unlock</button>
       <button type="button" class="ghost" id="blPw">Use password instead</button>
@@ -101,7 +101,7 @@
     if (prompting || !dlg) return;
     const d = DH(), uid = d.session.user && d.session.user.id; say('');
     try {
-      const c = await guarded(() => NB().getSecureCredentials({ server: SERVER, title: 'Unlock DevHub', subtitle: 'Use your fingerprint', negativeButtonText: 'Cancel' }));
+      const c = await guarded(() => NB().getSecureCredentials({ server: SERVER, title: 'Unlock Toolbox+', subtitle: 'Use your fingerprint', negativeButtonText: 'Cancel' }));
       if (!c || !c.password || c.username !== uid) throw Object.assign(new Error('mismatch'), { code: 21 });
       document.body.classList.remove('bio-locked');
       dlg.close(); dlg.remove(); dlg = null;
@@ -138,7 +138,7 @@
     wr(key, true);                                                    // ask once; Account has the switch
     const o = document.createElement('dialog'); o.className = 'tk-dialog'; o.setAttribute('aria-label', 'Fingerprint unlock');
     o.innerHTML = `<form method="dialog" class="nt-form"><h2>Unlock with your fingerprint?</h2>
-      <p>Next time, open DevHub with a touch instead of typing your password. DevHub opens from the tasks saved on this phone, then connects to the server.</p>
+      <p>Next time, open Toolbox+ with a touch instead of typing your password. Toolbox+ opens from the tasks saved on this phone, then connects to the server.</p>
       <p class="hint" id="boMsg" role="status"></p>
       <footer class="nt-foot"><button value="close" id="boNo">Not now</button><button type="button" class="primary" id="boYes">Turn on</button></footer></form>`;
     document.body.appendChild(o); o.showModal();
@@ -151,7 +151,7 @@
     if (!supported()) return '';
     const on = enabled(), o = opts();
     return `<section class="panel" id="bioPanel"><h2>Fingerprint unlock</h2>
-      <p class="hint">${on ? 'On. DevHub asks for your fingerprint to open. Your sign-in is kept in the phone\'s secure Keystore, not in the app\'s normal storage.' : 'Off. Open DevHub with your fingerprint instead of typing your password.'} The server is only contacted after you unlock.</p>
+      <p class="hint">${on ? 'On. Toolbox+ asks for your fingerprint to open. Your sign-in is kept in the phone\'s secure Keystore, not in the app\'s normal storage.' : 'Off. Open Toolbox+ with your fingerprint instead of typing your password.'} The server is only contacted after you unlock.</p>
       ${on ? `<label for="bioAfter">Lock again after I leave the app</label><select id="bioAfter">${[['now', 'Immediately'], ['1', 'After 1 minute'], ['5', 'After 5 minutes'], ['never', 'Only when the app restarts']].map(([k, v]) => `<option value="${k}" ${o.after === k ? 'selected' : ''}>${v}</option>`).join('')}</select>` : ''}
       <div class="row"><button class="${on ? '' : 'primary'}" id="bioToggle">${on ? 'Turn off' : 'Turn on fingerprint unlock'}</button>${on ? '<button id="bioLockNow">Lock now</button>' : ''}</div>
       <p class="hint" id="bioMsg" role="status"></p></section>`;

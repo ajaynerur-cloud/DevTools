@@ -1,10 +1,15 @@
-# DevHub
+# Toolbox+
 
-A developer toolkit for phone, tablet and desktop, with private user accounts:
+*Formerly DevHub.* One app for the everyday: developer tools and converters, a task tracker, work links, tool stores and insurance policies with renewal reminders — in the browser, as a Windows portable exe and as an Android app, online (synced) or fully offline.
+
+> Renamed from DevHub: the name, icon and texts changed everywhere. Things that identify existing data were kept on purpose, so nothing is lost when you update: the Render service name and URL (`devhub` in `render.yaml`), the Android app id `io.github.devhub`, the data folders (`devhub/` in the data repo, `Documents/DevHub/` on Android), browser storage keys and the `app: "devhub"` marker inside database files.
+
+For phone, tablet and desktop, with optional private user accounts:
 
 - **Tasks:** a full task tracker with Today, Upcoming, Board, All tasks and Insights views.
 - **35 developer tools:** formatters, large-file converters, a data migrator, a text → JSON/XML mapper, encoders and generators. They run entirely in the browser and need no account.
 - **Tool store links:** your own list of registries and marketplaces.
+- **Insurance:** your policies with documents and daily renewal reminders — offline only, on the device.
 - **Links:** your everyday work links (intranet, boards, dashboards, timesheets…) with groups, pinning, search and one-click copy.
 - **Accounts:** registration and sign-in, where every user sees only their own data.
 
@@ -25,15 +30,43 @@ The GitHub token lives only on the server. Every data request carries a signed s
 
 **Offline:** each user's data is cached on the device, so the app keeps working offline and syncs when it reconnects. If two devices edit at once, changes merge per task, and the most recent edit to each task wins. Signing out wipes that user's data from the device.
 
-## Links (everyday work links)
+## Home
 
-The **Links** menu (below Tool stores) keeps the links you open every day.
+Toolbox+ opens on **Home**:
 
-- **Paste and press Enter** to add a link; DevHub names it from the address (press Edit to rename it). *Add with details…* sets the name, group, notes and pin.
-- **Pin** (☆/★) keeps a link in the *Pinned* section at the top. Other links are listed by group, and search covers name, address, group and notes.
-- **Move from Tool stores:** on the Tool stores page, *Move to Links* on a link, or *Move all to Links →* on a category, moves it here (the category becomes its group) and removes it from Tool stores. Undo is offered right after.
-- **Copy** puts the address on the clipboard; Delete can be undone from the message that appears.
-- Links are stored with your tool stores (same `links.json` / `links` table, marked `list: "work"`), so they follow your account or your offline database, backups and exports. SQLite databases get two extra columns, `list` and `pinned`; older files open unchanged.
+- **Search** everything on the device — tools, your Links and your insurance policies (Enter opens the first result).
+- **Overview cards:** Tasks (due today / overdue), Insurance (next renewal), Links (saved / pinned) and Sync (signed in or this device only). Each opens its page.
+- **Pinned links** as one-click chips, and your **recently used** tools.
+- **All tools** grouped (Formatters, Converters, SAP tools, …) in collapsible cards with **Expand all / Collapse all**; your choice is remembered. Phones start with the groups collapsed.
+- **More:** Tool stores (on phones it's here instead of the bottom bar), Tasks board & insights, Account / sign in.
+
+Home reads only what is already on the device and never contacts the server.
+
+On the **Tools** page the tool list has **Collapse all / Expand all** and **« Hide** (more room for the tool; **☰ Tools** brings the list back). Both are remembered.
+
+## Sync asks for you
+
+Every sync you start (Links **⇅ Sync now**, **↓ Pull / ↑ Push** in the sidebar or Account) checks first:
+
+- **Not signed in:** a *Sign in to sync* box opens right there (sign-in is never required to use Toolbox+ — only to sync).
+- **Signed in, Android app:** your **fingerprint** (or the phone's screen lock) is asked, then remembered for 5 minutes.
+- **Signed in, computer:** syncs straight away.
+
+Automatic sync only runs for a signed-in account and doesn't prompt in the background.
+
+## Links (everyday work links) — offline first, sync optional
+
+The **Links** menu (below Tool stores) keeps the links you open every day. It works **without signing in**: links are saved on the device (browser storage / Android app / portable exe) and never sent anywhere unless you choose to sync.
+
+- **Paste and press Enter** to add a link; it's named from the address (press Edit to rename it). *Add with details…* sets the name, group, notes and pin.
+- **Pin** (☆/★) keeps a link in the *Pinned* section at the top. Other links are listed by group; search covers name, address, group and notes. **Copy** puts the address on the clipboard; Delete can be undone.
+- **Move from Tool stores:** *Move to Links* on a link, or *Move all to Links →* on a category, moves it here (the category becomes its group) and removes it from Tool stores. Undo is offered right after.
+- **Sync (optional, signed-in users):** the bar at the top shows *Sync with ⟨you⟩'s account* with
+  - **Manual** (default): nothing is sent until you press **⇅ Sync now**;
+  - **Automatic · every 5 min**: syncs every 5 minutes while Toolbox+ is open, when you come back to it, and when you leave it with unsynced changes.
+  Sync is two-way: links added or edited on any device are merged per link (newest edit wins) and deletions sync too. It's stored in the account as `worklinks.json`, separate from tasks and tool stores, and is independent of the account's own Pull / Push setting.
+- **Export / Import** a JSON file of your links (also the way to move them without an account). **Clear device** removes the links stored on this device (the account copy stays).
+- Links that older versions kept inside the account or offline database are moved to the device automatically the first time you open Links.
 
 ## Sync with the server (signed-in users only)
 
@@ -43,15 +76,34 @@ Choose the mode in **Account → Sync and data** (remembered per device):
 
 | | Automatic (default) | Manual |
 |---|---|---|
-| Pull (get the latest from the account) | when you open DevHub, then every 5 minutes while it's open, and when you come back to it after 5 minutes or more | only when you press **↓ Pull** |
+| Pull (get the latest from the account) | when you open Toolbox+, then every 5 minutes while it's open, and when you come back to it after 5 minutes or more | only when you press **↓ Pull** |
 | Push (send this device's changes) | at the next 5-minute sync, and when you leave the page | only when you press **↑ Push** |
 
 **↓ Pull** and **↑ Push** are always available: under your name in the sidebar, in the status line on phones, and on the Account page. Signing in fetches your data once in both modes.
 
-**No wake-up screen.** A free Render instance sleeps when idle and shows its own "starting up" page to a browser that opens it. DevHub never shows it:
-- sync requests ask for JSON, and if the host answers with an HTML page instead DevHub waits quietly and retries; the status line only ever says *Syncing…*, *Synced 10:32* or *Saved on this device*;
-- when the app itself is served from Render, the service worker opens the copy stored on the device if the server takes more than 3 seconds or returns anything that isn't DevHub, and stores the new version in the background. (Only the very first visit on a device has nothing stored yet.)
-- For desktop use, the **GitHub Pages** address (Render used only for sync) or **DevHub-Portable.exe** (no server at all) avoid Render for opening the app entirely. For Pages, set the repository variable `API_BASE_URL` to your Render URL and Render's `CORS_ORIGINS` to your Pages origin.
+**No wake-up screen.** A free Render instance sleeps when idle and shows its own "starting up" page to a browser that opens it. Toolbox+ never shows it:
+- sync requests ask for JSON, and if the host answers with an HTML page instead Toolbox+ waits quietly and retries; the status line only ever says *Syncing…*, *Synced 10:32* or *Saved on this device*;
+- when the app itself is served from Render, the service worker opens the copy stored on the device if the server takes more than 3 seconds or returns anything that isn't Toolbox+, and stores the new version in the background. (Only the very first visit on a device has nothing stored yet.)
+- For desktop use, the **GitHub Pages** address (Render used only for sync) or **ToolboxPlus-Portable.exe** (no server at all) avoid Render for opening the app entirely. For Pages, set the repository variable `API_BASE_URL` to your Render URL and Render's `CORS_ORIGINS` to your Pages origin.
+
+## Insurance (offline, on this device)
+
+The **Insurance** menu keeps your insurance policies and reminds you before they renew. It needs no account and never contacts the server: policies and attachments are stored on the device in IndexedDB (the browser is asked to keep them persistently) and are not part of account sync or backups. Use **Export** / **Import** on the page to move them (one JSON file including the documents).
+
+- **Policy:** name, type, insured / holder name, insurer, policy number, **policy date**, **next date** (renewal / due), premium, notes.
+- **Attachments:** any number of documents per policy (PDF, photos, Office files…, up to 40 MB each), chosen with the system file picker or dropped on the dialog. Tap one to open it (Android: the share sheet opens it in a viewer or saves it).
+- **Reminders, per policy (Edit → Reminders):** every policy has its own dates and its own schedule and notifications; *Next reminders* at the top of the page lists the next alert of each policy.
+  - **Start reminding:** a number of days before the next date (default 30) *or* from a chosen date, and the **time**.
+  - **Repeat on:** every day, every week (counting back from the next date), or only on chosen days before it (e.g. `30,15,7,3,1,0`).
+  - **Each of those days:** once, twice (the time and 9 hours later), every 4 hours or every hour until 22:00.
+  - **After the next date:** keep reminding every day until you press **Mark renewed…** (on by default).
+  - The dialog previews the first alert and how many alerts you'll get; each card shows the rule and the next alert.
+- **Snooze:** every reminder in the Android notification bar has **Snooze 15 min**, **Snooze 1 hour** and **Tomorrow**. They work in the background — the notification goes away, a short "Snoozed until …" message appears, and the reminder comes back in the notification bar at that time; Toolbox+ isn't opened. Desktop Chrome/Edge show *Snooze 1 hour* and *Tomorrow*. The policy card has **Snooze…** (15 min, 1 h, 3 h, tomorrow, 3 days, 1 week) and **Resume now**; snoozes made in the notification bar show there the next time Toolbox+ opens.
+  - **Android: battery & background permissions.** After notifications and *Alarms & reminders* are allowed, Toolbox+ shows a **Keep reminders working** checklist with a button for each item and a live ✓ when it's done: **Battery: Unrestricted** (Android's *Let app always run in background?* dialog), **Background usage** (App info), and on Xiaomi / Redmi / POCO, Oppo / Realme / OnePlus, Vivo / iQOO, Huawei / Honor, Samsung, Asus, Tecno / Infinix, Nokia the maker's **Auto-start** screen (ticked off by you, as Android can't report it). It comes back on every start (at most once a day after *Later*) until everything is done, and can be opened any time from Insurance → Reminders… or the Notifications dialog. On OnePlus / Oppo / Realme the auto-start item opens App info, where **Battery usage** has *Allow auto launch* and *Allow background activity*.
+  - **Native reminder engine (`android-src/`):** `Reminders.java` schedules each insurance reminder as an exact alarm (allowed in Doze), `ReminderReceiver.java` shows it with the Snooze buttons and handles them without opening the app, `BootReceiver.java` sets the alarms again after a restart or update, `DevHubPower.java` is the plugin the web app talks to (permissions, `setReminders`, `takeState`, `showNow`) and `MainActivity.java` registers it. The Android workflow copies these into the app, adds the receivers to the manifest and `android-res/drawable/ic_stat_reminder.xml` as the status-bar icon. **Reminders… → Test now** shows a real reminder with the Snooze buttons.
+  - **Android app:** reminders are scheduled with the Android alarm manager as exact alarms allowed while idle, so they arrive when the app is closed or swiped away, in battery-saving mode and after a restart. The next 45 days are scheduled each time the app opens (up to 350 alerts). Pressing a Snooze button opens Toolbox+ for a moment to reschedule. Only *Force stop* in Android settings cancels alarms (an Android rule); on Xiaomi, Oppo, Vivo and similar phones also allow **Autostart** for Toolbox+. The app asks for notifications on first start (required). The manifest declares `POST_NOTIFICATIONS`, `SCHEDULE_EXACT_ALARM`, `USE_EXACT_ALARM`, `RECEIVE_BOOT_COMPLETED`, `WAKE_LOCK` and `VIBRATE`; no storage permission is needed. For the most reliable alarms set *Settings → Apps → Toolbox+ → Battery → Unrestricted*.
+  - **Browser / portable exe:** reminders appear while Toolbox+ is open (a tab or the installed app); a browser cannot wake a closed page. **Add to calendar** on a policy downloads an `.ics` with a daily reminder series (from N days before until the renewal date) for Outlook or Google Calendar.
+- **Mark renewed…** moves the next date forward (default one year) and keeps a history.
 
 ## Online or offline
 
@@ -70,10 +122,10 @@ The developer tools never need either; they always work without signing in.
 - **Create new database:** pick a name and a format.
   - **JSON** is readable text you can keep in Git.
   - **SQLite** is a real database you can query with DB Browser for SQLite, `sqlite3` or DBeaver. It has tables `tasks`, `projects`, `links`, `settings` and `meta`, plus an `open_tasks` view.
-- **Open database file:** choose a `.json`, `.sqlite`, `.db` or `.xml` file from your computer, phone or tablet: a DevHub database, or your own task file (see below).
-- **How saving works:** there's always exactly one database, saved automatically. DevHub never creates extra copies.
+- **Open database file:** choose a `.json`, `.sqlite`, `.db` or `.xml` file from your computer, phone or tablet: a Toolbox+ database, or your own task file (see below).
+- **How saving works:** there's always exactly one database, saved automatically. Toolbox+ never creates extra copies.
 
-  | Where you use DevHub | Where the database is saved |
+  | Where you use Toolbox+ | Where the database is saved |
   |---|---|
   | Chrome or Edge on a computer | The file you choose once. Every change is saved into that same file. |
   | Android app | `Documents/DevHub/<name>.sqlite` on the device, overwritten in place on every save |
@@ -85,10 +137,10 @@ The developer tools never need either; they always work without signing in.
 
 "Open database file" also accepts a task list you already have: a `.db`/`.sqlite` from another app, a `.json` or an `.xml`.
 
-1. **See what's inside.** DevHub shows every table or list in the file with its rows, before anything is changed. Files saved as UTF-16 (PowerShell, Notepad) and JSON Lines are read too. If a file can't be read, DevHub says exactly what it is: empty, encrypted SQLite, a Git LFS pointer, CSV, an Access or Python-shelve database, and so on.
-2. **Map it.** DevHub finds the table or list that holds your tasks and suggests which field is the title, status, priority, due date, project, notes and dates. For example, `description` becomes Notes and `due_date` becomes Due date. It also asks what your status and priority values mean, e.g. `Completed` = Done and `In Progress` = In progress. Fields DevHub has no place for (e.g. `rag`, `reminder`) are kept and editable in each task.
-3. **Migrate and save.** Your tasks are copied into **one** new DevHub database (SQLite or JSON). The original file is never changed or locked, and the mapping is remembered for next time.
-4. **From then on, there's one database.** DevHub saves automatically into the same place every time and never creates copies.
+1. **See what's inside.** Toolbox+ shows every table or list in the file with its rows, before anything is changed. Files saved as UTF-16 (PowerShell, Notepad) and JSON Lines are read too. If a file can't be read, Toolbox+ says exactly what it is: empty, encrypted SQLite, a Git LFS pointer, CSV, an Access or Python-shelve database, and so on.
+2. **Map it.** Toolbox+ finds the table or list that holds your tasks and suggests which field is the title, status, priority, due date, project, notes and dates. For example, `description` becomes Notes and `due_date` becomes Due date. It also asks what your status and priority values mean, e.g. `Completed` = Done and `In Progress` = In progress. Fields Toolbox+ has no place for (e.g. `rag`, `reminder`) are kept and editable in each task.
+3. **Migrate and save.** Your tasks are copied into **one** new Toolbox+ database (SQLite or JSON). The original file is never changed or locked, and the mapping is remembered for next time.
+4. **From then on, there's one database.** Toolbox+ saves automatically into the same place every time and never creates copies.
 
 **Moving between modes**
 - **Offline to online:** sign in, then use Account → Import backup with your `.json` or `.sqlite` file.
@@ -120,20 +172,20 @@ Objects are counted once, at their highest priority. The module is `sap-delta.js
 
 ## SAP tools › Remediation Project Planner
 
-Tools → SAP tools → **Remediation Project Planner** estimates the effort, team size and timeline of an SAP remediation project from the findings per area. Enter object counts, rates and assumptions, read the live totals, results table and timeline, and export the plan to **Excel** or **PowerPoint**. It runs entirely on the device and keeps its plans in this browser (use *Open in a full window* for more room). The page is `remediation-planner.html` with its script in `remediation-planner.js` (the server's security policy only allows scripts from its own files, and lets only this one page be shown inside DevHub); its Excel and PowerPoint exports use the bundled `vendor/exceljs.min.js` and `vendor/pptxgen.bundle.js` (both MIT), so they work offline.
+Tools → SAP tools → **Remediation Project Planner** estimates the effort, team size and timeline of an SAP remediation project from the findings per area. Enter object counts, rates and assumptions, read the live totals, results table and timeline, and export the plan to **Excel** or **PowerPoint**. It runs entirely on the device and keeps its plans in this browser (use *Open in a full window* for more room). The page is `remediation-planner.html` with its script in `remediation-planner.js` (the server's security policy only allows scripts from its own files, and lets only this one page be shown inside Toolbox+); its Excel and PowerPoint exports use the bundled `vendor/exceljs.min.js` and `vendor/pptxgen.bundle.js` (both MIT), so they work offline.
 
 ## Run on Windows without installing anything
 
-`DevHub-Portable.exe` is a single file: copy it anywhere (a USB stick or a shared drive) and double-click it. It needs no installer, no administrator rights and no server. It opens DevHub in an Edge or Chrome app window, with all 35 tools and the Tasks tracker in offline mode.
+`ToolboxPlus-Portable.exe` is a single file: copy it anywhere (a USB stick or a shared drive) and double-click it. It needs no installer, no administrator rights and no server. It opens Toolbox+ in an Edge or Chrome app window, with all 35 tools and the Tasks tracker in offline mode.
 
-- The exe carries `DevHub.html` inside itself and writes it to `%LocalAppData%\DevHub-Portable`. Nothing else on the computer is changed. Delete that folder and the exe to remove it.
-- Everything runs on the computer. Online accounts and sync need the DevHub server, so they are not part of the portable build; use the offline database instead.
-- `DevHub.html` also works on its own: open it in Chrome or Edge by double-clicking.
+- The exe carries `ToolboxPlus.html` inside itself and writes it to `%LocalAppData%\ToolboxPlus-Portable`. Nothing else on the computer is changed. Delete that folder and the exe to remove it.
+- Everything runs on the computer. Online accounts and sync need the Toolbox+ server, so they are not part of the portable build; use the offline database instead.
+- `ToolboxPlus.html` also works on its own: open it in Chrome or Edge by double-clicking.
 - Windows SmartScreen or a company policy may warn about an unsigned program. Have it signed by your IT team if your policy requires that.
 
 Build both files when you need them:
 
-- **On GitHub (nothing to install):** Actions → *Windows portable exe* → *Run workflow*. Download `DevHub-Portable.exe`, `DevHub.html` and `SHA256SUMS.txt` from the run's Artifacts. Pushing a tag such as `portable-v1.0` also attaches them to a release.
+- **On GitHub (nothing to install):** Actions → *Windows portable exe* → *Run workflow*. Download `ToolboxPlus-Portable.exe`, `ToolboxPlus.html` and `SHA256SUMS.txt` from the run's Artifacts. Pushing a tag such as `portable-v1.0` also attaches them to a release.
 - **On Windows:** install Python 3 and Go 1.21+, then run `portable\build-windows-exe.bat`.
 - **On Linux or macOS:** `sh portable/build-windows-exe.sh`. `python3 portable/build-single-file.py` creates only the HTML.
 
@@ -144,7 +196,7 @@ Both write to `dist/` (git-ignored).
 Tools → Converters → **Text → JSON / XML mapper** turns a plain-text file into JSON or XML, with a mapping screen in between.
 
 1. **Text:** upload a `.txt`, `.log`, `.csv`, `.dat`, `.prn`… file (UTF-8, UTF-16 and Windows-1252 are read), or paste text.
-2. **Read the text:** DevHub detects the layout and shows the records it found. Change it if needed:
+2. **Read the text:** Toolbox+ detects the layout and shows the records it found. Change it if needed:
    - **Columns with a delimiter:** comma, tab, pipe, semicolon, spaces or your own; quoted values are respected.
    - **Key: value lines:** `name: Ada` / `id=7` blocks, one block per record (a blank line or a repeated key starts the next).
    - **Fixed-width columns:** column start positions, detected automatically.
@@ -177,7 +229,7 @@ Tools → Converters → **Data migrator** moves records from one file into anot
 5. **Preview migration** does a dry run: counts, notes and the first 20 records exactly as they'll be written. Nothing is created until you press **Create**.
 6. **Download** the updated target (same file name). **Use as target** lets you merge another source into the result.
 
-**DevHub databases as targets.** When the target is a DevHub database (JSON or SQLite, even an empty one), the migrator knows DevHub's task fields and allowed values: status `todo/doing/done` and priority `1–4`. Project names become DevHub projects (created and linked by id), dates are converted to ISO, `completedAt` is filled in for done tasks, tags become lists, and missing defaults are added. The result opens with Tasks → Open database file, with statuses intact.
+**Toolbox+ databases as targets.** When the target is a Toolbox+ database (JSON or SQLite, even an empty one), the migrator knows Toolbox+'s task fields and allowed values: status `todo/doing/done` and priority `1–4`. Project names become Toolbox+ projects (created and linked by id), dates are converted to ISO, `completedAt` is filled in for done tasks, tags become lists, and missing defaults are added. The result opens with Tasks → Open database file, with statuses intact.
 
 What's kept: in SQLite targets, the other tables, views, indexes, triggers, defaults and constraints are untouched (new columns are added with `ALTER TABLE`); only the mapped columns of matching rows are updated. In JSON targets, everything outside the migrated arrays is kept, and so is the indentation. Values are converted to the target's types (e.g. SQLite `0/1` → JSON `true/false`, JSON text in a SQLite cell → real arrays/objects, XML text → numbers). Leading zeros in XML (`01234`) are kept. Rows that break a constraint are skipped and listed in the report; nothing else is lost. XML targets are re-indented, and their comments aren't kept.
 
@@ -185,7 +237,7 @@ Everything runs in the browser's background worker (`migrate.js` + the bundled s
 
 ## Online copy of an offline database
 
-On the offline **Database** page, **Online copy** keeps a copy of your offline database (JSON or SQLite) in a DevHub account for safe keeping. You stay offline, and your file is still the database you work in.
+On the offline **Database** page, **Online copy** keeps a copy of your offline database (JSON or SQLite) in a Toolbox+ account for safe keeping. You stay offline, and your file is still the database you work in.
 
 - **Sign in… / Create account…** right on the page. This doesn't close your database or switch to online mode.
 - If the account already has tasks, you choose to **add** this database's tasks (nothing in the account is removed) or **replace** the account's tasks.
@@ -198,7 +250,7 @@ In the Tasks view (or Account → Backup & import):
 
 - **Download backup:** a SQLite or JSON copy of your tasks, projects and links. It's also an offline database, so you can open it with "Use offline" on any device.
 - **Keep one backup file up to date automatically:** on Chrome/Edge, pick a file once. In the Android app, the file is `Documents/DevHub/devhub-<you>-backup.sqlite`. The same file is rewritten after every sync; it's never a new copy.
-- **Import tasks from a file:** a DevHub backup, or any `.db` / `.json` / `.xml` task file. For other files, you see the contents and the field mapping first, as with offline migration. Then choose one of:
+- **Import tasks from a file:** a Toolbox+ backup, or any `.db` / `.json` / `.xml` task file. For other files, you see the contents and the field mapping first, as with offline migration. Then choose one of:
   - **Add to my tasks:** keeps what you have. Tasks in both keep their newest edit, and importing the same file again updates the tasks instead of duplicating them.
   - **Replace my tasks:** your current tasks are downloaded as a backup first.
 
@@ -223,7 +275,7 @@ Open **Reminders** in the task view (or set **Remind me** on a task) to get noti
 
 - **Task reminders:** pick a date and time under *Remind me* in a task. Repeating tasks move their reminder with the due date.
 - **Daily summary:** tasks due today and overdue ones, at a time you choose (default 09:00).
-- **Desktop and browsers:** DevHub asks for permission when you click *Turn on* (or when you first set a reminder). Reminders fire while DevHub is open in a tab or installed as an app; a browser cannot wake a closed page. If you blocked notifications, click the lock icon beside the address bar and set Notifications to Allow. On iPhone/iPad, add DevHub to the Home Screen first.
+- **Desktop and browsers:** Toolbox+ asks for permission when you click *Turn on* (or when you first set a reminder). Reminders fire while Toolbox+ is open in a tab or installed as an app; a browser cannot wake a closed page. If you blocked notifications, click the lock icon beside the address bar and set Notifications to Allow. On iPhone/iPad, add Toolbox+ to the Home Screen first.
 - **Android app:** reminders are scheduled with Android's alarm manager, so they arrive with the app closed and after a reboot. The app **requires** the notification permission (Android 13+) and *Alarms & reminders* (Android 12+): a blocking screen stays up until both are on. The CI workflow declares these permissions in the manifest.
 - Notification settings are per device and are not synced. The reminder time itself is stored on the task and syncs.
 
@@ -249,15 +301,15 @@ Opt-in. After you sign in with your password the app offers *Unlock with your fi
 
 ## Setup: two repositories
 
-DevHub uses **two GitHub repositories**. All code goes in the first one, and the second one starts empty.
+Toolbox+ uses **two GitHub repositories**. All code goes in the first one, and the second one starts empty.
 
 | | App repo | Data repo |
 |---|---|---|
 | Example name | `you/devhub` | `you/devhub-data` |
 | Visibility | public or private | **private** (required) |
 | What you upload | **every file from this project** | **nothing** — just tick "Add a README file" when creating it |
-| Who writes to it | you (code changes) | the DevHub server, automatically |
-| Used by | Render, GitHub Actions (APK, Pages) | the DevHub server (`server.js` on Render), through its token |
+| Who writes to it | you (code changes) | the Toolbox+ server, automatically |
+| Used by | Render, GitHub Actions (APK, Pages) | the Toolbox+ server (`server.js` on Render), through its token |
 
 **App repo** (`you/devhub`), everything from the zip:
 
@@ -290,7 +342,7 @@ Don't put the GitHub token in any file or repo; it only goes into Render. Don't 
 2. Unzip the project and upload everything from it:
    ```bash
    cd devhub
-   git init && git add . && git commit -m "DevHub"
+   git init && git add . && git commit -m "Toolbox+"
    git branch -M main
    git remote add origin https://github.com/<you>/devhub.git
    git push -u origin main
@@ -341,7 +393,7 @@ Pages can host the front end only; accounts still go through Render.
 
 ## Icons
 
-Every icon comes from one design (a white `{ }` with a yellow bar on DevHub blue):
+Every icon comes from one design (a white `{ }` with a yellow bar on Toolbox+ blue):
 
 | Where | Files |
 |---|---|

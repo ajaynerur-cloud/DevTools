@@ -1,4 +1,4 @@
-/* DevHub — developer toolkit PWA
+/* Toolbox+ — developer toolkit PWA
  * Developer tools run entirely in the browser. Tasks, links and preferences belong to a signed-in
  * user: they are cached on the device (so the app works offline) and synced through server.js,
  * which stores each user's JSON files separately in a private GitHub repo.
@@ -201,7 +201,7 @@
   // Pull / Push buttons (sidebar, phone status line, Account)
   const syncCtlHtml = () => session.user ? `<div class="sync-ctl"><span class="sc-mode" title="Change this in Account → Sync">${isAuto() ? 'Auto · every 5 min' : 'Manual sync'}</span><button type="button" class="ghost" data-sync="pull" title="Get the latest tasks and links from your account">↓ Pull</button><button type="button" class="ghost" data-sync="push" title="Upload the changes made on this device">↑ Push</button></div>` : '';
   function renderSyncButtons() { document.querySelectorAll('[data-sync]').forEach(b => { b.disabled = syncBusy; }); }
-  document.addEventListener('click', e => { const b = e.target.closest('[data-sync]'); if (b) { e.preventDefault(); syncNow({ what: b.dataset.sync, manual: true }); } });
+  document.addEventListener('click', async e => { const b = e.target.closest('[data-sync]'); if (b) { e.preventDefault(); if (await requireSyncAuth(b.dataset.sync === 'pull' ? 'Get the latest from your account' : 'Send this device’s changes to your account')) syncNow({ what: b.dataset.sync, manual: true }); } });
 
   // Fingerprint unlock: the token comes out of the Keystore, the local data opens first, the server is contacted last
   function unlockApp(token) {
@@ -257,7 +257,7 @@
       data.persist();
       if (added) setTimeout(() => toast(`${added} task${added === 1 ? '' : 's'} from your offline database added to your account`), 600);
     }
-    renderNavUser(); connected = Date.now(); lastSync = 0; syncNow(); autoBackup.load();   // signing in just reached the server, so get this account's data now (in both sync modes)
+    renderNavUser(); connected = Date.now(); lastSync = 0; syncNow(); autoBackup.load(); wl.schedule();   // signing in just reached the server, so get this account's data now (in both sync modes)
     setTimeout(() => window.DHBio && window.DHBio.offer(), 1500);
   }
   function sessionExpired() {
@@ -292,7 +292,7 @@
     active() { return !session.user && !!this.meta; },
     setMeta(m) { this.meta = m; m ? store.set('devhub:offline', m) : store.del('devhub:offline'); }
   };
-  const FILE_TYPES = [{ description: 'Task database (DevHub or your own)', accept: { 'application/json': ['.json'], 'application/vnd.sqlite3': ['.sqlite', '.sqlite3', '.db', '.db3'], 'application/xml': ['.xml'] } }];
+  const FILE_TYPES = [{ description: 'Task database (Toolbox+ or your own)', accept: { 'application/json': ['.json'], 'application/vnd.sqlite3': ['.sqlite', '.sqlite3', '.db', '.db3'], 'application/xml': ['.xml'] } }];
   // A File from a picker only points at the file on disk; once that file changes (another app, a sync client, our own save)
   // Chrome refuses to read it again. Always work from an in-memory copy of the bytes.
   const snapshot = async f => new File([await f.arrayBuffer()], f.name || 'file', { type: f.type || '' });
@@ -301,7 +301,7 @@
     ? 'the file was changed or locked by another program (for example the app that uses it, or OneDrive/Dropbox syncing it). Your changes are safe in this browser — press Save file to try again, or close the other program first.'
     : e.message;
   const sleep = ms => new Promise(r => setTimeout(r, ms));
-  const slug = s => (s.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '') || 'devhub-tasks').slice(0, 40);
+  const slug = s => (s.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '') || 'toolbox-tasks').slice(0, 40);
 
   // ---------- where the offline database is saved: ONE file, never copies ----------
   //  'file'    Chrome/Edge on a computer: the file you chose once, saved in place every time
@@ -311,7 +311,7 @@
   const hasDeviceFs = () => isNative() && !!(window.Capacitor && window.Capacitor.Plugins && window.Capacitor.Plugins.Filesystem);
   const target = () => offline.handle ? 'file' : hasDeviceFs() ? 'device' : 'browser';
   const devicePath = m => 'DevHub/' + m.fileName;
-  const whereSaved = (m, tg = target()) => tg === 'file' ? m.fileName : tg === 'device' ? `${m.deviceDir === 'DATA' ? 'DevHub app storage' : 'Documents'}/${devicePath(m)}` : 'this browser';
+  const whereSaved = (m, tg = target()) => tg === 'file' ? m.fileName : tg === 'device' ? `${m.deviceDir === 'DATA' ? 'Toolbox+ app storage' : 'Documents'}/${devicePath(m)}` : 'this browser';
 
   function offlineStatus() {
     const m = offline.meta; if (!m || session.user) return;
@@ -420,7 +420,7 @@
     const h = await window.showSaveFilePicker({ suggestedName: meta.fileName, types: PICK_TYPES(meta.format) }); // AbortError = cancelled
     meta.fileName = h.name; return h;
   }
-  const savedWhereMsg = m => { const tg = target(); return tg === 'file' ? `DevHub saves into ${m.fileName} from now on` : tg === 'device' ? `saved on this device as ${whereSaved(m, tg)}` : 'saved in this browser — use Database → Download backup to keep a file'; };
+  const savedWhereMsg = m => { const tg = target(); return tg === 'file' ? `Toolbox+ saves into ${m.fileName} from now on` : tg === 'device' ? `saved on this device as ${whereSaved(m, tg)}` : 'saved in this browser — use Database → Download backup to keep a file'; };
 
   // ---------- offline database → a safe copy in an online account (you stay offline) ----------
   const cloud = {
@@ -574,7 +574,7 @@
     const n = (inT.tasks || []).filter(t => !t.deleted).length;
     toast(`${mode === 'replace' ? 'Replaced your tasks with' : 'Added'} ${n} task${n === 1 ? '' : 's'} from ${label}${mode === 'replace' ? ' — your previous tasks were downloaded as a backup first' : ''}. Syncing…`);
   }
-  // Import any file into the account: DevHub files directly, anything else via the contents/mapping screen
+  // Import any file into the account: Toolbox+ files directly, anything else via the contents/mapping screen
   async function importFileOnline(file) {
     file = await snapshot(file);
     let r;
@@ -592,7 +592,7 @@
       : '<p class="hint">This browser can’t keep a file updated automatically — download a backup from time to time.</p>';
     dlg.innerHTML = pending ? `<form method="dialog">
         <header class="dr-top"><h2>Import ${esc(pending.file.name)}</h2><button class="ghost dr-x" value="cancel" aria-label="Close">✕</button></header>
-        <p>DevHub database <b>“${esc(pending.r.name)}”</b> · ${plural(pending.n, 'task')} · ${plural(pending.r.docs.tasks.projects.filter(p => !p.deleted).length, 'project')} · ${plural(pending.r.docs.links.length, 'link')}</p>
+        <p>Toolbox+ database <b>“${esc(pending.r.name)}”</b> · ${plural(pending.n, 'task')} · ${plural(pending.r.docs.tasks.projects.filter(p => !p.deleted).length, 'project')} · ${plural(pending.r.docs.links.length, 'link')}</p>
         <fieldset class="fmt mig-choice">
           <label class="fmt-opt"><input type="radio" name="mode" value="merge" checked><span><b>Add to my tasks</b><small>Keeps your ${plural(pending.cur, 'task')} and adds these. A task that’s in both keeps its most recent edit.</small></span></label>
           <label class="fmt-opt"><input type="radio" name="mode" value="replace"><span><b>Replace my tasks</b><small>Your account will contain only this file’s tasks. Your current tasks are downloaded as a backup first.</small></span></label>
@@ -605,7 +605,7 @@
         <div class="row"><button type="button" class="primary" data-bk="sqlite">Download backup (SQLite)</button><button type="button" data-bk="json">Download backup (JSON)</button></div>
         <div class="bk-auto">${autoUI}${last ? `<p class="hint">Last automatic backup: ${new Date(last.at).toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'short' })} · <span class="mono">${esc(last.where)}</span></p>` : ''}</div>
         <h3>Import tasks from a file</h3>
-        <p class="hint">A DevHub backup, or any .db / .json / .xml task file — you’ll see what’s in it before anything changes.</p>
+        <p class="hint">A Toolbox+ backup, or any .db / .json / .xml task file — you’ll see what’s in it before anything changes.</p>
         <div class="row"><label class="btn">Choose file…<input type="file" data-imp hidden ${accept}></label></div>
       </form>`;
     dlg.querySelectorAll('[data-bk]').forEach(b => b.onclick = async () => { try { await saveBlob(await DevHubDB.encode(b.dataset.bk, data.docs, { name: `${session.user.name || session.user.username}'s tasks` }), `${bkName()}-${dayKey(new Date())}${DevHubDB.ext(b.dataset.bk)}`); } catch (e) { toast(e.message); } });
@@ -620,7 +620,7 @@
     dlg.returnValue = ''; if (!dlg.open) dlg.showModal();
   }
 
-  // ---------- an existing file that isn't a DevHub database: map its fields once, then migrate ----------
+  // ---------- an existing file that isn't a Toolbox+ database: map its fields once, then migrate ----------
   const maps = { all() { return store.get('devhub:maps', {}); }, save(m) { const a = this.all(); a[m.fingerprint] = m; store.set('devhub:maps', a); } };
   let pendingCustom = null;
   async function openCustomFile(file, next, { online } = {}) {
@@ -631,7 +631,7 @@
     pendingCustom = { file, info, next, online: !!online, impMode: 'merge', mapping: saved ? JSON.parse(JSON.stringify(saved)) : DevHubAdapter.guess(info), impFormat: 'sqlite', impName: file.name.replace(/\.[^.]+$/, '') };
     location.hash = 'mapfile';
   }
-  // Migrate: copy the tasks into ONE new DevHub database. The original file isn't changed.
+  // Migrate: copy the tasks into ONE new Toolbox+ database. The original file isn't changed.
   async function migrateFile(file, mapping, format, name, next) {
     const r = await DevHubAdapter.read(file, mapping), docs = r.docs, now = new Date().toISOString();
     for (const t of docs.tasks.tasks) { delete t._key; delete t._base; delete t._fbase; delete t._gone; if (t.fields && !Object.keys(t.fields).length) delete t.fields; }
@@ -646,7 +646,7 @@
     location.hash = next || 'tasks';
     return true;
   }
-  const isDevHubError = e => /isn’t a DevHub database|isn’t valid JSON or SQLite/.test(e.message);
+  const isDevHubError = e => /isn’t a (?:Toolbox\+|DevHub) database|isn’t valid JSON or SQLite/.test(e.message);
 
   async function openDbFile(file, handle, next) {
     let r;
@@ -793,7 +793,7 @@
 
   // ---------- formatter tools ----------
   const FMT = {
-    json: { name: 'JSON', minify: true, sort: true, accept: '.json,application/json', sample: '{"name":"devhub","version":2,"features":["formatters","converters"],"offline":true,"limits":{"rows":null}}' },
+    json: { name: 'JSON', minify: true, sort: true, accept: '.json,application/json', sample: '{"name":"toolbox-plus","version":2,"features":["formatters","converters"],"offline":true,"limits":{"rows":null}}' },
     html: { name: 'HTML', accept: '.html,.htm,text/html', sample: '<!doctype html><html><head><title>Demo</title></head><body><div class="card"><h1>Hello</h1><p>Some <b>bold</b> text</p><ul><li>One</li><li>Two</li></ul></div></body></html>' },
     css: { name: 'CSS', minify: true, accept: '.css,.scss,.less,text/css', sample: '.card{display:flex;gap:8px;padding:16px}.card h1{font-size:2rem;margin:0}@media (max-width:600px){.card{flex-direction:column}}' },
     js: { name: 'JavaScript', accept: '.js,.mjs,.cjs,.ts,.jsx,.tsx', sample: 'const sum=(a,b)=>{return a+b};async function load(url){const r=await fetch(url);if(!r.ok){throw new Error(r.status)}return r.json()}export default {sum,load}' },
@@ -1007,7 +1007,7 @@
             const r = await runJob({ kind: 'inspect', source: f.blob, name: f.name }, progressUI($('[data-prog]', el)));
             info[side] = { ...r.info, file: f };
             const i = info[side];
-            $(`[data-info="${side}"]`, el).textContent = `${i.profile === 'devhub' ? 'DevHub database' : MIG_KIND[i.kind]}${i.profile === 'devhub' ? ` (${MIG_KIND[i.kind]})` : ''} · ${i.collections.length ? i.collections.map(c => `${c.label} (${c.count.toLocaleString()})`).join(', ') : 'empty — new collections will be created'}`;
+            $(`[data-info="${side}"]`, el).textContent = `${i.profile === 'devhub' ? 'Toolbox+ database' : MIG_KIND[i.kind]}${i.profile === 'devhub' ? ` (${MIG_KIND[i.kind]})` : ''} · ${i.collections.length ? i.collections.map(c => `${c.label} (${c.count.toLocaleString()})`).join(', ') : 'empty — new collections will be created'}`;
           }
           renderMap();
         } catch (e) { mapEl.hidden = false; mapEl.innerHTML = `<div class="out err">${esc(e.message)}</div>`; }
@@ -1034,7 +1034,7 @@
         };
         mapEl.hidden = false;
         mapEl.innerHTML = `<h3 class="mig-h"><span class="mig-n">3</span> Map ${S.collections.length === 1 ? 'the data' : 'each source ' + (S.kind === 'sqlite' ? 'table' : 'collection')} <span class="hint">— check the fields and values, then preview</span></h3>
-          ${D.profile === 'devhub' ? '<p class="hint mig-dh">The target is a <b>DevHub database</b>: its task fields and allowed values (status To do / In progress / Done, priority Urgent–Low) are listed even when it’s empty. Project names become DevHub projects, and dates are converted.</p>' : ''}
+          ${D.profile === 'devhub' ? '<p class="hint mig-dh">The target is a <b>Toolbox+ database</b>: its task fields and allowed values (status To do / In progress / Done, priority Urgent–Low) are listed even when it’s empty. Project names become Toolbox+ projects, and dates are converted.</p>' : ''}
           <div class="row mig-global"><label class="check-line"><input type="checkbox" data-addnew checked> Add ${fnoun}s the target doesn’t have yet</label>
           ${D.kind === 'json' ? '<label class="check-line"><input type="checkbox" data-parsejson checked> Turn JSON text (e.g. from SQLite) into real objects and arrays</label>' : ''}
           ${S.kind === 'xml' ? '<label class="check-line"><input type="checkbox" data-infer checked> Detect numbers and true/false in XML values</label>' : ''}</div>
@@ -1061,7 +1061,7 @@
             $('[data-nn]', box).hidden = !isNew;
             const tcols = dc ? dc.columns : [];
             const known = tcols.filter(t => t.known), matchIn = (list, name) => list.find(t => migNorm(t.name) === migNorm(name)) || list.find(t => synMatch(FIELD_SYN, name, t.name));
-            const matchCol = name => (known.length && matchIn(known, name)) || matchIn(tcols, name); // prefer the target's real (DevHub) fields over stray ones
+            const matchCol = name => (known.length && matchIn(known, name)) || matchIn(tcols, name); // prefer the target's real (Toolbox+) fields over stray ones
             // key
             const dkey = $('[data-dkey]', box), skey = $('[data-skey]', box);
             const keyCols = isNew ? sc.columns.map(c => c.name) : tcols.map(c => c.name);
@@ -1122,7 +1122,7 @@
               sels.forEach(s => s.classList.toggle('mig-bad-sel', bad.includes(s)));
               vt.textContent = `${sels.length} value${sels.length === 1 ? '' : 's'}${changed ? ` · ${changed} mapped` : ''}${bad.length ? ` · ${bad.length} to fix` : ''}`;
               vt.classList.toggle('mig-bad', !!bad.length);
-              if (bad.length) warn.push(`${tr.dataset.from}: ${bad.map(s => `“${s.closest('tr').dataset.v}”`).join(', ')} ${bad.length === 1 ? 'isn’t an allowed value' : 'aren’t allowed values'} in the target — map ${bad.length === 1 ? 'it' : 'them'}, or DevHub will use its default.`);
+              if (bad.length) warn.push(`${tr.dataset.from}: ${bad.map(s => `“${s.closest('tr').dataset.v}”`).join(', ')} ${bad.length === 1 ? 'isn’t an allowed value' : 'aren’t allowed values'} in the target — map ${bad.length === 1 ? 'it' : 'them'}, or Toolbox+ will use its default.`);
             });
             const w = $('[data-warn]', box); w.hidden = !warn.length; w.textContent = warn.join(' ');
             const cols = plan.cols.filter(x => x.to), rows = sc.sample.slice(0, 3);
@@ -1199,7 +1199,7 @@
         resEl.innerHTML = `<div class="result-head"><div><b>${esc(name)}</b> <span class="hint">created</span>
             <div class="hint">${tot(r, 'inserted').toLocaleString()} added · ${tot(r, 'updated').toLocaleString()} updated · ${tot(r, 'skipped').toLocaleString()} skipped${tot(r, 'failed') ? ` · <b class="mig-bad">${tot(r, 'failed').toLocaleString()} failed</b>` : ''} · ${fmtBytes(files.dst.size)} → ${fmtBytes(r.blob.size)} · ${(r.ms / 1000).toFixed(1)} s</div></div>
           <div class="row"><button class="primary" data-dl>Download</button>${canShareFiles() ? '<button data-share>Share</button>' : ''}<button data-chain title="Keep working on the result, e.g. to migrate another source into it">Use as target</button></div></div>
-          <p class="hint">Download saves the updated copy as <b>${esc(name)}</b> — replace your original with it. Your original file was not changed.${r.profile === 'devhub' ? ' Open it in DevHub with Tasks → Open database file.' : ''}</p>
+          <p class="hint">Download saves the updated copy as <b>${esc(name)}</b> — replace your original with it. Your original file was not changed.${r.profile === 'devhub' ? ' Open it in Toolbox+ with Tasks → Open database file.' : ''}</p>
           ${reportTable(r)}
           ${r.previews.map(p => `<p class="hint">Result: <b>${esc(p.label)}</b> — last ${Math.min(50, p.count)} of ${p.count.toLocaleString()} records</p>
             <div class="table-wrap"><table><thead><tr>${p.columns.map(c => `<th>${esc(c)}</th>`).join('')}</tr></thead><tbody>${p.rows.map(row => `<tr>${row.map(v => `<td>${esc(v.length > 120 ? v.slice(0, 120) + '…' : v)}</td>`).join('')}</tr>`).join('')}</tbody></table></div>`).join('')}`;
@@ -1878,12 +1878,15 @@
   const wireCollapse = (box, btn, isCollapsed, save, labels) => { btn.onclick = () => { const c = !isCollapsed(); save(c); box.classList.toggle('collapsed', c); btn.setAttribute('aria-expanded', String(!c)); btn.title = c ? labels[1] : labels[0]; $('.sr', btn).textContent = btn.title; }; };
   function renderTools(sub) {
     const t = TOOLS.find(x => x.id === sub) || TOOLS[0];
+    if (sub && t.id === sub) { const r = store.get('toolbox:recent-tools', []).filter(x => x !== t.id); r.unshift(t.id); store.set('toolbox:recent-tools', r.slice(0, 6)); }   // for Home → Recent
     const grouped = GROUPS.map(g => [g, TOOLS.filter(x => x.group === g)]).filter(([, l]) => l.length);
     const hc = headCollapsed(), tc = toolCollapsed(t.id);
     view().innerHTML = `${syncLine()}<header class="page-head${hc ? ' collapsed' : ''}" id="pageHead"><div class="ph-text"><h1>Developer tools</h1><p class="lede">${TOOLS.length} tools in ${grouped.length} groups. Everything runs on your device — nothing you open or paste is uploaded.</p></div>
       <button type="button" class="ghost ph-toggle" id="phToggle" aria-expanded="${!hc}" aria-controls="pageHead" title="${hc ? 'Expand header' : 'Collapse header'}">${CHEVRON}<span class="sr">${hc ? 'Expand header' : 'Collapse header'}</span></button></header>
       <label class="picker"><span class="sr">Choose a tool</span><select id="picker">${grouped.map(([g, l]) => `<optgroup label="${esc(g)}">${l.map(x => `<option value="${x.id}" ${x.id === t.id ? 'selected' : ''}>${esc(x.name)}</option>`).join('')}</optgroup>`).join('')}</select></label>
-      <div class="tools"><nav class="tool-list" aria-label="Tools"><input id="tf" type="search" placeholder="Filter tools" aria-label="Filter tools">
+      <div class="tools${store.get('toolbox:toollist-hidden', false) ? ' list-hidden' : ''}" id="toolsWrap"><button type="button" class="tl-show" id="tlShow" title="Show the tool list" aria-label="Show the tool list"><svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M4 6h16M4 12h16M4 18h16"/></svg><span>Tools</span></button><nav class="tool-list" aria-label="Tools">
+      <div class="tl-bar"><button type="button" class="ghost" id="tlAll" title="Collapse or expand every group">${grouped.every(([g]) => groupCollapsed(g)) ? 'Expand all' : 'Collapse all'}</button><button type="button" class="ghost" id="tlHide" title="Hide the tool list for more room">&#171; Hide</button></div>
+      <input id="tf" type="search" placeholder="Filter tools" aria-label="Filter tools">
       ${grouped.map(([g, l]) => { const gc = groupCollapsed(g); return `<div class="tool-group${gc ? ' collapsed' : ''}" data-g="${esc(g)}"><h3><button type="button" class="tg-toggle" aria-expanded="${!gc}" title="${gc ? 'Expand' : 'Collapse'} ${esc(g)}"><span class="tg-name">${esc(g)}</span><span class="tg-n">${l.length}</span>${CHEVRON}</button></h3>${l.map(x => `<button data-id="${x.id}" class="${x.id === t.id ? 'active' : ''}" ${x.id === t.id ? 'aria-current="page"' : ''}>${esc(x.name)}</button>`).join('')}</div>`; }).join('')}</nav>
       <section class="workspace panel"><header class="ws-top${tc ? ' collapsed' : ''}" id="wsTop"><div class="ws-head"><span class="ws-group">${esc(t.group)}</span><h2>${esc(t.name)}</h2></div>
         <button type="button" class="ghost ph-toggle ws-toggle" id="wsToggle" aria-expanded="${!tc}" aria-controls="wsDesc" title="${tc ? 'Show description' : 'Hide description'}">${CHEVRON}<span class="sr">${tc ? 'Show description' : 'Hide description'}</span></button>
@@ -1896,6 +1899,9 @@
       $('.tool-list').classList.toggle('filtering', !!q);   // while filtering, matches show even in collapsed groups
       view().querySelectorAll('.tool-group').forEach(g => { let any = false; g.querySelectorAll('button[data-id]').forEach(b => { const hit = (b.textContent + ' ' + g.dataset.g).toLowerCase().includes(q); b.hidden = !hit; any ||= hit; }); g.hidden = !any; }); };
     view().querySelectorAll('.tg-toggle').forEach(b => b.onclick = () => { const g = b.closest('.tool-group'), c = !g.classList.contains('collapsed'); g.classList.toggle('collapsed', c); setGroupCollapsed(g.dataset.g, c); b.setAttribute('aria-expanded', String(!c)); b.title = (c ? 'Expand ' : 'Collapse ') + g.dataset.g; });
+    $('#tlHide').onclick = () => { store.set('toolbox:toollist-hidden', true); $('#toolsWrap').classList.add('list-hidden'); };
+    $('#tlShow').onclick = () => { store.set('toolbox:toollist-hidden', false); $('#toolsWrap').classList.remove('list-hidden'); };
+    $('#tlAll').onclick = () => { const collapse = !grouped.every(([g]) => groupCollapsed(g)); grouped.forEach(([g]) => setGroupCollapsed(g, collapse)); view().querySelectorAll('.tool-group').forEach(el => { el.classList.toggle('collapsed', collapse); const b = $('.tg-toggle', el); if (b) b.setAttribute('aria-expanded', String(!collapse)); }); $('#tlAll').textContent = collapse ? 'Expand all' : 'Collapse all'; };
     cancelJob();
     t.render($('#ws'));
   }
@@ -1935,10 +1941,12 @@
     // Move to the Links page: the link keeps its name, address, notes and category (as its group) and leaves Tool stores
     const moveToWork = (ids, label) => {
       const set = new Set(ids), at = new Date().toISOString();
-      saveLinks((data.get('links') || []).map(x => set.has(x.id) ? { ...x, list: 'work', updatedAt: at } : x));
+      const moving = (data.get('links') || []).filter(x => set.has(x.id)).map(({ list, deleted, ...x }) => ({ ...x, updatedAt: at }));
+      wl.set(mergeById(moving, wl.all()));   // into the device's Links (synced from there if you choose)
+      saveLinks((data.get('links') || []).map(x => set.has(x.id) ? { ...x, deleted: true, updatedAt: at } : x));
       if (linkCat && !(data.get('links') || []).some(x => !x.deleted && x.list !== 'work' && (x.category || 'Other') === linkCat)) linkCat = '';
       renderLinks();
-      toast(`Moved ${label} to Links`, { label: 'Undo', fn: () => { const at2 = new Date().toISOString(); saveLinks((data.get('links') || []).map(x => set.has(x.id) ? { ...x, list: undefined, updatedAt: at2 } : x)); renderLinks(); } });
+      toast(`Moved ${label} to Links`, { label: 'Undo', fn: () => { const at2 = new Date().toISOString(); wl.set(wl.all().map(x => set.has(x.id) ? { ...x, deleted: true, updatedAt: at2 } : x)); saveLinks((data.get('links') || []).map(x => set.has(x.id) ? { ...x, deleted: false, list: undefined, updatedAt: at2 } : x)); renderLinks(); } });
     };
     view().querySelectorAll('[data-move]').forEach(b => b.onclick = () => { const l = links.find(x => x.id === b.dataset.move); moveToWork([l.id], `“${l.name}”`); });
     view().querySelectorAll('[data-move-cat]').forEach(b => b.onclick = () => {
@@ -1953,15 +1961,127 @@
     });
   }
 
-  // ---------- work links: everyday quick-access links (per user, stored with the tool stores as list: 'work') ----------
+  // ---------- sync needs you: sign in (any device) or your fingerprint (Android app, signed in) ----------
+  // Every sync started by you (Links ⇅ Sync now, Pull / Push) goes through this. Automatic sync runs only after you have
+  // confirmed once in this session, and never asks again in the background.
+  let syncConfirmedAt = 0;
+  async function requireSyncAuth(reason = 'Sync your data with your account') {
+    if (session.user && session.token) {
+      const NBp = isNative() && window.Capacitor.Plugins && window.Capacitor.Plugins.NativeBiometric;
+      if (NBp && Date.now() - syncConfirmedAt > 5 * 60 * 1000) {
+        let avail = false; try { avail = !!(await NBp.isAvailable({ useFallback: true })).isAvailable; } catch {}
+        if (avail) {
+          try { await NBp.verifyIdentity({ reason, title: 'Confirm sync', subtitle: reason, description: 'Use your fingerprint (or screen lock) to sync', useFallback: true, maxAttempts: 3 }); }
+          catch { toast('Not confirmed — nothing was synced'); return false; }
+        }
+      }
+      syncConfirmedAt = Date.now(); return true;
+    }
+    return signInSheet(reason);
+  }
+  function signInSheet(reason) {
+    return new Promise(resolve => {
+      const d = document.createElement('dialog'); d.className = 'auth-sheet';
+      d.innerHTML = `<form id="asF" novalidate>
+        <header class="as-head"><span class="brand-mark">${$('.brand .brand-mark') ? $('.brand .brand-mark').innerHTML : ''}</span><div><h2>Sign in to sync</h2><p class="hint">${esc(reason)}. Your data stays on this device too.</p></div></header>
+        ${offline.meta ? `<p class="form-note">Signing in closes the offline database “${esc(offline.meta.name)}” and adds its tasks to your account.</p>` : ''}
+        <label for="asL">Username or email</label><input id="asL" name="login" autocomplete="username" required>
+        <label for="asP">Password</label><input id="asP" name="password" type="password" autocomplete="current-password" required>
+        <label class="check-line"><input type="checkbox" name="remember" checked> Keep me signed in on this device</label>
+        <p class="form-err" role="alert" hidden></p>
+        <div class="as-foot"><a href="#register?next=${esc(document.body.dataset.route || 'home')}" id="asReg">Create an account</a><span><button type="button" id="asNo">Not now</button><button class="primary" id="asGo">Sign in &amp; sync</button></span></div></form>`;
+      document.body.appendChild(d); d.showModal(); $('#asL', d).focus();
+      const done = v => { d.close(); d.remove(); resolve(v); };
+      $('#asNo', d).onclick = () => done(false);
+      $('#asReg', d).onclick = () => done(false);
+      d.addEventListener('cancel', () => done(false));
+      $('#asF', d).onsubmit = async e => {
+        e.preventDefault(); const f = e.target, err = $('.form-err', d), b = $('#asGo', d); err.hidden = true;
+        if (!f.login.value.trim() || !f.password.value) { err.textContent = 'Enter your username and password.'; err.hidden = false; return; }
+        b.disabled = true; b.textContent = 'Signing in…';
+        try { const r = await api('/auth/login', { method: 'POST', body: { login: f.login.value, password: f.password.value } }); startSession(r.token, r.user, f.remember.checked); syncConfirmedAt = Date.now(); toast(`Signed in as ${r.user.username}`); done(true); }
+        catch (x) { err.textContent = x.message; err.hidden = false; b.disabled = false; b.innerHTML = 'Sign in &amp; sync'; }
+      };
+    });
+  }
+
+  // ---------- work links: OFFLINE FIRST ----------
+  // Links live on this device (localStorage), need no account and never contact the server on their own.
+  // Signed in, they can ALSO be synced with your account (server doc "worklinks"): Manual (press Sync now) or
+  // Automatic (every 5 minutes while Toolbox+ is open, and when you leave it with unsynced changes). Two-way merge per
+  // link, newest edit wins; deletions are kept as tombstones so they sync too.
+  const WL_KEY = 'toolbox:worklinks';
+  const wl = {
+    st: null, timer: null, busy: false, status: '',
+    load() { if (!this.st) { this.st = { items: [], ver: {}, dirty: false, lastSync: 0, mode: 'manual', migrated: {}, ...store.get(WL_KEY, {}) }; } return this.st; },
+    save() { store.set(WL_KEY, this.st); },
+    all() { return this.load().items; },
+    set(items) { const s = this.load(); s.items = items; s.dirty = true; this.save(); this.schedule(); },
+    canSync() { return !!(session.user && session.token); },
+    // Earlier versions kept work links inside the account / offline-database "links" list (list: 'work'): move them here once
+    adopt() {
+      const docs = data.get('links'); if (!Array.isArray(docs) || !data.ns) return;
+      const s = this.load(); if (s.migrated[data.ns]) return;
+      const old = docs.filter(l => l.list === 'work' && !l.deleted);
+      if (old.length) {
+        const at = new Date().toISOString();
+        s.items = mergeById(s.items, old.map(({ list, ...x }) => x)); s.dirty = true;
+        data.set('links', docs.map(l => l.list === 'work' && !l.deleted ? { ...l, deleted: true, updatedAt: at } : l));
+      }
+      s.migrated[data.ns] = true; this.save();
+    },
+    async sync({ manual = false } = {}) {
+      if (manual && !(await requireSyncAuth('Sync your Links with your account'))) return false;
+      if (!this.canSync()) return false;
+      if (this.busy) return false;
+      const s = this.load(), uidv = session.user.id;
+      this.busy = true; this.status = 'Syncing…'; this.paint();
+      try {
+        let r = await api('/data/worklinks'), merged = mergeById(s.items, Array.isArray(r.data) ? r.data : []);
+        const same = Array.isArray(r.data) && JSON.stringify(canonList(merged)) === JSON.stringify(canonList(r.data));
+        let version = r.version || 0;
+        if (!same) {
+          for (let i = 0; i < 3; i++) {
+            try { const w = await api('/data/worklinks', { method: 'PUT', body: { data: merged, baseVersion: version } }); version = w.version; break; }
+            catch (e) { if (e.status !== 409) throw e; merged = mergeById(merged, Array.isArray(e.body.data) ? e.body.data : []); version = e.body.version; }
+          }
+        }
+        s.items = merged; s.ver[uidv] = version; s.dirty = false; s.lastSync = Date.now(); this.save();
+        this.status = `Synced ${stamp()}`;
+        if (manual) toast('Links synced');
+        return true;
+      } catch (e) {
+        this.status = e.status === 404 ? 'The sync server needs the latest update (redeploy on Render)' : e.offline ? 'Not synced — saved on this device' : 'Not synced — ' + e.message;
+        if (manual) toast(this.status);
+        return false;
+      } finally { this.busy = false; this.paint(); this.schedule(); if (document.body.dataset.route === 'worklinks' && !document.querySelector('dialog[open]')) renderWorkLinks(); }
+    },
+    schedule() {
+      clearTimeout(this.timer);
+      const s = this.load(); if (s.mode !== 'auto' || !this.canSync()) return;
+      this.timer = setTimeout(() => { if (!document.hidden || s.dirty) this.sync(); else this.schedule(); }, Math.max(5000, s.lastSync + 5 * 60 * 1000 - Date.now()));
+    },
+    paint() { const el = $('#wlSyncStatus'); if (el) el.textContent = this.statusText(); },
+    statusText() {
+      const s = this.load();
+      if (!this.canSync()) return 'Saved on this device';
+      if (this.busy) return 'Syncing…';
+      return this.status || (s.dirty ? 'Changes on this device not synced yet' : s.lastSync ? `Synced ${new Date(s.lastSync).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}` : 'Not synced yet');
+    }
+  };
+  const canonList = a => a.slice().sort((x, y) => String(x.id).localeCompare(String(y.id))).map(x => JSON.stringify(Object.keys(x).sort().reduce((o, k) => (o[k] = x[k], o), {})));
+  document.addEventListener('visibilitychange', () => { const s = wl.load(); if (s.mode !== 'auto' || !wl.canSync()) return; if (document.hidden) { if (s.dirty) wl.sync(); } else if (Date.now() - s.lastSync >= 5 * 60 * 1000) wl.sync(); });
+  window.addEventListener('online', () => { const s = wl.load(); if (s.mode === 'auto' && s.dirty && wl.canSync()) wl.sync(); });
+
   let wlQuery = '', wlGroup = '';
   const safeUrl = u => /^https?:\/\//i.test(u) ? u : '#';
   const fixUrl = u => { u = String(u || '').trim(); if (!u) return ''; return /^[a-z][a-z0-9+.-]*:/i.test(u) ? u : 'https://' + u; };
   const nameFromUrl = u => { try { const x = new URL(u); const h = x.hostname.replace(/^www\./, ''); const seg = x.pathname.split('/').filter(Boolean)[0]; const base = h.split('.')[0] || h; return base.charAt(0).toUpperCase() + base.slice(1) + (seg && seg.length < 25 ? ' · ' + decodeURIComponent(seg) : ''); } catch { return u; } };
   function renderWorkLinks() {
-    const all = () => data.get('links') || [];
-    const links = all().filter(l => !l.deleted && l.list === 'work');
-    const save = next => data.set('links', next);
+    if (data.ns) wl.adopt();
+    const all = () => wl.all();
+    const links = all().filter(l => !l.deleted);
+    const save = next => wl.set(next);
     const now = () => new Date().toISOString();
     const groups = [...new Set(links.map(l => l.category || 'General'))].sort((a, b) => a.localeCompare(b));
     const q = wlQuery.toLowerCase();
@@ -1973,7 +2093,13 @@
     const card = l => `<div class="wl${l.pinned ? ' pinned' : ''}"><span class="wl-ico" aria-hidden="true">${initials(l.name)}</span>
         <div class="wl-body"><a href="${esc(safeUrl(l.url))}" target="_blank" rel="noopener" title="${esc(l.url)}">${esc(l.name)}</a><span class="u">${esc(String(l.url).replace(/^https?:\/\//, ''))}</span>${l.notes ? `<span class="n">${esc(l.notes)}</span>` : ''}</div>
         <div class="wl-acts"><button type="button" class="ghost" data-pin="${l.id}" title="${l.pinned ? 'Unpin' : 'Pin to top'}" aria-pressed="${!!l.pinned}">${l.pinned ? '★' : '☆'}<span class="sr">${l.pinned ? 'Unpin' : 'Pin'}</span></button><button type="button" class="ghost" data-copy="${l.id}" title="Copy link">Copy</button><button type="button" class="ghost" data-edit="${l.id}">Edit</button><button type="button" class="ghost danger" data-rm="${l.id}">Delete</button></div></div>`;
-    view().innerHTML = `${syncLine()}<h1>Links</h1><p class="lede">Your everyday work links, one click away. Only you can see them — they're kept with your tasks${session.user ? ' and synced with your account' : ' in your offline database'}.</p>
+    const st = wl.load();
+    view().innerHTML = `<h1>Links</h1><p class="lede">Your everyday work links, one click away. Saved on this device first — works offline, no sign-in needed.</p>
+      <div class="wl-sync">${wl.canSync() ? `<span class="wl-sync-who">Sync with <b>${esc(session.user.name || session.user.username)}</b>’s account</span>
+          <label class="inline"><span class="sr">Sync mode</span><select id="wlMode"><option value="manual" ${st.mode !== 'auto' ? 'selected' : ''}>Manual</option><option value="auto" ${st.mode === 'auto' ? 'selected' : ''}>Automatic · every 5 min</option></select></label>
+          <button type="button" id="wlSyncNow" ${wl.busy ? 'disabled' : ''}>&#8645; Sync now</button><span class="sync ${st.dirty ? '' : 'ok'}" id="wlSyncStatus">${esc(wl.statusText())}</span>`
+        : `<span class="sync" id="wlSyncStatus">Saved on this device</span><button type="button" id="wlSyncNow">&#8645; Sync now</button><span class="hint">Sign-in is only asked when you sync.</span>`}
+        <span class="wl-io"><button type="button" class="ghost" id="wlExp" ${links.length ? '' : 'disabled'}>Export</button><button type="button" class="ghost" id="wlImp">Import</button><button type="button" class="ghost danger" id="wlClr" ${all().length ? '' : 'disabled'} title="Remove the links stored on this device (your account copy is not changed)">Clear device</button><input type="file" id="wlImpF" accept=".json,application/json" hidden></span></div>
       <form class="wl-quick" id="wlq" autocomplete="off"><input id="wlqUrl" type="text" inputmode="url" placeholder="Paste a link and press Enter to add it" aria-label="New link URL"><button class="primary">Add</button><button type="button" id="wlNew">Add with details…</button></form>
       <div class="links-bar"><input id="q" type="search" placeholder="Search links" value="${esc(wlQuery)}" aria-label="Search links">
         <select id="gf" aria-label="Group"><option value="">All groups</option>${groups.map(c => `<option ${c === wlGroup ? 'selected' : ''}>${esc(c)}</option>`).join('')}</select></div>
@@ -1988,10 +2114,27 @@
         <div class="row" style="margin-top:16px;justify-content:flex-end"><button value="cancel" formnovalidate>Cancel</button><button class="primary" value="ok">Save link</button></div></form></dialog>`;
     $('#q').oninput = e => { wlQuery = e.target.value; const pos = e.target.selectionStart; renderWorkLinks(); const i = $('#q'); i.focus(); i.setSelectionRange(pos, pos); };
     $('#gf').onchange = e => { wlGroup = e.target.value; renderWorkLinks(); };
+    const md = $('#wlMode'); if (md) md.onchange = () => { st.mode = md.value; wl.save(); toast(md.value === 'auto' ? 'Links sync automatically every 5 minutes' : 'Links sync when you press Sync now'); if (md.value === 'auto') wl.sync(); else wl.schedule(); };
+    const sn = $('#wlSyncNow'); if (sn) sn.onclick = () => wl.sync({ manual: true });
+    $('#wlExp').onclick = () => saveBlob(new Blob([JSON.stringify({ app: 'devhub', type: 'toolbox-links', version: 1, exportedAt: new Date().toISOString(), links: links }, null, 2)], { type: 'application/json' }), `toolbox-plus-links-${dayKey(new Date())}.json`);
+    $('#wlImp').onclick = () => $('#wlImpF').click();
+    $('#wlClr').onclick = () => {
+      if (!confirm(`Remove all ${links.length} links from this device?${wl.canSync() ? ' The copy in your account stays — Sync now brings them back.' : ' Export them first if you want to keep them.'}`)) return;
+      clearTimeout(wl.timer); store.del(WL_KEY); wl.st = null; const s2 = wl.load(); s2.migrated = { ...(st.migrated || {}) }; s2.mode = st.mode; wl.save(); renderWorkLinks(); toast('Links removed from this device');
+    };
+    $('#wlImpF').onchange = async e => {
+      const f = e.target.files[0]; e.target.value = ''; if (!f) return;
+      let j; try { j = JSON.parse(await f.text()); } catch { return toast('That file isn’t a links export'); }
+      const list = Array.isArray(j) ? j : Array.isArray(j.links) ? j.links : null;
+      if (!list) return toast('That file isn’t a links export');
+      const ok = list.filter(x => x && x.url && /^https?:\/\//i.test(x.url)).map(({ list: _l, ...x }) => ({ ...x, id: x.id || uid(), name: x.name || nameFromUrl(x.url), updatedAt: x.updatedAt || new Date().toISOString() }));
+      const before = new Set(all().map(x => x.id)); save(mergeById(all(), ok)); renderWorkLinks();
+      toast(`Imported ${ok.filter(x => !before.has(x.id)).length} new link(s)`);
+    };
     $('#wlq').onsubmit = e => { e.preventDefault(); const url = fixUrl($('#wlqUrl').value); if (!url) return $('#wlqUrl').focus();
       if (!/^https?:\/\//i.test(url)) return toast('Use a web link (http or https)');
       if (links.some(l => l.url === url)) return toast('That link is already in your list');
-      save([...all(), { id: uid(), list: 'work', name: nameFromUrl(url), url, category: wlGroup || 'General', notes: '', updatedAt: now() }]);
+      save([...all(), { id: uid(), name: nameFromUrl(url), url, category: wlGroup || 'General', notes: '', updatedAt: now() }]);
       renderWorkLinks(); toast('Link added — press Edit to rename it'); $('#wlqUrl').focus(); };
     const dlg = $('#dlg'); let editing = null;
     const open = (l, url) => { editing = l; $('#dt').textContent = l ? 'Edit link' : 'Add link'; $('#ln').value = l?.name || ''; $('#lu').value = l?.url || url || ''; $('#lc').value = l?.category || wlGroup || ''; $('#lnotes').value = l?.notes || ''; $('#lpin').checked = !!l?.pinned; dlg.showModal(); };
@@ -2000,7 +2143,7 @@
     dlg.onclose = () => { if (dlg.returnValue !== 'ok') return;
       const url = fixUrl($('#lu').value); if (!/^https?:\/\//i.test(url)) return toast('Not saved — use a web link (http or https)');
       const v = { name: $('#ln').value.trim() || nameFromUrl(url), url, category: $('#lc').value.trim() || 'General', notes: $('#lnotes').value.trim(), pinned: $('#lpin').checked, updatedAt: now() };
-      save(editing ? all().map(x => x.id === editing.id ? { ...x, ...v } : x) : [...all(), { id: uid(), list: 'work', ...v }]);
+      save(editing ? all().map(x => x.id === editing.id ? { ...x, ...v } : x) : [...all(), { id: uid(), ...v }]);
       renderWorkLinks(); toast(editing ? 'Link updated' : 'Link added'); };
     const byId = id => links.find(l => l.id === id);
     view().querySelectorAll('[data-edit]').forEach(b => b.onclick = () => open(byId(b.dataset.edit)));
@@ -2022,7 +2165,7 @@
   };
   const pwToggle = form => form.querySelectorAll('.pw-toggle').forEach(b => b.onclick = () => { const i = b.previousElementSibling; const show = i.type === 'password'; i.type = show ? 'text' : 'password'; b.textContent = show ? 'Hide' : 'Show'; b.setAttribute('aria-pressed', show); });
   const nextRoute = () => new URLSearchParams(location.hash.split('?')[1] || '').get('next') || 'tasks';
-  const authShell = inner => `<div class="auth"><div class="auth-card"><div class="auth-brand"><span class="brand-mark">{ }</span><span>DevHub</span></div>${offline.meta ? `<p class="form-note">Signing in closes your offline database “${esc(offline.meta.name)}” and adds its tasks to your account (nothing is deleted or replaced).${offline.meta.fileDirty ? ' It has changes that aren’t saved to the file yet — <a href="#account">save it first</a>.' : ''}</p>` : ''}${inner}</div>
+  const authShell = inner => `<div class="auth"><div class="auth-card"><div class="auth-brand"><span class="brand-mark"><svg viewBox="0 0 100 100" width="28" height="28" aria-hidden="true"><rect width="100" height="100" rx="22" fill="#3346D3"/><g transform="translate(50,50) scale(0.8) translate(-50,-50)"><g transform="translate(-4.5,5.5)"><path d="M36 31V24a5 5 0 0 1 5-5h18a5 5 0 0 1 5 5v7" fill="none" stroke="#FFFFFF" stroke-width="7" stroke-linecap="round"/><rect x="14" y="30" width="72" height="50" rx="8" fill="#FFFFFF"/><rect x="14" y="48" width="72" height="5" fill="#3346D3"/><rect x="43" y="44" width="14" height="13" rx="3" fill="#F2C94C"/><circle cx="80" cy="24" r="17" fill="#3346D3"/><circle cx="80" cy="24" r="14" fill="#F2C94C"/><rect x="73" y="21.5" width="14" height="5" rx="1.5" fill="#3346D3"/><rect x="77.5" y="17" width="5" height="14" rx="1.5" fill="#3346D3"/></g></g></svg></span><span>Toolbox+</span></div>${offline.meta ? `<p class="form-note">Signing in closes your offline database “${esc(offline.meta.name)}” and adds its tasks to your account (nothing is deleted or replaced).${offline.meta.fileDirty ? ' It has changes that aren’t saved to the file yet — <a href="#account">save it first</a>.' : ''}</p>` : ''}${inner}</div>
     <p class="auth-foot hint">Your tasks and links are private to your account.${API ? '' : ''} The developer tools work without signing in — <a href="#tools">open tools</a>.</p></div>`;
 
   function renderLogin() {
@@ -2036,7 +2179,7 @@
         <button class="primary wide">Sign in</button>
       </form>
       <p class="auth-switch">New here? <a href="#register${location.hash.includes('?') ? '?' + location.hash.split('?')[1] : ''}">Create an account</a></p>
-      <p class="auth-switch alt">Don’t want an account? <a href="#start?next=${nextRoute()}">Use DevHub offline</a></p>`);
+      <p class="auth-switch alt">Don’t want an account? <a href="#start?next=${nextRoute()}">Use Toolbox+ offline</a></p>`);
     const f = $('#af'); pwToggle(f); $('#login').focus();
     f.onsubmit = async e => {
       e.preventDefault(); const btn = $('button.primary', f), err = $('.form-err', f); err.hidden = true;
@@ -2055,7 +2198,7 @@
     loadConfig();
     if (session.user) { location.hash = nextRoute(); return; }
     const closed = serverConfig.registration === 'closed', code = serverConfig.registration === 'code';
-    view().innerHTML = authShell(closed ? `<h1>Registration is closed</h1><p class="hint auth-sub">Ask the administrator of this DevHub to create an account for you.</p><a class="btn primary wide" href="#login">Back to sign in</a>` :
+    view().innerHTML = authShell(closed ? `<h1>Registration is closed</h1><p class="hint auth-sub">Ask the administrator of this Toolbox+ to create an account for you.</p><a class="btn primary wide" href="#login">Back to sign in</a>` :
       `<h1>Create your account</h1><p class="hint auth-sub">Plan your day, track time and keep your tool links — synced across your devices.</p>
       <form id="af" novalidate>
         <label for="name">Full name</label><input id="name" name="name" autocomplete="name" required>
@@ -2069,7 +2212,7 @@
         <button class="primary wide">Create account</button>
       </form>
       <p class="auth-switch">Already have an account? <a href="#login">Sign in</a></p>
-      <p class="auth-switch alt">Don’t want an account? <a href="#start?next=${nextRoute()}">Use DevHub offline</a></p>`);
+      <p class="auth-switch alt">Don’t want an account? <a href="#start?next=${nextRoute()}">Use Toolbox+ offline</a></p>`);
     const f = $('#af'); if (!f) return; pwToggle(f); $('#name').focus();
     const labels = ['At least 8 characters.', 'Weak — add length or variety.', 'Fair — a longer passphrase is stronger.', 'Good.', 'Strong.'];
     f.password.oninput = () => { const s = strength(f.password.value); f.querySelectorAll('.meter span').forEach((b, i) => b.className = i < s ? 'on s' + s : ''); $('.meter-text', f).textContent = labels[s]; };
@@ -2109,11 +2252,11 @@
         ${window.DHBio ? window.DHBio.panelHtml() : ''}
         <section class="panel"><h2>Sync and data</h2>
           <div class="sync-mode-opts" role="radiogroup" aria-label="Sync">
-            <label><input type="radio" name="syncmode" value="auto" ${isAuto() ? 'checked' : ''}><span>Automatic<small>Pulls and pushes every 5 minutes while DevHub is open, and pushes when you leave it. Edits are always saved on this device first.</small></span></label>
+            <label><input type="radio" name="syncmode" value="auto" ${isAuto() ? 'checked' : ''}><span>Automatic<small>Pulls and pushes every 5 minutes while Toolbox+ is open, and pushes when you leave it. Edits are always saved on this device first.</small></span></label>
             <label><input type="radio" name="syncmode" value="manual" ${isAuto() ? '' : 'checked'}><span>Manual<small>The sync server is contacted only when you press Pull or Push.</small></span></label></div>
           <p class="hint" id="acctSync">${data.hasUnsynced() ? 'Some changes on this device haven’t been pushed yet.' : 'Everything is synced.'}</p>
           <div class="row"><button id="syncPull" data-sync-btn>↓ Pull</button><button id="syncPush" data-sync-btn>↑ Push</button><button id="bkOpen" class="primary">Backup &amp; import…</button><button id="ex">Export JSON</button><button id="exq">Export SQLite</button></div>
-          <p class="hint" style="margin-top:10px">Backups are offline databases too — open one with “Use offline” on any device. Import accepts DevHub backups and any .db / .json / .xml task file.</p></section>
+          <p class="hint" style="margin-top:10px">Backups are offline databases too — open one with “Use offline” on any device. Import accepts Toolbox+ backups and any .db / .json / .xml task file.</p></section>
         <section class="panel"><h2>Sessions</h2>
           <div class="row"><button id="so">Sign out</button><button id="soa">Sign out on all devices</button></div>
           <h2 style="margin-top:22px">Delete account</h2><p class="hint">Permanently deletes your account and all your tasks and links.</p>
@@ -2131,11 +2274,11 @@
       catch (x) { fieldErrors(pwf, x.body?.fields); if (!x.body?.fields) toast(x.message); } };
     const acctSync = () => { const el = $('#acctSync'); if (el) el.textContent = data.hasUnsynced() ? 'Some changes on this device haven’t been pushed yet.' : `Everything is synced${lastSync ? ' (last sync ' + new Date(lastSync).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) + ')' : ''}.`; };
     view().querySelectorAll('input[name="syncmode"]').forEach(r => r.onchange = () => { syncPref.mode = r.value; toast(r.value === 'auto' ? 'Automatic sync on — every 5 minutes' : 'Manual sync — use Pull and Push'); if (r.value === 'auto') syncNow(); });
-    $('#syncPull').onclick = async () => { await syncNow({ what: 'pull', manual: true }); acctSync(); };
-    $('#syncPush').onclick = async () => { await syncNow({ what: 'push', manual: true }); acctSync(); };
+    $('#syncPull').onclick = async () => { if (await requireSyncAuth('Get the latest from your account')) { await syncNow({ what: 'pull', manual: true }); acctSync(); } };
+    $('#syncPush').onclick = async () => { if (await requireSyncAuth('Send this device’s changes to your account')) { await syncNow({ what: 'push', manual: true }); acctSync(); } };
     const dbMeta = { name: `${u.name || u.username}'s tasks` };
-    $('#ex').onclick = async () => saveBlob(await DevHubDB.encode('json', data.docs, dbMeta), `devhub-${u.username}-${dayKey(new Date())}.json`);
-    $('#exq').onclick = async () => { try { saveBlob(await DevHubDB.encode('sqlite', data.docs, dbMeta), `devhub-${u.username}-${dayKey(new Date())}.sqlite`); } catch (x) { toast(x.message); } };
+    $('#ex').onclick = async () => saveBlob(await DevHubDB.encode('json', data.docs, dbMeta), `toolbox-plus-${u.username}-${dayKey(new Date())}.json`);
+    $('#exq').onclick = async () => { try { saveBlob(await DevHubDB.encode('sqlite', data.docs, dbMeta), `toolbox-plus-${u.username}-${dayKey(new Date())}.sqlite`); } catch (x) { toast(x.message); } };
     $('#bkOpen').onclick = () => showBackupDialog();
     $('#so').onclick = signOut;
     $('#soa').onclick = async () => { if (!confirm('Sign out on every device, including this one?')) return; try { await syncNow({ what: 'push' }); await api('/auth/logout-all', { method: 'POST' }); } catch (x) { return toast(x.message); } const id = session.user.id; data.wipe(id); session.clear(); renderNavUser(); location.hash = 'login'; toast('Signed out on all devices'); };
@@ -2163,7 +2306,7 @@
         </section>
         <section class="start-card">
           <div class="start-ico">${ICON_DB}</div><h2>Offline</h2>
-          <p>No account. Your tasks live in one database on this device. Open a DevHub database, or an existing .db / .json / .xml task file to migrate it once.</p>
+          <p>No account. Your tasks live in one database on this device. Open a Toolbox+ database, or an existing .db / .json / .xml task file to migrate it once.</p>
           <ul class="ticks"><li>Works without internet</li><li>You own the file — copy it, back it up, open it in other tools</li><li class="minus">No automatic sync; move the file yourself</li></ul>
           <div class="start-actions"><button class="primary" id="stNew">Create new database</button><button id="stOpen">Open database file</button></div>
           <input type="file" id="stFile" hidden ${accept}>
@@ -2234,7 +2377,7 @@
           <div class="row" style="margin-top:14px">${tg !== 'browser' ? '<button class="primary" id="dbSave">Save now</button>' : ''}${tg === 'browser' && canFSA() ? '<button class="primary" id="dbReconnect" title="Choose a file on this computer; every change is then saved into it">Save into a file on this computer…</button>' : ''}</div>
         </section>
         <section class="panel cloud-panel"><h2>Online copy <span class="hint">for safe keeping</span></h2>
-          ${(() => { const c = m.cloud; if (!c) return `<p class="hint">Keep a copy of this database in a DevHub account, so it’s safe even if this device or file is lost — and you can reach it from any device by signing in. You stay offline: this database is still the one you work in.</p>
+          ${(() => { const c = m.cloud; if (!c) return `<p class="hint">Keep a copy of this database in a Toolbox+ account, so it’s safe even if this device or file is lost — and you can reach it from any device by signing in. You stay offline: this database is still the one you work in.</p>
             <div class="row"><button class="primary" id="clIn">Sign in…</button>${serverConfig.registration !== 'closed' ? '<button id="clReg">Create account…</button>' : ''}</div>`;
             return `<dl class="kv2"><dt>Account</dt><dd><b>${esc(c.user.name || c.user.username)}</b> <span class="hint">@${esc(c.user.username)}</span></dd>
               <dt>Last synced</dt><dd>${c.lastAt ? new Date(c.lastAt).toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'short' }) : 'Not yet'}${c.error ? ` <span class="mig-bad">· ${esc(c.error)}</span>` : ''}</dd></dl>
@@ -2247,7 +2390,7 @@
           <div class="row"><button id="dlSqlite">Backup as SQLite</button><button id="dlJson">Backup as JSON</button></div>
           <p class="hint" style="margin-top:12px">For a copy that’s kept up to date without files, use <b>Online copy</b>.</p></section>
         <section class="panel"><h2>Switch database</h2>
-          <p class="hint">Open a DevHub database, or an existing .db / .json / .xml task file to migrate it.</p>
+          <p class="hint">Open a Toolbox+ database, or an existing .db / .json / .xml task file to migrate it.</p>
           <div class="row"><button id="dbOpen">Open another file</button><button id="dbNew">Create new database</button></div><input type="file" id="dbFile" hidden ${accept}>
           <h2 style="margin-top:22px">Use online instead</h2><p class="hint">Close this database and sign in to sync across devices.</p>
           <button id="dbOnline">Close and sign in</button></section>
@@ -2290,13 +2433,13 @@
       const mappedCols = new Set([m.key, ...Object.values(m.roles)].filter(Boolean));
       const extra = c.columns.filter(x => !mappedCols.has(x.name)).map(x => x.name);
       const valueTable = (role, map, choices) => { const v = vals(m.roles[role]); if (!m.roles[role]) return ''; if (!v) return `<p class="hint">“${esc(m.roles[role])}” has too many different values to map one by one.</p>`;
-        return `<div class="table-wrap mf-vals"><table><thead><tr><th>In your file</th><th>Tasks</th><th>In DevHub</th></tr></thead><tbody>${v.map(x => `<tr><td><code>${esc(x.s === '' ? '(empty)' : x.s)}</code></td><td>${x.n}</td><td><select data-vmap="${role}" data-v="${esc(x.s)}">${choices.map(([k, l]) => opt(k, l, String(map[x.s]) === String(k))).join('')}</select></td></tr>`).join('')}</tbody></table></div>`; };
+        return `<div class="table-wrap mf-vals"><table><thead><tr><th>In your file</th><th>Tasks</th><th>In Toolbox+</th></tr></thead><tbody>${v.map(x => `<tr><td><code>${esc(x.s === '' ? '(empty)' : x.s)}</code></td><td>${x.n}</td><td><select data-vmap="${role}" data-v="${esc(x.s)}">${choices.map(([k, l]) => opt(k, l, String(map[x.s]) === String(k))).join('')}</select></td></tr>`).join('')}</tbody></table></div>`; };
       const shown = info.collections.find(x => x.id === P.view) || c;
       const kindName = { sqlite: 'SQLite database', json: 'JSON file', xml: 'XML file' }[info.kind];
-      const where = canFSA() ? 'You’ll choose where to save it, and DevHub saves into that same file from then on.' : hasDeviceFs() ? 'It’s saved on this device in Documents/DevHub and updated in place from then on.' : 'It’s saved in this browser from then on (this browser can’t write into a file on your device) — use Download backup for a file.';
+      const where = canFSA() ? 'You’ll choose where to save it, and Toolbox+ saves into that same file from then on.' : hasDeviceFs() ? 'It’s saved on this device in Documents/DevHub and updated in place from then on.' : 'It’s saved in this browser from then on (this browser can’t write into a file on your device) — use Download backup for a file.';
       const roleSummary = A.ROLES.filter(([k]) => m.roles[k]).map(([k, l]) => `${esc(l)} ← <span class="mono">${esc(m.roles[k])}</span>`).join(' · ');
       view().innerHTML = `<h1>${esc(P.file.name)}</h1>
-        <p class="lede">${kindName} · ${plural(info.collections.length, info.kind === 'sqlite' ? 'table' : 'list')} · ${fmtBytes(P.file.size)}. ${P.online ? 'Look at what’s inside, then import its tasks into your account.' : 'Look at what’s inside, then migrate it into a new DevHub database — the file you’ll work with from now on.'} ${esc(P.file.name)} itself isn’t changed.</p>
+        <p class="lede">${kindName} · ${plural(info.collections.length, info.kind === 'sqlite' ? 'table' : 'list')} · ${fmtBytes(P.file.size)}. ${P.online ? 'Look at what’s inside, then import its tasks into your account.' : 'Look at what’s inside, then migrate it into a new Toolbox+ database — the file you’ll work with from now on.'} ${esc(P.file.name)} itself isn’t changed.</p>
         <section class="panel mf-view">
           <h2><span class="mig-n">1</span> What’s in the file</h2>
           <div class="seg mf-tabs" role="tablist">${info.collections.map(x => `<button type="button" role="tab" aria-selected="${x.id === shown.id}" data-show="${esc(x.id)}">${esc(x.label)} <span class="hint">${x.count.toLocaleString()}</span></button>`).join('')}</div>
@@ -2304,7 +2447,7 @@
           <div class="table-wrap mf-grid"><table><thead><tr>${shown.columns.map(x => `<th>${esc(x.name)}${x.pk ? ' 🔑' : ''}</th>`).join('')}</tr></thead><tbody>${shown.rows.map(r => `<tr>${r.map(v => `<td title="${esc(v.length > 60 ? v : '')}">${esc(v.length > 60 ? v.slice(0, 60) + '…' : v)}</td>`).join('')}</tr>`).join('') || `<tr><td colspan="${shown.columns.length}" class="hint">No rows</td></tr>`}</tbody></table></div>` : '<p class="hint">This is empty.</p>'}
         </section>
         <section class="panel mf">
-          <h2><span class="mig-n">2</span> ${P.online ? 'Import into your account' : 'Migrate to a new DevHub database'}</h2>
+          <h2><span class="mig-n">2</span> ${P.online ? 'Import into your account' : 'Migrate to a new Toolbox+ database'}</h2>
           <div class="opt-grid mf-top">
             <label>Tasks are in<select id="mfCol">${info.collections.map(x => opt(x.id, `${x.label} (${x.count} records)`, x.id === m.collection)).join('')}</select></label>
             ${P.online ? '' : `<label>New database name<input id="mfName" value="${esc(P.impName)}" maxlength="60"></label>`}
@@ -2321,7 +2464,7 @@
           <details class="mf-map" ${P.mapOpen ? 'open' : ''}><summary>How the fields map <span class="hint">— worked out automatically; open to check or change</span></summary>
           <p class="hint mf-sum">${roleSummary || 'No fields matched yet — choose at least the title.'}${m.roles.status && vals(m.roles.status) ? ` · status: ${vals(m.roles.status).map(x => `${esc(x.s || '(empty)')} → ${esc(A.STATUS_LABEL[m.statusMap[x.s]] || 'To do')}`).join(', ')}` : ''}</p>
           <div class="opt-grid mf-top"><label>Unique id<select id="mfKey">${opt('', info.kind === 'sqlite' ? '— row id —' : '— row position —', !m.key)}${c.columns.map(x => opt(x.name, x.name, x.name === m.key)).join('')}</select></label></div>
-          <div class="table-wrap"><table class="mf-roles"><thead><tr><th>DevHub</th><th>Your field</th><th>Example</th></tr></thead><tbody>
+          <div class="table-wrap"><table class="mf-roles"><thead><tr><th>Toolbox+</th><th>Your field</th><th>Example</th></tr></thead><tbody>
             ${A.ROLES.map(([k, l]) => { const ex = (c.columns.find(x => x.name === m.roles[k]) || {}).sample || []; return `<tr><td><b>${esc(l)}</b>${k === 'title' ? ' <span class="hint">required</span>' : ''}</td><td><select data-role="${k}">${colOpts(m.roles[k])}</select></td><td class="hint">${esc(ex.slice(0, 2).join(' · ').slice(0, 80))}</td></tr>`; }).join('')}
           </tbody></table></div>
           ${m.roles.status ? `<h3>Status values</h3>${valueTable('status', m.statusMap, [['todo', A.STATUS_LABEL.todo], ['doing', A.STATUS_LABEL.doing], ['done', A.STATUS_LABEL.done]])}` : ''}
@@ -2361,7 +2504,7 @@
           catch (e) { err.textContent = e.message; err.hidden = false; b.disabled = false; b.textContent = 'Try again'; }
           return;
         }
-        if (!P.impName.trim()) { err.textContent = 'Give the new DevHub database a name.'; err.hidden = false; return; }
+        if (!P.impName.trim()) { err.textContent = 'Give the new Toolbox+ database a name.'; err.hidden = false; return; }
         const b = $('#mfGo'); b.disabled = true; b.textContent = 'Migrating…';
         try {
           m.formats ||= {}; A.finish(info, m); maps.save(m);
@@ -2376,15 +2519,15 @@
 
   // ---------- router ----------
   const routes = { tools: sub => renderTools(sub), links: renderLinks, worklinks: renderWorkLinks, account: () => offline.active() ? renderOfflineDb() : renderAccount(), login: renderLogin, register: renderRegister, start: renderStart, mapfile: renderMapFile };
-  const PRIVATE = new Set(['tasks', 'links', 'worklinks', 'account']);
+  const PRIVATE = new Set(['tasks', 'links', 'account']);   // Links (worklinks) and Insurance work without an account
   function render() {
     if (window.DHBio && window.DHBio.locked()) return;   // nothing is shown until the fingerprint is accepted
-    let [route, sub] = (location.hash.slice(1).split('?')[0] || 'tools').split('/');
+    let [route, sub] = (location.hash.slice(1).split('?')[0] || 'home').split('/');
     if (route === 'today' || route === 'settings') route = route === 'today' ? 'tasks' : 'account';
     if (PRIVATE.has(route) && !session.user && !offline.meta) { location.replace('#start?next=' + route); return; }
     document.querySelectorAll('.nav a[data-route]').forEach(a => a.classList.toggle('active', a.dataset.route === route || (route === 'start' && a.dataset.route === 'account')));
     document.body.dataset.route = route;
-    (routes[route] || routes.tools)(sub);
+    (routes[route] || routes.home || routes.tools)(sub);
     if (offline.active()) offlineStatus();
   }
   window.addEventListener('hashchange', () => { render(); view().focus({ preventScroll: true }); window.scrollTo(0, 0); });
@@ -2401,12 +2544,12 @@
     if (document.visibilityState === 'visible' && offline.active()) cloud.schedule();
   });
   setInterval(() => { if (!document.hidden && offline.active()) cloud.schedule(); }, 300000);
-  data.listeners.add(() => { const r = document.body.dataset.route; if ((r === 'tasks' || r === 'links' || r === 'worklinks') && !document.querySelector('dialog[open]')) render(); });
+  data.listeners.add(() => { const r = document.body.dataset.route; if ((r === 'tasks' || r === 'links') && !document.querySelector('dialog[open]')) render(); });
 
   // Shared with tasks.js
-  // What the task tracker needs to adapt to your own file (null for DevHub databases and online accounts)
-  const custom = () => null; // (the tracker always uses DevHub's own format now; migrated extra fields still show per task)
-  window.DH = { $, esc, toast, uid, dayKey, addDays, store, data, session, api, routes, render, copy, saveBlob, view, syncLine, custom, backup: () => showBackupDialog(), unlock: unlockApp, relock: relockApp, renderNavUser };
+  // What the task tracker needs to adapt to your own file (null for Toolbox+ databases and online accounts)
+  const custom = () => null; // (the tracker always uses Toolbox+'s own format now; migrated extra fields still show per task)
+  window.DH = { $, esc, toast, uid, dayKey, addDays, store, data, session, api, routes, render, copy, saveBlob, view, syncLine, custom, tools: TOOLS, groups: GROUPS, wl, offline, backup: () => showBackupDialog(), unlock: unlockApp, relock: relockApp, renderNavUser };
 
   window.addEventListener('DOMContentLoaded', () => {
     const bioLocked = !!(window.DHBio && window.DHBio.locked());   // fingerprint unlock is on and nobody has unlocked yet
@@ -2428,7 +2571,7 @@
     }
     renderNavUser();
     if (bioLocked) window.DHBio.lock();
-    else { render(); if (session.user && session.token) wakeAndSync(); }   // automatic: sync now and every 5 min · manual: wait for Pull / Push
+    else { render(); if (session.user && session.token) { wakeAndSync(); if (wl.load().mode === 'auto') setTimeout(() => wl.sync(), 3000); } }   // automatic: sync now and every 5 min · manual: wait for Pull / Push
     if ('serviceWorker' in navigator && !isNative()) {
       const hadController = !!navigator.serviceWorker.controller; let reloaded = false;
       // A new version was deployed: its service worker takes over, then reload once so every file is the new one

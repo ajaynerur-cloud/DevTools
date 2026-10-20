@@ -1,4 +1,4 @@
-/* DevHub server — serves the web app and a small JSON API with user accounts.
+/* Toolbox+ server — serves the web app and a small JSON API with user accounts.
  * No npm dependencies: Node 22+ only.
  *
  * Storage layout (in your GitHub data repo, or ./storage when running locally):
@@ -6,6 +6,7 @@
  *   <DATA_DIR>/users/<userId>/tasks.json   that user's tasks, projects and settings
  *   <DATA_DIR>/users/<userId>/links.json   that user's tool store links
  *   <DATA_DIR>/users/<userId>/prefs.json   that user's preferences
+ *   <DATA_DIR>/users/<userId>/worklinks.json  that user's Links (optional sync; Links work offline without an account)
  * The user id always comes from the signed session token, so a user can only ever read or write their own files.
  */
 'use strict';
@@ -174,7 +175,7 @@ function corsHeaders(req) {
 }
 
 /* ---------------- API ---------------- */
-const DOCS = new Set(['tasks', 'links', 'prefs']);
+const DOCS = new Set(['tasks', 'links', 'prefs', 'worklinks']);   // worklinks: the Links page, synced only when the user chooses to
 const USERNAME = /^[a-zA-Z0-9_.-]{3,32}$/;
 const EMAIL = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
@@ -309,7 +310,7 @@ async function serveStatic(req, res, url) {
     'Cache-Control': p.startsWith('/vendor/') || p.startsWith('/icons/') ? 'public, max-age=604800' : 'no-cache'
   };
   if (ext === '.html') {
-    // The planner is shown inside DevHub's own page, so only that file may be framed (and only by this site)
+    // The planner is shown inside Toolbox+'s own page, so only that file may be framed (and only by this site)
     const own = p === '/remediation-planner.html';
     headers['Content-Security-Policy'] = own ? CSP.replace("frame-ancestors 'none'", "frame-ancestors 'self'") : CSP;
     headers['X-Frame-Options'] = own ? 'SAMEORIGIN' : 'DENY';

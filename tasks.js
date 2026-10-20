@@ -1,4 +1,4 @@
-/* DevHub Tasks — per-user task tracker.
+/* Toolbox+ Tasks — per-user task tracker.
  * Stored in the signed-in user's tasks.json as:
  *   { tasks: [Task], projects: [{id,name,color,updatedAt}], settings: {dailyGoal} }
  * Task: { id, title, notes, due, priority 1-4, status todo|doing|review|blocked|hold|done, project, tags[], estimate (min),

@@ -1,4 +1,4 @@
-// DevHub › SAP tools › SAP CVA Orchestrator (UI). The engine lives in sap-cva-core.js and runs in a Web Worker.
+// Toolbox+ › SAP tools › SAP CVA Orchestrator (UI). The engine lives in sap-cva-core.js and runs in a Web Worker.
 (function () {
   'use strict';
   const MAX_FILES = 11;
@@ -65,7 +65,7 @@
           <div class="cva-outdir">
             <span class="cva-outdir-l">Output folder</span>
             ${canPickFolder() ? `<button type="button" data-outpick>Choose folder…</button><span class="cva-outdir-name" data-outname></span><button type="button" class="ghost cva-sm" data-outclear hidden>Clear</button>`
-              : '<span class="hint">This browser saves to your <b>Downloads</b> folder. Open DevHub in Chrome or Edge on a computer to choose a folder.</span>'}
+              : '<span class="hint">This browser saves to your <b>Downloads</b> folder. Open Toolbox+ in Chrome or Edge on a computer to choose a folder.</span>'}
           </div>
           <div class="cva-opts">
             <label class="check"><input type="checkbox" data-o="summary"> Create compact consolidated summary</label>

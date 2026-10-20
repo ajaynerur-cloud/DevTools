@@ -1,4 +1,4 @@
-/* DevHub worker — formatting and conversion run here so the UI never freezes.
+/* Toolbox+ worker — formatting and conversion run here so the UI never freezes.
  * Messages in:  { kind: 'format', ... } | { kind: 'convert', ... } | { kind: 'inspect' | 'migrate', ... } (see migrate.js)
  * Messages out: { type: 'progress', text, pct } | { type: 'done', ... } | { type: 'error', message }
  */
