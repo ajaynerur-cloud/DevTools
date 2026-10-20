@@ -1347,3 +1347,6 @@ dialog.ins-viewer::backdrop { background: rgba(10, 14, 22, .7); }
 .iv-body img { max-width: 100%; height: auto; }
 .iv-wait { color: #fff; }
 @media (max-width: 800px) { .ins-viewer header { flex-wrap: wrap; } #insPdf { order: 2; } }
+/* Backup & restore */
+.bk-box { display: grid; gap: 4px; border: 1px solid var(--line); border-radius: 10px; padding: 10px 12px; margin: 10px 0; font-size: .9rem; }
+.bk-box .row { margin-top: 6px; }

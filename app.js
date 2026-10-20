@@ -2034,7 +2034,7 @@
     load() { if (!this.st) { this.st = { items: [], ver: {}, dirty: false, lastSync: 0, mode: 'manual', migrated: {}, ...store.get(WL_KEY, {}) }; } return this.st; },
     save() { store.set(WL_KEY, this.st); },
     all() { return this.load().items; },
-    set(items) { const s = this.load(); s.items = items; s.dirty = true; this.save(); this.schedule(); },
+    set(items) { const s = this.load(); s.items = items; s.dirty = true; this.save(); this.schedule(); if (window.DHInsurance) window.DHInsurance.backup.schedule(); },   // Links are in the device backup file too
     canSync() { return !!(session.user && session.token); },
     // Earlier versions kept work links inside the account / offline-database "links" list (list: 'work'): move them here once
     adopt() {

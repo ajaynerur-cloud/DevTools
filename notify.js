@@ -319,7 +319,7 @@
         openTask(x.taskId, x.route);
       });
       // Snooze buttons on reminders (registered once per start; Android keeps them with the scheduled alarms)
-      if (ln.registerActionTypes) ln.registerActionTypes({ types: [{ id: SNOOZE_TYPE, actions: [{ id: 'snooze15', title: 'Snooze 15 min' }, { id: 'snooze60', title: 'Snooze 1 hour' }, { id: 'tomorrow', title: 'Tomorrow' }] }] }).catch(() => {});
+      if (ln && ln.registerActionTypes) ln.registerActionTypes({ types: [{ id: SNOOZE_TYPE, actions: [{ id: 'snooze15', title: 'Snooze 15 min' }, { id: 'snooze60', title: 'Snooze 1 hour' }, { id: 'tomorrow', title: 'Tomorrow' }] }] }).catch(() => {});
       const A = window.Capacitor.Plugins.App; if (A && A.addListener) A.addListener('appStateChange', s => { if (s.isActive) { checkGate(); sync(); if (rel) reliability(); } });   // back from a Settings screen: refresh the checklist
       checkGate();
     } else if ('serviceWorker' in navigator) {

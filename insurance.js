@@ -53,7 +53,7 @@
   let cache = null;   // policies in memory
   async function policies() { if (!cache) { try { cache = await idb.all('policies'); } catch { cache = []; } } return cache.filter(p => !p.deleted); }
   async function savePolicy(p) { p.updatedAt = new Date().toISOString(); await idb.put('policies', p); cache = null; resync(); }
-  const resync = () => { if (window.DHNotify) window.DHNotify.sync(); };
+  const resync = () => { if (window.DHNotify) window.DHNotify.sync(); backup.schedule(); };   // every change: reminders + backup file
 
   /* ---------------- reminders ---------------- */
   // days left until the next date (negative = overdue) and whether today is inside the reminder window
@@ -338,19 +338,117 @@
 
   /* ---------------- backup ---------------- */
   const b64 = blob => new Promise((res, rej) => { const r = new FileReader(); r.onload = () => res(String(r.result).split(',')[1] || ''); r.onerror = () => rej(r.error); r.readAsDataURL(blob); });
-  async function exportAll() {
-    const ps = await policies(), files = [];
-    for (const p of ps) for (const f of p.files || []) { const rec = await idb.get('files', f.id); if (rec) files.push({ id: f.id, type: f.type, data: await b64(rec.blob) }); }
-    const out = { app: 'devhub', type: 'devhub-insurance', version: 1, exportedAt: new Date().toISOString(), policies: ps, files };
+  async function exportAll() {   // the same content as the automatic backup, downloaded / shared as a file
+    const out = await backup.build();
     await saveBlob(new Blob([JSON.stringify(out)], { type: 'application/json' }), `toolbox-plus-insurance-${ymd(new Date())}.json`);
   }
   async function importAll(file) {
     let j; try { j = JSON.parse(await file.text()); } catch { return toast('That file isn’t a Toolbox+ insurance backup'); }
+    return restoreFrom(j, file.name);
     if (!j || j.type !== 'devhub-insurance' || !Array.isArray(j.policies)) return toast('That file isn’t a Toolbox+ insurance backup');
     const have = new Map((await policies()).map(p => [p.id, p])); let added = 0, updated = 0;
     for (const f of j.files || []) { const bin = atob(f.data), a = new Uint8Array(bin.length); for (let i = 0; i < bin.length; i++) a[i] = bin.charCodeAt(i); await idb.put('files', { id: f.id, blob: new Blob([a], { type: f.type || '' }) }); }
     for (const p of j.policies) { const cur = have.get(p.id); if (cur && String(cur.updatedAt) >= String(p.updatedAt)) continue; await idb.put('policies', p); cur ? updated++ : added++; }
     cache = null; resync(); render(); toast(`Imported: ${added} new, ${updated} updated`);
+  }
+
+  /* ---------------- automatic backup + restore (policies, documents, settings and your Links) ----------------
+   * App updates, a reinstall, "Clear data" or a cleared browser all remove what's stored inside the app. So every change is
+   * also written to ONE backup file outside the app, overwritten in place (never extra copies):
+   *   Android app      : Documents/ToolboxPlus/toolbox-plus-backup.json   (automatic, no questions asked)
+   *   Chrome / Edge    : a file you choose once (e.g. in OneDrive or Documents) — kept up to date automatically
+   *   other browsers   : a reminder to download a backup now and then
+   * Restore merges the backup back in (newer edit of a policy wins), so it's safe to press any time. */
+  const BK = 'toolbox:backup', BK_PATH = 'ToolboxPlus/toolbox-plus-backup.json';
+  const hasFsa = () => typeof window.showSaveFilePicker === 'function' && !isNative();
+  const FS = () => isNative() && window.Capacitor.Plugins && window.Capacitor.Plugins.Filesystem;
+  const kv = {   // the chosen backup file (Chrome/Edge) is a FileSystemFileHandle: it can only live in IndexedDB
+    db: null,
+    open() { return this.db || (this.db = new Promise((res, rej) => { const q = indexedDB.open('toolbox-backup', 1); q.onupgradeneeded = () => q.result.createObjectStore('kv'); q.onsuccess = () => res(q.result); q.onerror = () => rej(q.error); })); },
+    async get(k) { const db = await this.open(); return new Promise(res => { const r = db.transaction('kv').objectStore('kv').get(k); r.onsuccess = () => res(r.result); r.onerror = () => res(null); }); },
+    async set(k, v) { const db = await this.open(); return new Promise(res => { const t = db.transaction('kv', 'readwrite'); v == null ? t.objectStore('kv').delete(k) : t.objectStore('kv').put(v, k); t.oncomplete = () => res(); t.onerror = () => res(); }); }
+  };
+  const backup = {
+    timer: null, busy: false, needsPermission: false,
+    meta() { try { return { ...JSON.parse(localStorage.getItem(BK) || '{}') }; } catch { return {}; } },
+    setMeta(m) { try { localStorage.setItem(BK, JSON.stringify(m)); } catch {} },
+    async build() {
+      const ps = await policies(), files = [];
+      for (const p of ps) for (const f of p.files || []) { const rec = await idb.get('files', f.id); if (rec) files.push({ id: f.id, type: f.type, data: await b64(rec.blob) }); }
+      const links = DH.wl ? DH.wl.all() : [];
+      return { app: 'devhub', type: 'devhub-insurance', version: 2, exportedAt: new Date().toISOString(), policies: ps, files, settings: settings(), links };
+    },
+    schedule() { clearTimeout(this.timer); this.timer = setTimeout(() => this.run(), 2500); },
+    async run({ manual = false } = {}) {
+      if (this.busy) return this.schedule();
+      const m = this.meta(); if (m.off && !manual) return;
+      this.busy = true;
+      try {
+        const out = await this.build(); if (!out.policies.length && !out.links.length && !manual) return;
+        const text = JSON.stringify(out);
+        if (FS()) {   // Android: Documents/ToolboxPlus/… (survives uninstall / update); app storage if Documents isn't writable
+          const F = FS(); let dir = m.dir || 'DOCUMENTS';
+          try { await F.writeFile({ path: BK_PATH, data: text, directory: dir, encoding: 'utf8', recursive: true }); }
+          catch (e) { if (dir === 'DATA') throw e; dir = 'DATA'; await F.writeFile({ path: BK_PATH, data: text, directory: dir, encoding: 'utf8', recursive: true }); }
+          this.setMeta({ ...m, dir, at: out.exportedAt, n: out.policies.length, where: dir === 'DOCUMENTS' ? 'Documents/' + BK_PATH : 'app storage (Documents isn’t writable)' });
+        } else if (hasFsa()) {
+          const h = await kv.get('handle'); if (!h) return;
+          let perm = await h.queryPermission({ mode: 'readwrite' });
+          if (perm !== 'granted' && manual) perm = await h.requestPermission({ mode: 'readwrite' }).catch(() => 'denied');
+          if (perm !== 'granted') { this.needsPermission = true; return; }
+          const w = await h.createWritable(); await w.write(new Blob([text], { type: 'application/json' })); await w.close();
+          this.needsPermission = false; this.setMeta({ ...m, at: out.exportedAt, n: out.policies.length, where: h.name });
+        } else if (manual) { await saveBlob(new Blob([text], { type: 'application/json' }), `toolbox-plus-backup-${ymd(new Date())}.json`); this.setMeta({ ...m, at: out.exportedAt, n: out.policies.length, where: 'Downloads' }); }
+        if (manual) toast('Backup saved');
+      } catch (e) { if (manual) toast('Backup not saved: ' + (e && e.message || e)); }
+      finally { this.busy = false; if (document.body.dataset.route === 'insurance' && !document.querySelector('dialog[open]')) render(); }
+    },
+    async chooseFile() {   // Chrome/Edge: pick the backup file once
+      try {
+        const h = await window.showSaveFilePicker({ suggestedName: 'toolbox-plus-backup.json', types: [{ description: 'Toolbox+ backup', accept: { 'application/json': ['.json'] } }] });
+        await kv.set('handle', h); this.setMeta({ ...this.meta(), off: false }); await this.run({ manual: true });
+      } catch (e) { if (e && e.name !== 'AbortError') toast('Couldn’t use that file: ' + e.message); }
+    },
+    // a backup this device can read without asking (Android: the file in Documents; Chrome/Edge: the chosen file)
+    async findLocal() {
+      try {
+        if (FS()) { for (const dir of ['DOCUMENTS', 'DATA']) { try { const r = await FS().readFile({ path: BK_PATH, directory: dir, encoding: 'utf8' }); const j = JSON.parse(r.data); if (j && Array.isArray(j.policies)) return { j, where: dir === 'DOCUMENTS' ? 'Documents/' + BK_PATH : 'app storage' }; } catch {} } }
+        else if (hasFsa()) { const h = await kv.get('handle'); if (h && (await h.queryPermission({ mode: 'read' })) === 'granted') { const j = JSON.parse(await (await h.getFile()).text()); if (j && Array.isArray(j.policies)) return { j, where: h.name }; } }
+      } catch {}
+      return null;
+    }
+  };
+  // put a backup / export back: policies + documents (+ Links and reminder settings when the file has them)
+  async function restoreFrom(j, label) {
+    if (!j || j.type !== 'devhub-insurance' || !Array.isArray(j.policies)) return toast('That file isn’t a Toolbox+ backup');
+    const have = new Map((await policies()).map(p => [p.id, p])); let added = 0, updated = 0;
+    for (const f of j.files || []) { const bin = atob(f.data), a = new Uint8Array(bin.length); for (let i = 0; i < bin.length; i++) a[i] = bin.charCodeAt(i); await idb.put('files', { id: f.id, blob: new Blob([a], { type: f.type || '' }) }); }
+    for (const p of j.policies) { const cur = have.get(p.id); if (cur && String(cur.updatedAt) >= String(p.updatedAt)) continue; await idb.put('policies', p); cur ? updated++ : added++; }
+    let nl = 0;
+    if (Array.isArray(j.links) && j.links.length && DH.wl) { const before = new Set(DH.wl.all().map(x => x.id)); const merged = [...DH.wl.all()]; for (const l of j.links) { const i = merged.findIndex(x => x.id === l.id); if (i < 0) merged.push(l); else if (String(l.updatedAt || '') > String(merged[i].updatedAt || '')) merged[i] = l; } DH.wl.set(merged); nl = merged.filter(x => !before.has(x.id) && !x.deleted).length; }
+    if (j.settings && !localStorage.getItem(SKEY)) { try { localStorage.setItem(SKEY, JSON.stringify(j.settings)); } catch {} }
+    cache = null; resync(); render();
+    toast(`Restored from ${label}: ${added} new polic${added === 1 ? 'y' : 'ies'}, ${updated} updated${nl ? `, ${nl} link${nl === 1 ? '' : 's'}` : ''}`);
+  }
+  async function restoreDialog() {
+    const local = await backup.findLocal(), m = backup.meta();
+    const d = dialog(`<form method="dialog"><header class="tk-dlg-head"><h2>Backup &amp; restore</h2><button class="ghost dr-x" value="cancel" aria-label="Close">&#10005;</button></header>
+      <p class="hint">Everything in Insurance (policies, documents, reminder settings) and your Links is written to <b>one backup file outside the app</b> after every change, so an app update, reinstall or cleared browser can’t lose it.</p>
+      <div class="bk-box"><b>Automatic backup</b><span>${FS() ? `On · ${esc(m.where || 'Documents/' + BK_PATH)}` : hasFsa() ? (m.where ? `On · ${esc(m.where)}${backup.needsPermission ? ' · <b>press Back up now to reconnect</b>' : ''}` : 'Not set up yet — choose a file once (OneDrive or Documents is a good place)') : 'Not available in this browser — use Back up now (downloads a file)'}</span>
+        <span class="hint">${m.at ? 'Last backup ' + esc(new Date(m.at).toLocaleString()) + (m.n != null ? ` · ${m.n} polic${m.n === 1 ? 'y' : 'ies'}` : '') : 'No backup yet'}</span>
+        <span class="row">${hasFsa() ? `<button type="button" id="bkChoose">${m.where ? 'Change file…' : 'Choose backup file…'}</button>` : ''}<button type="button" class="primary" id="bkNow">Back up now</button></span></div>
+      <div class="bk-box"><b>Restore</b>
+        ${local ? `<span>Found a backup: <b>${esc(local.where)}</b> · ${esc(new Date(local.j.exportedAt).toLocaleString())} · ${local.j.policies.length} polic${local.j.policies.length === 1 ? 'y' : 'ies'}${(local.j.links || []).length ? `, ${local.j.links.filter(x => !x.deleted).length} links` : ''}</span>` : `<span class="hint">${FS() ? 'After reinstalling, Android may not let the app read its old file directly — choose it below: <b>Documents → ToolboxPlus → toolbox-plus-backup.json</b> (or an exported file).' : 'Choose your backup file, or a file made with Export.'}</span>`}
+        <span class="row">${local ? '<button type="button" class="primary" id="bkLocal">Restore this backup</button>' : ''}<button type="button" id="bkPick">Choose a backup file…</button><input type="file" id="bkFile" accept=".json,application/json" hidden></span>
+        <span class="hint">Restoring adds what’s missing and keeps the newer version of each policy — nothing here is deleted.</span></div>
+      ${FS() || hasFsa() ? `<label class="ins-check"><input type="checkbox" id="bkOff" ${m.off ? 'checked' : ''}> Turn automatic backup off on this device</label>` : ''}
+      <footer class="nt-foot"><button value="cancel">Close</button></footer></form>`);
+    const ch = $('#bkChoose', d); if (ch) ch.onclick = async () => { await backup.chooseFile(); d.close(); restoreDialog(); };
+    $('#bkNow', d).onclick = async () => { if (hasFsa() && !(await kv.get('handle'))) await backup.chooseFile(); else await backup.run({ manual: true }); d.close(); restoreDialog(); };
+    const bl = $('#bkLocal', d); if (bl) bl.onclick = async () => { d.close(); await restoreFrom(local.j, local.where); };
+    $('#bkPick', d).onclick = () => $('#bkFile', d).click();
+    $('#bkFile', d).onchange = async e => { const f = e.target.files[0]; if (!f) return; let j; try { j = JSON.parse(await f.text()); } catch { return toast('That file isn’t a Toolbox+ backup'); } d.close(); await restoreFrom(j, f.name); };
+    const off = $('#bkOff', d); if (off) off.onchange = () => { backup.setMeta({ ...backup.meta(), off: off.checked }); if (!off.checked) backup.run(); };
   }
 
   /* ---------------- page ---------------- */
@@ -362,6 +460,8 @@
     const q = query.toLowerCase(), shown = ps.filter(p => !q || [p.name, p.holder, p.insurer, p.number, p.type, p.notes, p.docText].join(' ').toLowerCase().includes(q));
     const st = ps.map(p => state(p)), over = st.filter(s => s.kind === 'overdue').length, soon = st.filter(s => s.kind === 'soon' || s.kind === 'today').length;
     const s = settings(), perm = window.DHNotify ? await window.DHNotify.permission() : 'unsupported';
+    const bkm = backup.meta(), found = ps.length ? null : await backup.findLocal();
+    if (document.body.dataset.route !== 'insurance') return;
     const dens = DH.density ? DH.density.get('insurance') : 3;
     const nextAlert = p => { const n = p.remind !== false && s.on ? nextReminder(p) : null; return n ? n.at.toLocaleString(undefined, { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' }) : ''; };
     const snoozedTxt = p => p.snoozeUntil && new Date(p.snoozeUntil) > new Date() ? 'Snoozed until ' + new Date(p.snoozeUntil).toLocaleString(undefined, { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' }) : '';
@@ -383,6 +483,10 @@
     host.innerHTML = `<h1>Insurance</h1><p class="lede">Your policies, their documents and renewal reminders. Stored only on this device — works offline, no account and no server.</p>
       <div class="ins-stats"><span><b>${ps.length}</b> polic${ps.length === 1 ? 'y' : 'ies'}</span><span class="${soon ? 'soon' : ''}"><b>${soon}</b> due within reminder window</span><span class="${over ? 'overdue' : ''}"><b>${over}</b> overdue</span></div>
       ${perm !== 'granted' && s.on ? `<div class="nt-banner"><span>&#128276; ${perm === 'denied' ? 'Notifications are blocked for Toolbox+, so renewal reminders can’t be shown. Allow them in your ' + (isNative() ? 'phone’s Settings → Apps → Toolbox+.' : 'browser’s site settings.') : perm === 'unsupported' ? 'This browser can’t show notifications — use “Add to calendar” on each policy, or the Android app.' : 'Allow notifications so Toolbox+ can remind you every day before a renewal.'}</span>${perm === 'default' ? '<span><button type="button" class="primary" id="insAllow">Allow notifications</button></span>' : ''}</div>` : ''}
+      ${!ps.length && found ? `<div class="nt-banner" id="insRestoreBanner"><span>&#128737; Found a backup from ${esc(new Date(found.j.exportedAt).toLocaleString())} with ${found.j.policies.length} polic${found.j.policies.length === 1 ? 'y' : 'ies'} (${esc(found.where)}).</span><span><button type="button" class="primary">Restore…</button></span></div>`
+        : !ps.length ? `<div class="nt-banner" id="insRestoreBanner"><span>&#128737; Reinstalled or updated and your policies are gone? Restore them from your backup or an exported file.</span><span><button type="button">Restore…</button></span></div>`
+        : hasFsa() && !bkm.where ? `<div class="nt-banner" id="insRestoreBanner"><span>&#128737; Keep an automatic backup file so an update or a cleared browser can’t lose your policies.</span><span><button type="button" class="primary">Set up backup…</button></span></div>`
+        : backup.needsPermission ? `<div class="nt-banner" id="insRestoreBanner"><span>&#128737; The backup file needs your OK again in this browser session.</span><span><button type="button" class="primary">Reconnect…</button></span></div>` : ''}
       ${(() => {
         const now = new Date(), to = new Date(Date.now() + 60 * 864e5), up = [];
         for (const p of ps) { const o = occurrences(p, now, to)[0]; if (o) up.push({ p, o }); }
@@ -390,7 +494,7 @@
         return up.length ? `<section class="ins-up"><h2>Next reminders <span class="hint">one per policy, each on its own schedule</span></h2><ol>${up.slice(0, 8).map(({ p, o }) => `<li><time>${esc(o.at.toLocaleString(undefined, { weekday: 'short', day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' }))}</time><span><b>${esc(p.name)}</b> · ${esc(leftText(o.left))}${o.snoozed ? ' · snoozed' : ''}</span></li>`).join('')}</ol></section>` : '';
       })()}
       <div class="links-bar"><input id="insQ" type="search" placeholder="Search policies" value="${esc(query)}" aria-label="Search policies">
-        <button class="primary" id="insNew">Add policy</button><button id="insPdf" title="Pick a policy PDF — Toolbox+ reads the name, insurer, policy number, dates and premium from it (on this device)">&#128196; Add from PDF</button><input type="file" id="insPdfF" accept="application/pdf,.pdf" hidden><button id="insSet">Reminders…</button><button id="insExp" ${ps.length ? '' : 'disabled'}>Export</button><button id="insImp">Import</button><input type="file" id="insImpF" accept=".json,application/json" hidden>${DH.density ? DH.density.bar('insurance') : ''}</div>
+        <button class="primary" id="insNew">Add policy</button><button id="insPdf" title="Pick a policy PDF — Toolbox+ reads the name, insurer, policy number, dates and premium from it (on this device)">&#128196; Add from PDF</button><input type="file" id="insPdfF" accept="application/pdf,.pdf" hidden><button id="insSet">Reminders…</button><button id="insExp" ${ps.length ? '' : 'disabled'}>Export</button><button id="insImp">Import</button><button id="insBk" title="Automatic backup outside the app, and restore after an update or reinstall">&#128737; Backup &amp; restore</button><input type="file" id="insImpF" accept=".json,application/json" hidden>${DH.density ? DH.density.bar('insurance') : ''}</div>
       ${dens < 3 ? `<div class="ins-list dens-${dens}">${shown.map(p => rowHtml(p, dens)).join('')}</div>` : ''}
       <div class="ins-grid" ${dens < 3 ? 'hidden' : ''}>${dens < 3 ? '' : shown.map(p => `<article class="ins-card ${state(p).kind}" data-id="${esc(p.id)}">
         <header><div><span class="ins-type">${esc(p.type || 'Other')}</span><h2>${esc(p.name)}</h2>${p.holder ? `<p class="hint">${esc(p.holder)}</p>` : ''}</div>${pill(p)}</header>
@@ -419,6 +523,8 @@
     $('#insSet').onclick = remindersDialog;
     $('#insExp').onclick = () => exportAll().catch(e => toast('Export failed: ' + e.message));
     $('#insImp').onclick = () => $('#insImpF').click();
+    $('#insBk').onclick = () => restoreDialog();
+    const rb = $('#insRestoreBanner'); if (rb) rb.onclick = e => { if (e.target.closest('button')) restoreDialog(); };
     $('#insImpF').onchange = e => { const f = e.target.files[0]; if (f) importAll(f); e.target.value = ''; };
     const allow = $('#insAllow'); if (allow) allow.onclick = async () => { await window.DHNotify.request(); resync(); render(); };
     if (DH.density) DH.density.wire('insurance', render);
@@ -599,5 +705,7 @@
   }
 
   routes.insurance = () => { view().innerHTML = '<h1>Insurance</h1><p class="lede">Loading…</p>'; hashAction(); render(); };
-  window.DHInsurance = { notificationItems, policies, render, snooze, occurrences, parsePolicy, readDoc };
+  window.DHInsurance = { notificationItems, policies, render, snooze, occurrences, parsePolicy, readDoc, backup, restoreDialog };
+  // first start after this update: make the first backup straight away (Android writes it without asking)
+  setTimeout(() => { if (!backup.meta().at) backup.run(); }, 6000);
 })();
