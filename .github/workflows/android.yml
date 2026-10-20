@@ -134,6 +134,15 @@ jobs:
           sed -i -E "s/versionCode [0-9]+/versionCode ${{ github.run_number }}/; s/versionName \"[^\"]+\"/versionName \"$VERSION\"/" android/app/build.gradle
           grep -E "versionCode|versionName|applicationId" android/app/build.gradle
 
+      - name: Use the same signing key for every build (so updates install over the old app and keep its data)
+        run: |
+          # Android only installs an update when it is signed with the SAME key as the installed app. GitHub runners
+          # create a new random debug key every run, so each APK needed an uninstall first — which wipes the app's data
+          # (insurance policies, links, settings). android-src/toolbox-debug.keystore is a fixed debug key (standard
+          # debug passwords, not a secret) used for every debug build from now on.
+          mkdir -p ~/.android && cp android-src/toolbox-debug.keystore ~/.android/debug.keystore
+          keytool -list -keystore ~/.android/debug.keystore -storepass android | grep -i "SHA-256" || true
+
       - name: Build debug APK
         working-directory: android
         run: |
