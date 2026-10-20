@@ -44,6 +44,16 @@ Home reads only what is already on the device and never contacts the server.
 
 On the **Tools** page the tool list has **Collapse all / Expand all** and **« Hide** (more room for the tool; **☰ Tools** brings the list back). Both are remembered.
 
+## Compact views
+
+**Links**, **Insurance**, **Tool stores** and Home's **All tools** have a view switch (≡ **1 line** · **2 lines** · ▦ **Expanded**), remembered per page:
+
+- **1 line:** one row per item — name plus the key detail (address for links; insurer, policy no. and next date for policies).
+- **2 lines:** adds a second line (for policies: holder, premium and the next alert or snooze).
+- **Expanded:** the full cards.
+
+In the compact Insurance views every row has **⤓** to download the policy document straight away (with several documents, a small menu lets you pick one or *Download all*), and **⋯** with Edit, Mark renewed, Snooze, Add to calendar and Delete. Tap a policy's name to edit it.
+
 ## Sync asks for you
 
 Every sync you start (Links **⇅ Sync now**, **↓ Pull / ↑ Push** in the sidebar or Account) checks first:
@@ -103,6 +113,13 @@ The **Insurance** menu keeps your insurance policies and reminds you before they
   - **Native reminder engine (`android-src/`):** `Reminders.java` schedules each insurance reminder as an exact alarm (allowed in Doze), `ReminderReceiver.java` shows it with the Snooze buttons and handles them without opening the app, `BootReceiver.java` sets the alarms again after a restart or update, `DevHubPower.java` is the plugin the web app talks to (permissions, `setReminders`, `takeState`, `showNow`) and `MainActivity.java` registers it. The Android workflow copies these into the app, adds the receivers to the manifest and `android-res/drawable/ic_stat_reminder.xml` as the status-bar icon. **Reminders… → Test now** shows a real reminder with the Snooze buttons.
   - **Android app:** reminders are scheduled with the Android alarm manager as exact alarms allowed while idle, so they arrive when the app is closed or swiped away, in battery-saving mode and after a restart. The next 45 days are scheduled each time the app opens (up to 350 alerts). Pressing a Snooze button opens Toolbox+ for a moment to reschedule. Only *Force stop* in Android settings cancels alarms (an Android rule); on Xiaomi, Oppo, Vivo and similar phones also allow **Autostart** for Toolbox+. The app asks for notifications on first start (required). The manifest declares `POST_NOTIFICATIONS`, `SCHEDULE_EXACT_ALARM`, `USE_EXACT_ALARM`, `RECEIVE_BOOT_COMPLETED`, `WAKE_LOCK` and `VIBRATE`; no storage permission is needed. For the most reliable alarms set *Settings → Apps → Toolbox+ → Battery → Unrestricted*.
   - **Browser / portable exe:** reminders appear while Toolbox+ is open (a tab or the installed app); a browser cannot wake a closed page. **Add to calendar** on a policy downloads an `.ics` with a daily reminder series (from N days before until the renewal date) for Outlook or Google Calendar.
+- **Read policy PDFs (on the device, nothing is uploaded):**
+  - **📄 Add from PDF** — pick the policy PDF; Toolbox+ reads it and opens *Add policy* already filled in: policy name (product/plan), type, insured / holder, insurer, policy number, policy (start) date, next date (the *next premium due date*, otherwise the expiry / end of the period of insurance) and premium (the total / gross premium). Filled fields are highlighted — check them and Save; the PDF is attached.
+  - **Read details** next to any attached PDF in Edit fills the empty fields (or, if you agree, replaces different values).
+  - The text of a read PDF is kept with the policy, so **Search policies** also finds words inside the document (e.g. a vehicle number or a sum insured).
+  - Scanned PDFs / photos have no text to read — Toolbox+ says so and you fill in the details.
+  - Works for common Indian and international policy schedules (Star Health, ICICI Lombard, HDFC ERGO / Life, LIC, Bajaj, Tata AIG/AIA, Niva Bupa, Care, New India, SBI and many more); unknown layouts still give the dates, policy number and premium in most cases.
+- **View documents in the app:** tap a document (or ⋯ → *View document* in the compact views) to read the PDF pages or the photo inside Toolbox+, with zoom and Download — also offline and in the Android app. Uses the bundled [pdf.js](https://github.com/mozilla/pdf.js) (`vendor/pdf.min.js`, `vendor/pdf.worker.min.js`, `vendor/pdfjs-fonts/`, Apache-2.0).
 - **Mark renewed…** moves the next date forward (default one year) and keeps a history.
 
 ## Online or offline

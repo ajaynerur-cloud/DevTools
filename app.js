@@ -1918,17 +1918,18 @@
     view().innerHTML = `${syncLine()}<h1>Tool stores</h1><p class="lede">Package registries, marketplaces and references. Only you can see your list.</p>
       <div class="links-bar"><input id="q" type="search" placeholder="Search links" value="${esc(linkQuery)}" aria-label="Search links">
         <select id="cf" aria-label="Category"><option value="">All categories</option>${cats.map(c => `<option ${c === linkCat ? 'selected' : ''}>${esc(c)}</option>`).join('')}</select>
-        <button class="primary" id="new">Add link</button></div>
-      ${Object.keys(groups).sort().map(c => `<section class="cat"><h2 class="cat-head"><span>${esc(c)} <span class="hint">${groups[c].length}</span></span><button type="button" class="ghost cat-move" data-move-cat="${esc(c)}" title="Move every link in “${esc(c)}” to the Links page">Move all to Links →</button></h2><div class="link-grid">${groups[c].map(l => `
+        <button class="primary" id="new">Add link</button>${density.bar('stores')}</div>
+      <div class="dens-wrap dens-${density.get('stores')}">${Object.keys(groups).sort().map(c => `<section class="cat"><h2 class="cat-head"><span>${esc(c)} <span class="hint">${groups[c].length}</span></span><button type="button" class="ghost cat-move" data-move-cat="${esc(c)}" title="Move every link in “${esc(c)}” to the Links page">Move all to Links →</button></h2><div class="link-grid">${groups[c].map(l => `
         <div class="link"><a href="${esc(/^https?:\/\//i.test(l.url) ? l.url : '#')}" target="_blank" rel="noopener">${esc(l.name)}</a><span class="u">${esc(l.url.replace(/^https?:\/\//, ''))}</span>${l.notes ? `<span class="n">${esc(l.notes)}</span>` : ''}
         <div class="acts"><button data-edit="${l.id}">Edit</button><button data-move="${l.id}" title="Move to the Links page">Move to Links</button><button class="danger" data-rm="${l.id}">Delete</button></div></div>`).join('')}</div></section>`).join('')
-      || `<p class="empty">${links.length ? 'No links match that search.' : 'No links yet. Add your first tool store.'}</p>`}
+      || `<p class="empty">${links.length ? 'No links match that search.' : 'No links yet. Add your first tool store.'}</p>`}</div>
       <dialog id="dlg"><form method="dialog" id="lf"><h2 id="dt">Add link</h2>
         <label for="ln">Name</label><input id="ln" required><label for="lu">URL</label><input id="lu" type="url" required placeholder="https://">
         <label for="lc">Category</label><input id="lc" list="cl" placeholder="e.g. Package registries"><datalist id="cl">${cats.map(c => `<option value="${esc(c)}">`).join('')}</datalist>
         <label for="lnotes">Notes</label><input id="lnotes"><div class="row" style="margin-top:16px;justify-content:flex-end"><button value="cancel" formnovalidate>Cancel</button><button class="primary" value="ok">Save link</button></div></form></dialog>`;
     $('#q').oninput = e => { linkQuery = e.target.value; const pos = e.target.selectionStart; renderLinks(); const i = $('#q'); i.focus(); i.setSelectionRange(pos, pos); };
     $('#cf').onchange = e => { linkCat = e.target.value; renderLinks(); };
+    density.wire('stores', renderLinks);
     const dlg = $('#dlg'); let editing = null;
     const open = l => { editing = l; $('#dt').textContent = l ? 'Edit link' : 'Add link'; $('#ln').value = l?.name || ''; $('#lu').value = l?.url || ''; $('#lc').value = l?.category || linkCat || ''; $('#lnotes').value = l?.notes || ''; dlg.showModal(); };
     $('#new').onclick = () => open(null);
@@ -1960,6 +1961,23 @@
       toast(`Deleted “${l.name}”`, { label: 'Undo', fn: () => { saveLinks((data.get('links') || []).map(x => x.id === l.id ? { ...x, deleted: false, updatedAt: new Date().toISOString() } : x)); renderLinks(); } });
     });
   }
+
+  // ---------- view density: 1 line / 2 lines / expanded (Links, Insurance, Tool stores, Home tools) ----------
+  const DENS_ICON = {
+    1: '<path d="M4 6h16M4 12h16M4 18h16"/>',
+    2: '<path d="M4 5h16M4 9h10M4 15h16M4 19h10"/>',
+    3: '<rect x="4" y="4" width="7" height="7" rx="1.5"/><rect x="13" y="4" width="7" height="7" rx="1.5"/><rect x="4" y="13" width="7" height="7" rx="1.5"/><rect x="13" y="13" width="7" height="7" rx="1.5"/>'
+  };
+  const DENS_LABEL = { 1: '1 line', 2: '2 lines', 3: 'Expanded' };
+  const density = {
+    get(key, def = 3) { const v = +store.get('toolbox:density:' + key, def); return v === 1 || v === 2 ? v : 3; },
+    set(key, v) { store.set('toolbox:density:' + key, v); },
+    bar(key, def) {
+      const cur = this.get(key, def);
+      return `<div class="dens" role="radiogroup" aria-label="View" data-dens-key="${key}">${[1, 2, 3].map(v => `<button type="button" role="radio" aria-checked="${v === cur}" class="${v === cur ? 'on' : ''}" data-dens="${v}" title="${DENS_LABEL[v]}"><svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true">${DENS_ICON[v]}</svg><span>${DENS_LABEL[v]}</span></button>`).join('')}</div>`;
+    },
+    wire(key, rerender, root = document) { root.querySelectorAll(`[data-dens-key="${key}"] [data-dens]`).forEach(b => b.onclick = () => { this.set(key, +b.dataset.dens); rerender(); }); }
+  };
 
   // ---------- sync needs you: sign in (any device) or your fingerprint (Android app, signed in) ----------
   // Every sync started by you (Links ⇅ Sync now, Pull / Push) goes through this. Automatic sync runs only after you have
@@ -2102,10 +2120,11 @@
         <span class="wl-io"><button type="button" class="ghost" id="wlExp" ${links.length ? '' : 'disabled'}>Export</button><button type="button" class="ghost" id="wlImp">Import</button><button type="button" class="ghost danger" id="wlClr" ${all().length ? '' : 'disabled'} title="Remove the links stored on this device (your account copy is not changed)">Clear device</button><input type="file" id="wlImpF" accept=".json,application/json" hidden></span></div>
       <form class="wl-quick" id="wlq" autocomplete="off"><input id="wlqUrl" type="text" inputmode="url" placeholder="Paste a link and press Enter to add it" aria-label="New link URL"><button class="primary">Add</button><button type="button" id="wlNew">Add with details…</button></form>
       <div class="links-bar"><input id="q" type="search" placeholder="Search links" value="${esc(wlQuery)}" aria-label="Search links">
-        <select id="gf" aria-label="Group"><option value="">All groups</option>${groups.map(c => `<option ${c === wlGroup ? 'selected' : ''}>${esc(c)}</option>`).join('')}</select></div>
+        <select id="gf" aria-label="Group"><option value="">All groups</option>${groups.map(c => `<option ${c === wlGroup ? 'selected' : ''}>${esc(c)}</option>`).join('')}</select>${density.bar('links')}</div>
+      <div class="dens-wrap dens-${density.get('links')}">
       ${pinned.length ? `<section class="cat"><h2>Pinned <span class="hint">${pinned.length}</span></h2><div class="wl-grid">${pinned.map(card).join('')}</div></section>` : ''}
       ${Object.keys(byGroup).sort((a, b) => a.localeCompare(b)).map(c => `<section class="cat"><h2>${esc(c)} <span class="hint">${byGroup[c].length}</span></h2><div class="wl-grid">${byGroup[c].map(card).join('')}</div></section>`).join('')}
-      ${shown.length ? '' : `<p class="empty">${links.length ? 'No links match that search.' : 'No links yet. Paste one above — your intranet, Jira board, SAP Fiori launchpad, timesheet, dashboards…'}</p>`}
+      ${shown.length ? '' : `<p class="empty">${links.length ? 'No links match that search.' : 'No links yet. Paste one above — your intranet, Jira board, SAP Fiori launchpad, timesheet, dashboards…'}</p>`}</div>
       <dialog id="dlg"><form method="dialog" id="lf"><h2 id="dt">Add link</h2>
         <label for="ln">Name</label><input id="ln" required><label for="lu">URL</label><input id="lu" required placeholder="https://">
         <label for="lc">Group</label><input id="lc" list="gl" placeholder="e.g. Daily, Project X, HR"><datalist id="gl">${groups.map(c => `<option value="${esc(c)}">`).join('')}</datalist>
@@ -2114,6 +2133,7 @@
         <div class="row" style="margin-top:16px;justify-content:flex-end"><button value="cancel" formnovalidate>Cancel</button><button class="primary" value="ok">Save link</button></div></form></dialog>`;
     $('#q').oninput = e => { wlQuery = e.target.value; const pos = e.target.selectionStart; renderWorkLinks(); const i = $('#q'); i.focus(); i.setSelectionRange(pos, pos); };
     $('#gf').onchange = e => { wlGroup = e.target.value; renderWorkLinks(); };
+    density.wire('links', renderWorkLinks);
     const md = $('#wlMode'); if (md) md.onchange = () => { st.mode = md.value; wl.save(); toast(md.value === 'auto' ? 'Links sync automatically every 5 minutes' : 'Links sync when you press Sync now'); if (md.value === 'auto') wl.sync(); else wl.schedule(); };
     const sn = $('#wlSyncNow'); if (sn) sn.onclick = () => wl.sync({ manual: true });
     $('#wlExp').onclick = () => saveBlob(new Blob([JSON.stringify({ app: 'devhub', type: 'toolbox-links', version: 1, exportedAt: new Date().toISOString(), links: links }, null, 2)], { type: 'application/json' }), `toolbox-plus-links-${dayKey(new Date())}.json`);
@@ -2549,7 +2569,7 @@
   // Shared with tasks.js
   // What the task tracker needs to adapt to your own file (null for Toolbox+ databases and online accounts)
   const custom = () => null; // (the tracker always uses Toolbox+'s own format now; migrated extra fields still show per task)
-  window.DH = { $, esc, toast, uid, dayKey, addDays, store, data, session, api, routes, render, copy, saveBlob, view, syncLine, custom, tools: TOOLS, groups: GROUPS, wl, offline, backup: () => showBackupDialog(), unlock: unlockApp, relock: relockApp, renderNavUser };
+  window.DH = { $, esc, toast, uid, dayKey, addDays, store, data, session, api, routes, render, copy, saveBlob, view, syncLine, custom, tools: TOOLS, groups: GROUPS, wl, offline, density, backup: () => showBackupDialog(), unlock: unlockApp, relock: relockApp, renderNavUser };
 
   window.addEventListener('DOMContentLoaded', () => {
     const bioLocked = !!(window.DHBio && window.DHBio.locked());   // fingerprint unlock is on and nobody has unlocked yet

@@ -178,6 +178,164 @@
     setTimeout(() => URL.revokeObjectURL(url), 120000);
   }
 
+  // ⤓ in the compact views: one document → download it; several → a small menu (each, or all)
+  function downloadDocs(p, btn, view = false) {
+    const files = p.files || []; if (!files.length) return;
+    const act = f => view ? viewFile(f) : openFile(f, true);
+    if (files.length === 1) return act(files[0]);
+    document.querySelectorAll('.ins-dlmenu').forEach(m => m.remove());
+    const m = document.createElement('div'); m.className = 'ins-dlmenu'; m.setAttribute('role', 'menu');
+    m.innerHTML = files.map(f => `<button type="button" role="menuitem" data-f="${esc(f.id)}"><span class="ins-fi">${/pdf/i.test(f.type) ? 'PDF' : /image/i.test(f.type) ? 'IMG' : 'FILE'}</span><span class="ins-fname">${esc(f.name)}</span><span class="hint">${fmtSize(f.size || 0)}</span></button>`).join('') + (view ? '' : `<button type="button" role="menuitem" data-all class="ins-dlall">Download all ${files.length}</button>`);
+    document.body.appendChild(m);
+    const r = btn.getBoundingClientRect(), w = Math.min(320, window.innerWidth - 16);
+    m.style.width = w + 'px'; m.style.left = Math.max(8, Math.min(r.right - w, window.innerWidth - w - 8)) + 'px'; m.style.top = (r.bottom + window.scrollY + 4) + 'px';
+    const close = () => { m.remove(); document.removeEventListener('click', away, true); };
+    const away = e => { if (!m.contains(e.target) && e.target !== btn) close(); };
+    setTimeout(() => document.addEventListener('click', away, true), 0);
+    m.querySelectorAll('[data-f]').forEach(b => b.onclick = () => { close(); act(files.find(f => f.id === b.dataset.f)); });
+    if (m.querySelector('[data-all]')) m.querySelector('[data-all]').onclick = async () => { close(); for (const f of files) { await openFile(f, true); await new Promise(r => setTimeout(r, 400)); } };
+    const first = m.querySelector('button'); if (first) first.focus();
+    m.addEventListener('keydown', e => { if (e.key === 'Escape') { close(); btn.focus(); } });
+  }
+
+  /* ---------------- read policy PDFs (on this device, with the bundled pdf.js — nothing is uploaded) ---------------- */
+  let pdfLib = null;
+  function loadPdfJs() {
+    if (pdfLib) return pdfLib;
+    pdfLib = new Promise((res, rej) => {
+      if (window.pdfjsLib) return res(window.pdfjsLib);
+      const s = document.createElement('script'); s.src = 'vendor/pdf.min.js';
+      s.onload = () => { const L = window.pdfjsLib; if (!L) return rej(new Error('PDF reader did not load')); L.GlobalWorkerOptions.workerSrc = 'vendor/pdf.worker.min.js'; res(L); };
+      s.onerror = () => { pdfLib = null; rej(new Error('PDF reader could not be loaded')); };
+      document.head.appendChild(s);
+    });
+    return pdfLib;
+  }
+  const isPdf = f => /pdf/i.test(f.type || '') || /\.pdf$/i.test(f.name || '');
+  async function openPdf(blob) {
+    const L = await loadPdfJs();
+    return L.getDocument({ data: new Uint8Array(await blob.arrayBuffer()), isEvalSupported: false, disableFontFace: false, useSystemFonts: true, standardFontDataUrl: 'vendor/pdfjs-fonts/', useWorkerFetch: false }).promise;
+  }
+  // all text of the first pages, line by line (items on the same baseline are joined)
+  async function pdfText(blob, maxPages = 12) {
+    const doc = await openPdf(blob), out = [];
+    for (let i = 1; i <= Math.min(doc.numPages, maxPages); i++) {
+      const tc = await (await doc.getPage(i)).getTextContent(), rows = new Map();
+      for (const it of tc.items) { if (!it.str) continue; const y = Math.round(it.transform[5]); const k = [...rows.keys()].find(z => Math.abs(z - y) <= 2) ?? y; (rows.get(k) || rows.set(k, []).get(k)).push({ x: it.transform[4], s: it.str }); }
+      [...rows.entries()].sort((a, b) => b[0] - a[0]).forEach(([, r]) => out.push(r.sort((a, b) => a.x - b.x).map(z => z.s).join(' ').replace(/\s+/g, ' ').trim()));
+    }
+    try { doc.destroy(); } catch {}
+    return out.filter(Boolean).join('\n');
+  }
+
+  // ---- find the policy details in the text ----
+  const INSURERS = ['Star Health', 'ICICI Lombard', 'HDFC ERGO', 'Bajaj Allianz', 'Bajaj General', 'Tata AIG', 'Niva Bupa', 'Max Bupa', 'Care Health', 'Religare', 'Aditya Birla', 'ManipalCigna', 'Manipal Cigna', 'New India Assurance', 'United India', 'Oriental Insurance', 'National Insurance', 'SBI General', 'Reliance General', 'Kotak Mahindra General', 'Zurich Kotak', 'Go Digit', 'Digit Insurance', 'Acko', 'Royal Sundaram', 'Cholamandalam', 'Chola MS', 'IFFCO Tokio', 'Future Generali', 'Generali Central', 'Liberty General', 'Magma HDI', 'Universal Sompo', 'Shriram General', 'Navi General', 'Raheja QBE', 'Edelweiss', 'Zuno',
+    'Life Insurance Corporation', 'LIC of India', 'HDFC Life', 'SBI Life', 'Max Life', 'Axis Max Life', 'ICICI Prudential', 'Bajaj Allianz Life', 'Tata AIA', 'Kotak Life', 'PNB MetLife', 'Aditya Birla Sun Life', 'Canara HSBC', 'Aviva', 'Edelweiss Tokio', 'Bharti AXA', 'IndiaFirst', 'Pramerica', 'Shriram Life', 'Ageas Federal',
+    'Allianz', 'AXA', 'Aviva', 'Zurich', 'Chubb', 'AIG', 'MetLife', 'Prudential', 'Cigna', 'Bupa', 'Aetna', 'Generali', 'Munich Re', 'Swiss Re'];
+  const MONTHS = { jan: 0, feb: 1, mar: 2, apr: 3, may: 4, jun: 5, jul: 6, aug: 7, sep: 8, sept: 8, oct: 9, nov: 10, dec: 11 };
+  const DATE_RX = /(\d{4})[-/.](\d{1,2})[-/.](\d{1,2})|(\d{1,2})[-/. ](\d{1,2}|[A-Za-z]{3,9})[-/., ]+(\d{2,4})|([A-Za-z]{3,9})\.? (\d{1,2}),? (\d{4})/g;
+  function toYmd(m) {
+    let y, mo, d;
+    if (m[1]) { y = +m[1]; mo = +m[2] - 1; d = +m[3]; }
+    else if (m[4]) { d = +m[4]; y = +m[6]; if (y < 100) y += 2000; const v = m[5]; mo = /^\d+$/.test(v) ? +v - 1 : MONTHS[v.slice(0, 4).toLowerCase()] ?? MONTHS[v.slice(0, 3).toLowerCase()]; if (mo > 11 && d <= 12) { const t = d; d = mo + 1; mo = t - 1; } }   // dd/mm, or mm/dd when it can only be that
+    else { mo = MONTHS[m[7].slice(0, 3).toLowerCase()]; d = +m[8]; y = +m[9]; }
+    if (mo == null || !(mo >= 0 && mo <= 11) || !(d >= 1 && d <= 31) || !(y >= 1990 && y <= 2100)) return null;
+    return `${y}-${pad(mo + 1)}-${pad(d)}`;
+  }
+  const datesIn = s => { const out = []; let m; DATE_RX.lastIndex = 0; while ((m = DATE_RX.exec(s))) { const v = toYmd(m); if (v) out.push(v); } return out; };
+  // the date written on (or right after) a line that matches one of the labels
+  function dateNear(lines, labels) {
+    for (let i = 0; i < lines.length; i++) {
+      const l = lines[i], hit = labels.find(rx => rx.test(l)); if (!hit) continue;
+      const after = l.slice(l.search(hit)), ds = datesIn(after).concat(datesIn(lines[i + 1] || ''));
+      if (ds.length) return ds;
+    }
+    return [];
+  }
+  function parsePolicy(text) {
+    const lines = text.split('\n'), flat = lines.join(' '), out = {}, found = [];
+    const pick = (k, v, label) => { if (v && !out[k]) { out[k] = String(v).trim(); found.push(label); } };
+    // policy number
+    const pn = flat.match(/(?:policy|certificate|cover\s*note)\s*(?:no|number|num|#)\.?\s*[:\-–]?\s*([A-Z0-9][A-Z0-9\/\-]{4,30})/i);
+    if (pn && /\d/.test(pn[1])) pick('number', pn[1], 'policy number');
+    // insurer
+    const ins = INSURERS.find(n => new RegExp('\\b' + n.replace(/[.*+?^${}()|[\]\\]/g, '\\$&').replace(/\s+/g, '\\s+') + '\\b', 'i').test(flat));
+    if (ins) { const full = flat.match(new RegExp('(' + ins.replace(/\s+/g, '\\s+') + '[A-Za-z &.]{0,40}?(?:Insurance|Assurance)\\s*(?:Company|Co\\.?)?\\s*(?:Limited|Ltd\\.?)?)', 'i')); pick('insurer', full ? full[1].replace(/\s+/g, ' ') : ins, 'insurer'); }
+    else { const co = flat.match(/([A-Z][A-Za-z&.]+(?: [A-Z][A-Za-z&.]+){0,5} (?:General |Life |Health )?(?:Insurance|Assurance) (?:Company|Co\.?)? ?(?:Limited|Ltd\.?))/); if (co) pick('insurer', co[1], 'insurer'); }
+    // dates: period "from … to …", start, expiry / renewal / next due
+    const period = flat.match(/(?:period\s+of\s+(?:insurance|cover)|policy\s+period|cover(?:age)?\s+period|valid(?:ity)?)[^\n]{0,40}?from\s*[:\-]?\s*(.{6,30}?)\s+(?:to|till|until|-)\s+(.{6,30}?)(?:\s|$)/i);
+    let start = null, end = null;
+    if (period) { start = datesIn(period[1])[0] || null; end = datesIn(period[2])[0] || null; }
+    if (!start) start = dateNear(lines, [/(?:policy|risk|cover(?:age)?)\s*(?:start|commencement|inception|issue)\s*date/i, /date\s+of\s+(?:commencement|inception|issue)/i, /(?:start|effective)\s+date/i, /\bfrom\b\s*[:\-]?\s*\d/i])[0] || null;
+    const due = dateNear(lines, [/next\s+(?:premium\s+)?due\s+date/i, /renewal\s+(?:due\s+)?date/i, /premium\s+due\s+date/i, /due\s+date\s+of\s+(?:next\s+)?premium/i]);
+    if (!end) end = dateNear(lines, [/(?:policy\s+)?(?:expiry|expiration|end|maturity)\s+date/i, /date\s+of\s+(?:expiry|maturity)/i, /valid\s+(?:till|until|upto|up\s+to)/i, /\b(?:to|till|until)\b\s*[:\-]?\s*\d/i])[0] || null;
+    if (start) pick('startDate', start, 'policy date');
+    const next = due[0] || end;
+    if (next && (!start || next > start)) pick('nextDate', next, due[0] ? 'next due date' : 'expiry date');
+    // premium (prefer the total)
+    const prem = flat.match(/(?:total|gross|final|net)\s+(?:annual\s+)?premium[^0-9₹]{0,40}?(?:₹|rs\.?|inr|`)?\s*([\d,]{3,}(?:\.\d{1,2})?)/i) || flat.match(/premium\s*(?:amount|payable|paid)?[^0-9₹]{0,30}?(?:₹|rs\.?|inr)\s*([\d,]{3,}(?:\.\d{1,2})?)/i);
+    if (prem) pick('premium', '₹ ' + prem[1].replace(/\.00$/, ''), 'premium');
+    // insured / proposer
+    const HOLD_RX = /(?:name\s+of\s+(?:the\s+)?(?:insured|proposer|policy\s*holder|life\s+assured)|(?:insured|proposer|policy\s*holder|life\s+assured)(?:'s)?\s+name|policy\s*holder|proposer)\s*[:\-–]?\s*(.+)$/i;
+    for (const l of lines) { const m = l.match(HOLD_RX); if (!m) continue; const v = m[1].replace(/\s{2,}.*$/, '').replace(/\b(?:address|age|dob|date of birth|gender|relationship|mobile|email|customer|client)\b.*$/i, '').trim(); if (/^[A-Za-z][A-Za-z .']{2,50}$/.test(v)) { pick('holder', v.replace(/\s+/g, ' '), 'holder'); break; } }
+    // type
+    const t = /mediclaim|health|hospitali[sz]ation|optima|family\s+floater/i.test(flat) ? 'Health'
+      : /two[\s-]*wheeler|motor\s*cycle|scooter|bike/i.test(flat) ? 'Two-wheeler'
+      : /private\s+car|motor|vehicle|car\s+insurance|registration\s+no/i.test(flat) ? 'Car'
+      : /term\s+(?:plan|insurance|life)/i.test(flat) ? 'Term'
+      : /life\s+(?:insurance|assured|cover)|endowment|ulip|sum\s+assured/i.test(flat) ? 'Life'
+      : /travel|trip|overseas/i.test(flat) ? 'Travel'
+      : /home|house(?:hold|holder)|property|fire/i.test(flat) ? 'Home' : null;
+    if (t) pick('type', t, 'type');
+    // a name for the policy: the product / plan name if written, otherwise "<insurer> <type>"
+    let plan = null; for (const l of lines) { const m = l.match(/(?:product|plan|policy)\s*name\s*[:\-–]?\s*([A-Za-z0-9][A-Za-z0-9 &+\-().]{3,80})/i); if (m) { plan = [m[0], m[1].replace(/\s+(?:UIN|Code)\b.*$/i, '').trim()]; break; } }
+    pick('name', plan ? plan[1].replace(/\s+/g, ' ') : [out.insurer && out.insurer.split(/\s+(?:general|life|health|insurance)/i)[0], out.type || 'insurance'].filter(Boolean).join(' '), 'name');
+    return { fields: out, found };
+  }
+
+  // ---- read one document: text (PDF) → fields ----
+  async function readDoc(blob, name) {
+    if (!isPdf({ type: blob.type, name })) throw new Error('Only PDF documents can be read');
+    const text = await pdfText(blob);
+    if (text.replace(/\s/g, '').length < 40) throw Object.assign(new Error('This PDF has no readable text (it’s probably a scan or photo). Fill in the details yourself.'), { scanned: true });
+    return { text, ...parsePolicy(text) };
+  }
+
+  /* ---------------- in-app document viewer (PDF pages, photos) ---------------- */
+  async function viewFile(f) {
+    const rec = await idb.get('files', f.id); if (!rec) return toast('This attachment is missing on this device');
+    const blob = rec.blob instanceof Blob ? rec.blob : new Blob([rec.blob], { type: f.type });
+    return viewBlob(blob, f);
+  }
+  async function viewBlob(blob, f) {
+    const img = /^image\//i.test(f.type || blob.type || ''), pdf = isPdf(f);
+    if (!img && !pdf) return saveBlob(blob, f.name);
+    const v = document.createElement('dialog'); v.className = 'ins-viewer';
+    v.innerHTML = `<header><b title="${esc(f.name)}">${esc(f.name)}</b><span class="hint" id="ivInfo"></span>
+        <span class="iv-acts">${pdf ? '<button type="button" class="ghost" id="ivOut" title="Zoom out">−</button><button type="button" class="ghost" id="ivIn" title="Zoom in">+</button>' : ''}<button type="button" class="ghost" id="ivDl" title="Download">&#8681; Download</button><button type="button" class="ghost" id="ivX" aria-label="Close">&#10005;</button></span></header>
+      <div class="iv-body" id="ivBody"><p class="hint iv-wait">Opening…</p></div>`;
+    document.body.appendChild(v); v.showModal();
+    const close = () => { v.close(); v.remove(); if (url) URL.revokeObjectURL(url); }; let url = null;
+    v.addEventListener('close', () => { v.remove(); if (url) URL.revokeObjectURL(url); });
+    $('#ivX', v).onclick = close; $('#ivDl', v).onclick = () => saveBlob(blob, f.name);
+    const body = $('#ivBody', v);
+    if (img) { url = URL.createObjectURL(blob); body.innerHTML = `<img src="${url}" alt="${esc(f.name)}">`; return; }
+    let doc, scale = 1;
+    try { doc = await openPdf(blob); } catch (e) { body.innerHTML = `<p class="form-err">Couldn’t open this PDF (${esc(e.message)}). Use Download to open it in another app.</p>`; return; }
+    $('#ivInfo', v).textContent = `${doc.numPages} page${doc.numPages === 1 ? '' : 's'}`;
+    const draw = async () => {
+      body.innerHTML = ''; const w = Math.min(body.clientWidth - 24, 1000) || 600, dpr = Math.min(window.devicePixelRatio || 1, 2);
+      for (let i = 1; i <= doc.numPages && v.open; i++) {
+        const page = await doc.getPage(i), base = page.getViewport({ scale: 1 }), vp = page.getViewport({ scale: (w / base.width) * scale * dpr });
+        const c = document.createElement('canvas'); c.width = vp.width; c.height = vp.height; c.style.width = (vp.width / dpr) + 'px'; c.setAttribute('aria-label', `Page ${i}`);
+        body.appendChild(c); await page.render({ canvasContext: c.getContext('2d'), viewport: vp }).promise;
+      }
+    };
+    $('#ivIn', v).onclick = () => { scale = Math.min(3, scale + 0.25); draw(); };
+    $('#ivOut', v).onclick = () => { scale = Math.max(0.5, scale - 0.25); draw(); };
+    draw();
+  }
+
   /* ---------------- backup ---------------- */
   const b64 = blob => new Promise((res, rej) => { const r = new FileReader(); r.onload = () => res(String(r.result).split(',')[1] || ''); r.onerror = () => rej(r.error); r.readAsDataURL(blob); });
   async function exportAll() {
@@ -201,9 +359,26 @@
     const host = view(); if (document.body.dataset.route !== 'insurance') return;
     const ps = (await policies()).slice().sort((a, b) => String(a.nextDate || '9999').localeCompare(String(b.nextDate || '9999')));
     if (document.body.dataset.route !== 'insurance') return;
-    const q = query.toLowerCase(), shown = ps.filter(p => !q || [p.name, p.holder, p.insurer, p.number, p.type, p.notes].join(' ').toLowerCase().includes(q));
+    const q = query.toLowerCase(), shown = ps.filter(p => !q || [p.name, p.holder, p.insurer, p.number, p.type, p.notes, p.docText].join(' ').toLowerCase().includes(q));
     const st = ps.map(p => state(p)), over = st.filter(s => s.kind === 'overdue').length, soon = st.filter(s => s.kind === 'soon' || s.kind === 'today').length;
     const s = settings(), perm = window.DHNotify ? await window.DHNotify.permission() : 'unsupported';
+    const dens = DH.density ? DH.density.get('insurance') : 3;
+    const nextAlert = p => { const n = p.remind !== false && s.on ? nextReminder(p) : null; return n ? n.at.toLocaleString(undefined, { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' }) : ''; };
+    const snoozedTxt = p => p.snoozeUntil && new Date(p.snoozeUntil) > new Date() ? 'Snoozed until ' + new Date(p.snoozeUntil).toLocaleString(undefined, { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' }) : '';
+    // compact rows: one line, or two lines; ⤓ downloads the policy document(s); ⋯ has every action
+    const rowHtml = (p, d) => {
+      const n = (p.files || []).length, sz = snoozedTxt(p), na = nextAlert(p);
+      const meta = [p.insurer, p.number ? 'No. ' + p.number : '', 'Next ' + fmtDay(p.nextDate)].filter(Boolean).join(' · ');
+      const meta2 = [p.holder, p.premium, sz || (na ? 'Next alert ' + na : '')].filter(Boolean).join(' · ');
+      return `<article class="ins-row ${state(p).kind}" data-id="${esc(p.id)}">
+        <span class="ins-bar" aria-hidden="true"></span>
+        <div class="ins-r-main"><div class="ins-r-l1"><span class="ins-type">${esc(p.type || 'Other')}</span><b class="ins-r-name">${esc(p.name)}</b>${d === 1 ? `<span class="ins-r-meta">${esc(meta)}</span>` : ''}</div>
+          ${d === 2 ? `<div class="ins-r-l2">${esc(meta)}${meta2 ? `<span class="ins-r-sub"> · ${esc(meta2)}</span>` : ''}</div>` : ''}</div>
+        ${pill(p)}
+        <button type="button" class="ins-dlbtn" data-dlall ${n ? '' : 'disabled'} title="${n ? (n === 1 ? 'Download ' + esc(p.files[0].name) : 'Download policy documents (' + n + ')') : 'No document attached'}" aria-label="Download policy document"><svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 4v11M7 10l5 5 5-5M5 20h14"/></svg>${n > 1 ? `<span class="ins-dln">${n}</span>` : ''}</button>
+        <select class="ins-more" data-act aria-label="Actions for ${esc(p.name)}"><option value="">&#8943;</option><option value="edit">Edit</option>${n ? `<option value="view">View document${n > 1 ? 's…' : ''}</option>` : ''}${p.nextDate ? '<option value="renew">Mark renewed…</option>' : ''}${p.remind !== false ? `<optgroup label="Snooze">${Object.entries(SNOOZES).map(([k, v]) => `<option value="snz:${k}">${v[0]}</option>`).join('')}${sz ? '<option value="snz:resume">Resume now</option>' : ''}</optgroup>` : ''}${p.nextDate ? '<option value="ics">Add to calendar</option>' : ''}<option value="del">Delete</option></select>
+      </article>`;
+    };
     const pill = p => { const x = state(p); return x.kind === 'none' ? '' : `<span class="ins-pill ${x.kind}">${x.kind === 'later' ? 'Renews ' + fmtDay(p.nextDate) : leftText(x.left).replace(/^./, c => c.toUpperCase())}</span>`; };
     host.innerHTML = `<h1>Insurance</h1><p class="lede">Your policies, their documents and renewal reminders. Stored only on this device — works offline, no account and no server.</p>
       <div class="ins-stats"><span><b>${ps.length}</b> polic${ps.length === 1 ? 'y' : 'ies'}</span><span class="${soon ? 'soon' : ''}"><b>${soon}</b> due within reminder window</span><span class="${over ? 'overdue' : ''}"><b>${over}</b> overdue</span></div>
@@ -215,8 +390,9 @@
         return up.length ? `<section class="ins-up"><h2>Next reminders <span class="hint">one per policy, each on its own schedule</span></h2><ol>${up.slice(0, 8).map(({ p, o }) => `<li><time>${esc(o.at.toLocaleString(undefined, { weekday: 'short', day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' }))}</time><span><b>${esc(p.name)}</b> · ${esc(leftText(o.left))}${o.snoozed ? ' · snoozed' : ''}</span></li>`).join('')}</ol></section>` : '';
       })()}
       <div class="links-bar"><input id="insQ" type="search" placeholder="Search policies" value="${esc(query)}" aria-label="Search policies">
-        <button class="primary" id="insNew">Add policy</button><button id="insSet">Reminders…</button><button id="insExp" ${ps.length ? '' : 'disabled'}>Export</button><button id="insImp">Import</button><input type="file" id="insImpF" accept=".json,application/json" hidden></div>
-      <div class="ins-grid">${shown.map(p => `<article class="ins-card ${state(p).kind}" data-id="${esc(p.id)}">
+        <button class="primary" id="insNew">Add policy</button><button id="insPdf" title="Pick a policy PDF — Toolbox+ reads the name, insurer, policy number, dates and premium from it (on this device)">&#128196; Add from PDF</button><input type="file" id="insPdfF" accept="application/pdf,.pdf" hidden><button id="insSet">Reminders…</button><button id="insExp" ${ps.length ? '' : 'disabled'}>Export</button><button id="insImp">Import</button><input type="file" id="insImpF" accept=".json,application/json" hidden>${DH.density ? DH.density.bar('insurance') : ''}</div>
+      ${dens < 3 ? `<div class="ins-list dens-${dens}">${shown.map(p => rowHtml(p, dens)).join('')}</div>` : ''}
+      <div class="ins-grid" ${dens < 3 ? 'hidden' : ''}>${dens < 3 ? '' : shown.map(p => `<article class="ins-card ${state(p).kind}" data-id="${esc(p.id)}">
         <header><div><span class="ins-type">${esc(p.type || 'Other')}</span><h2>${esc(p.name)}</h2>${p.holder ? `<p class="hint">${esc(p.holder)}</p>` : ''}</div>${pill(p)}</header>
         <dl class="kv2"><dt>Insurer</dt><dd>${esc(p.insurer || '—')}</dd><dt>Policy no.</dt><dd class="mono">${esc(p.number || '—')}</dd>
           <dt>Policy date</dt><dd>${fmtDay(p.startDate)}</dd><dt>Next date</dt><dd><b>${fmtDay(p.nextDate)}</b></dd>
@@ -231,14 +407,41 @@
       ${shown.length ? '' : `<p class="empty">${ps.length ? 'No policies match that search.' : 'No policies yet. Add your first one — name, policy date, next renewal date and the policy document.'}</p>`}`;
     $('#insQ').oninput = e => { query = e.target.value; const pos = e.target.selectionStart; render().then(() => { const i = $('#insQ'); if (i) { i.focus(); i.setSelectionRange(pos, pos); } }); };
     $('#insNew').onclick = () => edit(null);
+    $('#insPdf').onclick = () => $('#insPdfF').click();
+    $('#insPdfF').onchange = async e => {
+      const f = e.target.files[0]; e.target.value = ''; if (!f) return;
+      if (f.size > 40 * 1048576) return toast(`${f.name} is larger than 40 MB`);
+      const b = $('#insPdf'); b.disabled = true; b.textContent = 'Reading PDF…';
+      let r; try { r = await readDoc(f, f.name); } catch (x) { r = { fields: {}, found: [], error: x.message }; }
+      b.disabled = false; b.innerHTML = '&#128196; Add from PDF';
+      edit(null, { ...r, file: f });
+    };
     $('#insSet').onclick = remindersDialog;
     $('#insExp').onclick = () => exportAll().catch(e => toast('Export failed: ' + e.message));
     $('#insImp').onclick = () => $('#insImpF').click();
     $('#insImpF').onchange = e => { const f = e.target.files[0]; if (f) importAll(f); e.target.value = ''; };
     const allow = $('#insAllow'); if (allow) allow.onclick = async () => { await window.DHNotify.request(); resync(); render(); };
+    if (DH.density) DH.density.wire('insurance', render);
+    const delPolicy = async p => {
+      if (!confirm(`Delete “${p.name}” and its ${(p.files || []).length} attachment(s) from this device?`)) return;
+      for (const f of p.files || []) await idb.del('files', f.id).catch(() => {});
+      await idb.del('policies', p.id); cache = null; resync(); render(); toast(`Deleted “${p.name}”`);
+    };
+    const icsOf = p => saveBlob(new Blob([icsFor(p)], { type: 'text/calendar' }), `renew-${p.name.replace(/[^\w-]+/g, '-').toLowerCase()}.ics`);
+    host.querySelectorAll('.ins-row').forEach(row => {
+      const p = ps.find(x => x.id === row.dataset.id);
+      $('[data-dlall]', row).onclick = e => downloadDocs(p, e.currentTarget);
+      $('.ins-r-main', row).onclick = () => edit(p);
+      const a = $('[data-act]', row);
+      a.onchange = () => {
+        const v = a.value; a.value = '';
+        if (v === 'edit') edit(p); else if (v === 'view') downloadDocs(p, $('[data-dlall]', row), true); else if (v === 'renew') renew(p); else if (v === 'ics') icsOf(p); else if (v === 'del') delPolicy(p);
+        else if (v === 'snz:resume') snooze(p.id, null); else if (v.startsWith('snz:')) snooze(p.id, v.slice(4));
+      };
+    });
     host.querySelectorAll('.ins-card').forEach(card => {
       const p = ps.find(x => x.id === card.dataset.id), fileOf = id => (p.files || []).find(f => f.id === id);
-      card.querySelectorAll('[data-open]').forEach(b => b.onclick = () => openFile(fileOf(b.dataset.open)));
+      card.querySelectorAll('[data-open]').forEach(b => b.onclick = () => viewFile(fileOf(b.dataset.open)));
       card.querySelectorAll('[data-dl]').forEach(b => b.onclick = () => openFile(fileOf(b.dataset.dl), true));
       $('[data-edit]', card).onclick = () => edit(p);
       $('[data-renew]', card).onclick = () => renew(p);
@@ -258,12 +461,17 @@
     d.innerHTML = html; if (!d.open) d.showModal(); return d;
   }
 
-  function edit(p) {
+  // init (optional, from "Add from PDF"): { fields, found, file, text, error }
+  function edit(p, init) {
     const isNew = !p; p = p ? JSON.parse(JSON.stringify(p)) : { id: uid(), files: [], remind: true, daysBefore: 30, type: 'Health', createdAt: new Date().toISOString() };
+    if (init && init.fields) Object.assign(p, init.fields);
+    if (init && init.text) p.docText = init.text.slice(0, 20000);
     const pending = [];   // new files chosen in this dialog: { meta, blob }
+    if (init && init.file) pending.push({ meta: { id: uid(), name: init.file.name, type: init.file.type || 'application/pdf', size: init.file.size, addedAt: new Date().toISOString() }, blob: init.file });
     const removed = new Set();
     const d = dialog(`<form method="dialog" id="insF" novalidate>
       <header class="tk-dlg-head"><h2>${isNew ? 'Add policy' : 'Edit policy'}</h2><button class="ghost dr-x" value="cancel" formnovalidate aria-label="Close">&#10005;</button></header>
+      ${init ? `<p class="ins-read-note ${init.error ? 'warn' : ''}" id="iReadNote">${init.error ? '&#9888; ' + esc(init.error) : init.found.length ? `&#10024; Read from <b>${esc(init.file.name)}</b>: ${esc(init.found.join(', '))}. Please check them — highlighted fields were filled in from the PDF.` : `Nothing recognisable was found in <b>${esc(init.file.name)}</b>. Fill in the details yourself.`}</p>` : '<p class="ins-read-note" id="iReadNote" hidden></p>'}
       <label for="iName">Policy name *</label><input id="iName" required value="${esc(p.name || '')}" placeholder="e.g. Family health cover">
       <div class="ins-2"><div><label for="iType">Type</label><select id="iType">${TYPES.map(t => `<option ${t === p.type ? 'selected' : ''}>${t}</option>`).join('')}</select></div>
         <div><label for="iHolder">Insured / holder name</label><input id="iHolder" value="${esc(p.holder || '')}"></div></div>
@@ -289,10 +497,34 @@
       <footer class="nt-foot"><button value="cancel" formnovalidate>Cancel</button><button class="primary" value="ok" id="iSave">Save policy</button></footer></form>`);
     const drawFiles = () => {
       const list = [...(p.files || []).filter(f => !removed.has(f.id)), ...pending.map(x => x.meta)];
-      $('#iFiles', d).innerHTML = list.length ? list.map(f => `<li><span class="ins-fi">${/pdf/i.test(f.type) ? 'PDF' : /image/i.test(f.type) ? 'IMG' : 'FILE'}</span><span class="ins-fname">${esc(f.name)}</span><span class="hint">${fmtSize(f.size)}</span><button type="button" class="ghost danger" data-rmf="${esc(f.id)}" aria-label="Remove ${esc(f.name)}">&#10005;</button></li>`).join('') : '<li class="hint">No documents attached.</li>';
+      $('#iFiles', d).innerHTML = list.length ? list.map(f => `<li><span class="ins-fi">${/pdf/i.test(f.type) ? 'PDF' : /image/i.test(f.type) ? 'IMG' : 'FILE'}</span><button type="button" class="ghost ins-fname" data-viewf="${esc(f.id)}" title="View">${esc(f.name)}</button><span class="hint">${fmtSize(f.size)}</span>${isPdf(f) ? `<button type="button" class="ghost ins-readbtn" data-readf="${esc(f.id)}" title="Read the policy details from this PDF">Read details</button>` : ''}<button type="button" class="ghost danger" data-rmf="${esc(f.id)}" aria-label="Remove ${esc(f.name)}">&#10005;</button></li>`).join('') : '<li class="hint">No documents attached.</li>';
+      const blobOf = async id => { const x = pending.find(y => y.meta.id === id); if (x) return { blob: x.blob, meta: x.meta }; const meta = (p.files || []).find(f => f.id === id), rec = await idb.get('files', id); return rec ? { blob: rec.blob, meta } : null; };
+      d.querySelectorAll('[data-viewf]').forEach(b => b.onclick = async () => { const r = await blobOf(b.dataset.viewf); if (r) viewBlob(r.blob, r.meta); });
+      d.querySelectorAll('[data-readf]').forEach(b => b.onclick = async () => {
+        const r = await blobOf(b.dataset.readf); if (!r) return;
+        b.disabled = true; b.textContent = 'Reading…';
+        try { const res = await readDoc(r.blob, r.meta.name); fillFrom(res, r.meta.name); }
+        catch (e) { const n = $('#iReadNote', d); n.hidden = false; n.className = 'ins-read-note warn'; n.innerHTML = '&#9888; ' + esc(e.message); }
+        finally { b.disabled = false; b.textContent = 'Read details'; }
+      });
       d.querySelectorAll('[data-rmf]').forEach(b => b.onclick = () => { const id = b.dataset.rmf, i = pending.findIndex(x => x.meta.id === id); if (i >= 0) pending.splice(i, 1); else removed.add(id); drawFiles(); });
     };
+    // put what was read into the form: empty fields only, unless you agree to replace what's there
+    const FIELD_INPUT = { name: '#iName', type: '#iType', holder: '#iHolder', insurer: '#iIns', number: '#iNum', startDate: '#iStart', nextDate: '#iNext', premium: '#iPrem' };
+    const fillFrom = (res, fname) => {
+      const f = res.fields, keys = Object.keys(f).filter(k => FIELD_INPUT[k]);
+      const clash = keys.filter(k => { const el = $(FIELD_INPUT[k], d); return el.value && el.value !== f[k] && !(k === 'type' && el.value === 'Health' && isNew); });
+      const replace = clash.length ? confirm(`The PDF has different values for: ${clash.join(', ')}.\n\nOK = replace them with the PDF’s values\nCancel = keep what you typed (only empty fields are filled)`) : false;
+      const filled = [];
+      for (const k of keys) { const el = $(FIELD_INPUT[k], d); if (!el.value || replace || (k === 'type' && isNew)) { if (el.value !== f[k]) { el.value = f[k]; el.classList.add('ins-filled'); filled.push(k); } } }
+      p.docText = res.text.slice(0, 20000);
+      const n = $('#iReadNote', d); n.hidden = false; n.className = 'ins-read-note';
+      n.innerHTML = res.found.length ? `&#10024; Read from <b>${esc(fname)}</b>: ${esc(res.found.join(', '))}. ${filled.length ? 'Highlighted fields were filled in — please check them.' : 'Nothing new to fill in.'}` : `Nothing recognisable was found in <b>${esc(fname)}</b>.`;
+      preview();
+    };
     drawFiles();
+    if (init && init.fields) Object.keys(init.fields).forEach(k => { const el = FIELD_INPUT[k] && $(FIELD_INPUT[k], d); if (el) el.classList.add('ins-filled'); });
+    d.querySelectorAll('input, select').forEach(el => el.addEventListener('input', () => el.classList.remove('ins-filled')));
     const draft = () => ({ remind: $('#iRem', d).checked, nextDate: $('#iNext', d).value, startMode: $('#iMode', d).value, remindFrom: $('#iFrom', d).value, daysBefore: parseInt($('#iDays', d).value, 10) >= 0 ? parseInt($('#iDays', d).value, 10) : 30, time: $('#iTime', d).value, days: $('#iRule', d).value, perDay: $('#iPer', d).value, customDays: $('#iCustom', d).value, overdue: $('#iOver', d).checked });
     const preview = () => {
       $('#iCustomRow', d).hidden = $('#iRule', d).value !== 'custom';
@@ -367,5 +599,5 @@
   }
 
   routes.insurance = () => { view().innerHTML = '<h1>Insurance</h1><p class="lede">Loading…</p>'; hashAction(); render(); };
-  window.DHInsurance = { notificationItems, policies, render, snooze, occurrences };
+  window.DHInsurance = { notificationItems, policies, render, snooze, occurrences, parsePolicy, readDoc };
 })();

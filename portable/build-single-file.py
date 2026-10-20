@@ -13,8 +13,10 @@ def patch_locate(t):
     assert "locateFile: f => 'vendor/' + f" in t
     return t.replace("locateFile: f => 'vendor/' + f","locateFile: f => (self.__vfsUrl ? self.__vfsUrl('vendor/' + f) : 'vendor/' + f)")
 vfs={}
-for p in ['papaparse.min.js','xlsx.full.min.js','fxp.min.js','js-yaml.min.js','beautifier.min.js','sql-formatter.min.js','xlsx-style.min.js','sql-wasm.js','sql-wasm.wasm','exceljs.min.js','pptxgen.bundle.js']:
+for p in ['papaparse.min.js','xlsx.full.min.js','fxp.min.js','js-yaml.min.js','beautifier.min.js','sql-formatter.min.js','xlsx-style.min.js','sql-wasm.js','sql-wasm.wasm','exceljs.min.js','pptxgen.bundle.js','pdf.min.js','pdf.worker.min.js']:
     vfs['vendor/'+p]=rb('vendor/'+p)
+for p in sorted(os.listdir(R+'vendor/pdfjs-fonts')):
+    if not p.startswith('LICENSE'): vfs['vendor/pdfjs-fonts/'+p]=rb('vendor/pdfjs-fonts/'+p)
 vfs['worker.js']=rd('worker.js').encode()
 mj=rd('migrate.js'); m_old="initSqlJs({ locateFile: f => 'vendor/' + f })"; assert m_old in mj
 mj=mj.replace(m_old,"initSqlJs({ wasmBinary: self.__vfsBytes ? self.__vfsBytes('vendor/sql-wasm.wasm') : undefined, locateFile: f => 'vendor/' + f })")
@@ -22,7 +24,7 @@ mj=mj.replace("'use strict';",'',1)   # worker loads this with eval, where stric
 vfs['migrate.js']=mj.encode()
 vfs['sap-cva-core.js']=rd('sap-cva-core.js').encode()
 vfs['seed/links.json']=rb('seed/links.json')
-mime=lambda k:'application/wasm' if k.endswith('.wasm') else 'application/json' if k.endswith('.json') else 'text/javascript'
+mime=lambda k:'application/octet-stream' if k.endswith(('.pfb','.ttf')) else 'application/wasm' if k.endswith('.wasm') else 'application/json' if k.endswith('.json') else 'text/javascript'
 vfs_js='window.__VFS_DATA={'+','.join(json.dumps(k)+':"'+base64.b64encode(v).decode()+'"' for k,v in vfs.items())+'};'
 
 shim=r'''
@@ -40,9 +42,9 @@ shim=r'''
   var of=window.fetch;
   window.fetch=function(u,o){var k=typeof u==='string'?norm(u):null;if(k&&(k in D))return Promise.resolve(new Response(bytes(k),{headers:{'Content-Type':mime(k)}}));return of.apply(this,arguments);};
   var OW=window.Worker;
-  var NOW={'vendor/exceljs.min.js':1,'vendor/pptxgen.bundle.js':1};
+  var NOW={'vendor/exceljs.min.js':1,'vendor/pptxgen.bundle.js':1,'vendor/pdf.min.js':1,'vendor/pdf.worker.min.js':1};
   window.Worker=function(u,o){var k=norm(u);
-    if(k in D){var sub={};Object.keys(D).forEach(function(x){if(!NOW[x])sub[x]=D[x];});
+    if(k in D){var sub={};Object.keys(D).forEach(function(x){if(!NOW[x]&&x.indexOf('vendor/pdfjs-fonts/')!==0)sub[x]=D[x];});
       var pre='self.__D='+JSON.stringify(sub)+';(function(){var C={};'
         +'function by(k){var s=atob(self.__D[k]),a=new Uint8Array(s.length);for(var i=0;i<s.length;i++)a[i]=s.charCodeAt(i);return a;}'
         +'self.__vfsBytes=function(p){return (p in self.__D)?by(p):undefined;};'

@@ -75,11 +75,11 @@
         <div class="hm-tiles">${recent.map(t => `<a class="hm-tile" href="#tools/${t.id}"><span class="hm-tile-ic">${ico(t.group)}</span><span class="hm-tile-n">${esc(t.name)}</span><span class="hm-tile-g">${esc(t.group)}</span></a>`).join('')}</div></section>` : ''}
 
       <section class="hm-sec"><header><h2>All tools <span class="hint">${tools.length}</span></h2>
-          <span class="hm-acts"><button type="button" class="ghost" id="hmExpand">Expand all</button><button type="button" class="ghost" id="hmCollapse">Collapse all</button></span></header>
-        <div class="hm-groups">${groups.map(([g, l]) => `<div class="hm-group${col[g] ? ' collapsed' : ''}" data-g="${esc(g)}">
+          <span class="hm-acts">${DH.density ? DH.density.bar('home-tools', 2) : ''}<button type="button" class="ghost" id="hmExpand">Expand all</button><button type="button" class="ghost" id="hmCollapse">Collapse all</button></span></header>
+        <div class="hm-groups dens-${DH.density ? DH.density.get('home-tools', 2) : 2}">${groups.map(([g, l]) => `<div class="hm-group${col[g] ? ' collapsed' : ''}" data-g="${esc(g)}">
           <button type="button" class="hm-gh" aria-expanded="${!col[g]}"><span class="hm-gi">${ico(g)}</span><span class="hm-gn">${esc(g)}</span><span class="hm-gc">${l.length}</span>
             <svg class="hm-chev" viewBox="0 0 20 20" width="18" height="18" aria-hidden="true"><path d="M5 7.5 10 12.5l5-5" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg></button>
-          <ul class="hm-tl">${l.map(t => `<li><a href="#tools/${t.id}"><b>${esc(t.name)}</b><span>${esc(t.desc.split(/(?<=\.)\s/)[0])}</span></a></li>`).join('')}</ul></div>`).join('')}</div></section>
+          <ul class="hm-tl">${l.map(t => `<li><a href="#tools/${t.id}"><b>${esc(t.name)}</b><span class="hm-d1">${esc(t.desc.split(/(?<=\.)\s/)[0])}</span><span class="hm-d3">${esc(t.desc)}</span></a></li>`).join('')}</ul></div>`).join('')}</div></section>
 
       <section class="hm-sec hm-more-sec"><header><h2>More</h2></header>
         <div class="hm-tiles">
@@ -94,6 +94,7 @@
       g.classList.toggle('collapsed', c); b.setAttribute('aria-expanded', String(!c)); if (c) m[g.dataset.g] = 1; else delete m[g.dataset.g]; setCollapsed(m);
     });
     const all = c => { const m = {}; view().querySelectorAll('.hm-group').forEach(g => { g.classList.toggle('collapsed', c); $('.hm-gh', g).setAttribute('aria-expanded', String(!c)); if (c) m[g.dataset.g] = 1; }); setCollapsed(m); };
+    if (DH.density) DH.density.wire('home-tools', render);
     $('#hmExpand').onclick = () => all(false); $('#hmCollapse').onclick = () => all(true);
 
     // ---- search everything on this device ----
