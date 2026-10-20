@@ -1,4 +1,4 @@
-# Builds DevHub-Portable.exe (Windows, 64-bit, no installer) and the single-file DevHub.html.
+# Builds ToolboxPlus-Portable.exe (Windows, 64-bit, no installer) and the single-file ToolboxPlus.html.
 # Run it when needed: GitHub > Actions > "Windows portable exe" > Run workflow. Download the result from the run's Artifacts.
 # Pushing a tag named portable-v* (e.g. portable-v1.0) also attaches both files to a GitHub release.
 name: Windows portable exe
@@ -22,23 +22,23 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version: '1.22'
-      - name: Build DevHub.html and DevHub-Portable.exe
+      - name: Build ToolboxPlus.html and ToolboxPlus-Portable.exe
         run: sh portable/build-windows-exe.sh
       - name: Checksums
-        run: cd dist && sha256sum DevHub-Portable.exe DevHub.html | tee SHA256SUMS.txt
+        run: cd dist && sha256sum ToolboxPlus-Portable.exe ToolboxPlus.html | tee SHA256SUMS.txt
       - uses: actions/upload-artifact@v4
         with:
-          name: DevHub-Portable
+          name: ToolboxPlus-Portable
           path: |
-            dist/DevHub-Portable.exe
-            dist/DevHub.html
+            dist/ToolboxPlus-Portable.exe
+            dist/ToolboxPlus.html
             dist/SHA256SUMS.txt
       - name: Attach to release (tags only)
         if: startsWith(github.ref, 'refs/tags/portable-v')
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh release create "${{ github.ref_name }}" dist/DevHub-Portable.exe dist/DevHub.html dist/SHA256SUMS.txt \
-            --title "DevHub portable ${{ github.ref_name }}" \
-            --notes "Portable Windows build. No installer needed - download DevHub-Portable.exe and double-click it." \
-          || gh release upload "${{ github.ref_name }}" dist/DevHub-Portable.exe dist/DevHub.html dist/SHA256SUMS.txt --clobber
+          gh release create "${{ github.ref_name }}" dist/ToolboxPlus-Portable.exe dist/ToolboxPlus.html dist/SHA256SUMS.txt \
+            --title "Toolbox+ portable ${{ github.ref_name }}" \
+            --notes "Portable Windows build. No installer needed - download ToolboxPlus-Portable.exe and double-click it." \
+          || gh release upload "${{ github.ref_name }}" dist/ToolboxPlus-Portable.exe dist/ToolboxPlus.html dist/SHA256SUMS.txt --clobber

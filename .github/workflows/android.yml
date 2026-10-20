@@ -48,7 +48,7 @@ jobs:
       - name: Copy web app into www/
         run: npm run www
 
-      - name: Point the app at your DevHub server
+      - name: Point the app at your Toolbox+ server
         env:
           API_BASE_URL: ${{ vars.API_BASE_URL }}
         run: |
@@ -64,24 +64,60 @@ jobs:
           npx cap add android
           npx cap sync android
 
+      - name: Add Toolbox+'s native plugin (battery, background and alarm permissions)
+        run: |
+          # android-src/DevHubPower.java checks battery optimisation, background restriction, exact alarms and notifications,
+          # and opens the matching Settings screens (incl. the phone maker's Auto-start screen). MainActivity registers it.
+          MA=$(find android/app/src/main/java -name MainActivity.java | head -1)
+          if [ -z "$MA" ]; then echo "::error::MainActivity.java not found in the generated Android project"; exit 1; fi
+          DIR=$(dirname "$MA"); PKG=$(sed -n 's/^package \(.*\);.*/\1/p' "$MA" | head -1)
+          for F in MainActivity DevHubPower Reminders ReminderReceiver BootReceiver; do sed "s/__PKG__/$PKG/" "android-src/$F.java" > "$DIR/$F.java"; done
+          echo "Package: $PKG"; ls "$DIR"
+          # Receivers: ReminderReceiver shows reminders and handles the Snooze buttons in the background (not exported);
+          # BootReceiver sets the alarms again after a restart / app update.
+          M=android/app/src/main/AndroidManifest.xml
+          if ! grep -q ReminderReceiver "$M"; then
+            python3 - "$M" <<'PY'
+          import sys
+          p = sys.argv[1]; s = open(p).read()
+          rx = '''        <receiver android:name=".ReminderReceiver" android:exported="false" />
+                  <receiver android:name=".BootReceiver" android:exported="true">
+                      <intent-filter>
+                          <action android:name="android.intent.action.BOOT_COMPLETED" />
+                          <action android:name="android.intent.action.MY_PACKAGE_REPLACED" />
+                          <action android:name="android.intent.action.QUICKBOOT_POWERON" />
+                          <action android:name="com.htc.intent.action.QUICKBOOT_POWERON" />
+                          <action android:name="android.app.action.SCHEDULE_EXACT_ALARM_PERMISSION_STATE_CHANGED" />
+                      </intent-filter>
+                  </receiver>
+              </application>'''
+          s = s.replace('</application>', rx, 1); open(p, 'w').write(s)
+          PY
+          fi
+          grep -n "receiver" "$M"
+
       - name: Declare notification permissions
         run: |
           # Android 13+ needs POST_NOTIFICATIONS declared before the app may ask for it; Android 12+ needs
           # SCHEDULE_EXACT_ALARM for reminders at the exact minute; the rest keep reminders alive after a reboot;
           # USE_BIOMETRIC / USE_FINGERPRINT are for the fingerprint unlock.
+          # USE_EXACT_ALARM (Android 13+) grants exact alarms without the user having to switch on "Alarms & reminders",
+          # so Insurance renewal and task reminders fire on time, also in battery-saving (Doze) mode.
+          # REQUEST_IGNORE_BATTERY_OPTIMIZATIONS lets Toolbox+ show Android's "Let app always run in background?" dialog.
+          # No storage permission is needed: attachments are picked with the system file picker.
           M=android/app/src/main/AndroidManifest.xml
-          for P in POST_NOTIFICATIONS SCHEDULE_EXACT_ALARM RECEIVE_BOOT_COMPLETED VIBRATE WAKE_LOCK USE_BIOMETRIC USE_FINGERPRINT; do
+          for P in POST_NOTIFICATIONS SCHEDULE_EXACT_ALARM USE_EXACT_ALARM REQUEST_IGNORE_BATTERY_OPTIMIZATIONS RECEIVE_BOOT_COMPLETED VIBRATE WAKE_LOCK USE_BIOMETRIC USE_FINGERPRINT; do
             grep -q "android.permission.$P\"" "$M" || sed -i "s#<application#<uses-permission android:name=\"android.permission.$P\" />\n    <application#" "$M"
           done
           grep -n "uses-permission" "$M"
 
-      - name: Apply DevHub icons and launch screen
+      - name: Apply Toolbox+ icons and launch screen
         run: |
-          # android-res/ holds DevHub's launcher icons and splash images (made by scripts/make-icons.py).
+          # android-res/ holds Toolbox+'s launcher icons and splash images (made by scripts/make-icons.py).
           # They replace Capacitor's default icon and the Capacitor logo shown while the app starts.
           RES=android/app/src/main/res
           cp -r android-res/. "$RES/"
-          # Android 12+ draws its own launch screen from the theme: give it DevHub's blue instead of white.
+          # Android 12+ draws its own launch screen from the theme: give it Toolbox+'s blue instead of white.
           if ! grep -q windowSplashScreenBackground "$RES/values/styles.xml"; then
             sed -i 's#<item name="android:background">@drawable/splash</item>#&\n        <item name="windowSplashScreenBackground">@color/ic_launcher_background</item>#' "$RES/values/styles.xml"
           fi
@@ -103,7 +139,7 @@ jobs:
         run: |
           chmod +x gradlew
           ./gradlew assembleDebug --no-daemon --stacktrace
-          cp app/build/outputs/apk/debug/app-debug.apk "../DevHub-${VERSION}-debug.apk"
+          cp app/build/outputs/apk/debug/app-debug.apk "../ToolboxPlus-${VERSION}-debug.apk"
 
       - name: Build signed release APK
         if: env.HAS_KEYSTORE == 'true'
@@ -119,20 +155,20 @@ jobs:
           "$BT/zipalign" -p -f 4 android/app/build/outputs/apk/release/app-release-unsigned.apk aligned.apk
           "$BT/apksigner" sign --ks release.keystore --ks-pass env:KEYSTORE_PASSWORD \
             --ks-key-alias "$KEY_ALIAS" --key-pass env:KEY_PASSWORD \
-            --out "DevHub-${VERSION}-release.apk" aligned.apk
-          "$BT/apksigner" verify "DevHub-${VERSION}-release.apk"
+            --out "ToolboxPlus-${VERSION}-release.apk" aligned.apk
+          "$BT/apksigner" verify "ToolboxPlus-${VERSION}-release.apk"
           rm -f release.keystore aligned.apk
 
       - name: Upload APK artifact
         uses: actions/upload-artifact@v4
         with:
-          name: DevHub-${{ env.VERSION }}-apk
-          path: DevHub-*.apk
+          name: ToolboxPlus-${{ env.VERSION }}-apk
+          path: ToolboxPlus-*.apk
           if-no-files-found: error
 
       - name: Publish GitHub Release
         if: startsWith(github.ref, 'refs/tags/v')
         uses: softprops/action-gh-release@v2
         with:
-          files: DevHub-*.apk
+          files: ToolboxPlus-*.apk
           generate_release_notes: true
