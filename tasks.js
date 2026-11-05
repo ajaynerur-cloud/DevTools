@@ -9,7 +9,7 @@
   const { $, esc, toast, uid, dayKey, addDays, data, routes, view, syncLine, session } = window.DH;
 
   const PRIO = { 1: 'Urgent', 2: 'High', 3: 'Medium', 4: 'Low' };
-  const STATUS = { todo: 'To do', doing: 'In progress', review: 'In review', blocked: 'Blocked', hold: 'On hold', done: 'Done' };
+  const STATUS = { todo: 'To do', doing: 'In progress', review: 'In review', blocked: 'Blocked', hold: 'On hold', done: 'Done' , Cancelled: 'Cancelled' };
   const ORDER = Object.keys(STATUS);                 // board / picker order
   const ACTIVE = ['doing', 'review'];                // being worked on right now: surfaced in Today and the sidebar count
   // Your own file (offline): use its words for status and priority, and show its extra fields
